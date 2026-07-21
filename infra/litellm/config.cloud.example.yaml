@@ -1,0 +1,15 @@
+# Merge this private overlay into config.yaml only after adding provider keys to
+# the runtime secret store. Never commit real keys.
+model_list:
+  - model_name: business-general-primary
+    litellm_params:
+      model: openai/gpt-4.1-mini
+      api_key: os.environ/OPENAI_API_KEY
+      timeout: 30
+      max_retries: 1
+  - model_name: business-general-fallback
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-latest
+      api_key: os.environ/ANTHROPIC_API_KEY
+      timeout: 30
+      max_retries: 1

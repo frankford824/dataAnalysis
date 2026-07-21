@@ -1,0 +1,11 @@
+services:
+  postgres:
+    deploy: {resources: {limits: {cpus: "6", memory: 20G}}}
+  backend:
+    deploy: {resources: {limits: {cpus: "3", memory: 6G}}}
+  worker:
+    environment: {WORKER_CONCURRENCY: "4"}
+    deploy: {resources: {limits: {cpus: "8", memory: 24G}}}
+  superset:
+    environment: {SUPERSET_WORKERS: "4"}
+    deploy: {resources: {limits: {cpus: "4", memory: 8G}}}

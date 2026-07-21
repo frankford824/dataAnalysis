@@ -1,0 +1,23 @@
+# LiteLLM is opt-in: `docker compose --profile ai up -d litellm`.
+# No provider model is enabled by this file. Add customer-approved providers
+# through a private deployment overlay or the platform's encrypted AI manager.
+model_list: []
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_model_in_db: true
+  disable_spend_logs: false
+
+litellm_settings:
+  request_timeout: 30
+  num_retries: 1
+  drop_params: true
+  set_verbose: false
+  redact_user_api_key_info: true
+  turn_off_message_logging: true
+
+router_settings:
+  routing_strategy: simple-shuffle
+  allowed_fails: 1
+  cooldown_time: 30

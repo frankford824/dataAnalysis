@@ -1,0 +1,229 @@
+name: commerce-analytics
+
+x-backend-environment: &backend-environment
+  COMMERCE_ENVIRONMENT: ${APP_ENV:-development}
+  COMMERCE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-commerce}:${POSTGRES_PASSWORD:-commerce-dev-only}@postgres:5432/${POSTGRES_DB:-commerce}
+  COMMERCE_REDIS_URL: redis://redis:6379/0
+  COMMERCE_OBJECT_STORAGE_BACKEND: s3
+  COMMERCE_S3_ENDPOINT_URL: http://minio:9000
+  COMMERCE_S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+  COMMERCE_S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin-dev-only}
+  COMMERCE_S3_REGION: ${S3_REGION:-us-east-1}
+  COMMERCE_S3_RAW_BUCKET: ${S3_RAW_BUCKET:-commerce-raw}
+  COMMERCE_S3_INTERMEDIATE_BUCKET: ${S3_INTERMEDIATE_BUCKET:-commerce-intermediate}
+  COMMERCE_S3_EXPORT_BUCKET: ${S3_EXPORT_BUCKET:-commerce-exports}
+  COMMERCE_SECRET_KEY: ${APP_SECRET_KEY:-development-only-change-me}
+  COMMERCE_AUTO_CREATE_SCHEMA: "false"
+  APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-mD9rPz9D1Gm1pj6uOvBtwxSVtvzRLRk8P4n4zAL1L7o=}
+  AI_MODE: ${AI_MODE:-disabled}
+  COMMERCE_LITELLM_BASE_URL: ${LITELLM_BASE_URL:-http://litellm:4000}
+  LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
+  SUPERSET_BASE_URL: ${SUPERSET_BASE_URL:-http://superset:8088}
+  SUPERSET_GUEST_TOKEN_SECRET: ${SUPERSET_GUEST_TOKEN_SECRET:-development-guest-secret-change-me}
+
+x-backend: &backend
+  build:
+    context: .
+    dockerfile: infra/docker/backend.Dockerfile
+  restart: unless-stopped
+  environment: *backend-environment
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio-bootstrap:
+      condition: service_completed_successfully
+  networks: [internal]
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-commerce}
+      POSTGRES_USER: ${POSTGRES_USER:-commerce}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-commerce-dev-only}
+      ANALYTICS_READER_PASSWORD: ${ANALYTICS_READER_PASSWORD:-analytics-dev-only}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [internal]
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [internal]
+
+  minio:
+    image: minio/minio:RELEASE.2024-07-16T23-46-41Z
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin-dev-only}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [internal]
+
+  minio-bootstrap:
+    image: minio/mc:RELEASE.2024-07-15T17-46-06Z
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin-dev-only}
+      S3_RAW_BUCKET: ${S3_RAW_BUCKET:-commerce-raw}
+      S3_INTERMEDIATE_BUCKET: ${S3_INTERMEDIATE_BUCKET:-commerce-intermediate}
+      S3_EXPORT_BUCKET: ${S3_EXPORT_BUCKET:-commerce-exports}
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/bootstrap/bootstrap.sh"]
+    volumes:
+      - ./infra/minio:/bootstrap:ro
+    networks: [internal]
+
+  backend:
+    <<: *backend
+    command: ["/app/infra/docker/backend-entrypoint.sh", "api"]
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  worker:
+    <<: *backend
+    command: ["/app/infra/docker/backend-entrypoint.sh", "worker"]
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.worker.celery_app inspect ping -d celery@$${HOSTNAME} --timeout 5 | grep -q pong"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  scheduler:
+    <<: *backend
+    command: ["/app/infra/docker/backend-entrypoint.sh", "scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", "tr '\\0' ' ' </proc/1/cmdline | grep -q 'celery.*beat'"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        VITE_API_BASE: ${PUBLIC_API_BASE_URL:-/api/v1}
+        VITE_SUPERSET_URL: ${PUBLIC_SUPERSET_URL:-http://localhost:8088}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-3000}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [internal]
+
+  superset:
+    build:
+      context: .
+      dockerfile: infra/superset/Dockerfile
+    restart: unless-stopped
+    environment:
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-development-superset-secret-change-me}
+      SUPERSET_GUEST_TOKEN_SECRET: ${SUPERSET_GUEST_TOKEN_SECRET:-development-guest-secret-change-me}
+      SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
+      SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin-dev-only}
+      SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.invalid}
+      SUPERSET_METADATA_DATABASE_URI: postgresql+psycopg2://${POSTGRES_USER:-commerce}:${POSTGRES_PASSWORD:-commerce-dev-only}@postgres:5432/superset
+      ANALYTICS_DATABASE_URI: postgresql+psycopg2://analytics_reader:${ANALYTICS_READER_PASSWORD:-analytics-dev-only}@postgres:5432/${POSTGRES_DB:-commerce}?options=-csearch_path%3Dcertified
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - superset-home:/app/superset_home
+      - ./infra/superset:/app/pythonpath:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${SUPERSET_PORT:-8088}:8088"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8088/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    networks: [internal]
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-v1.74.15-stable
+    profiles: ["ai"]
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-development-litellm-key}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-development-litellm-salt-key}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-commerce}:${POSTGRES_PASSWORD:-commerce-dev-only}@postgres:5432/litellm
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./infra/litellm/config.yaml:/app/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks: [internal]
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  superset-home:
+
+networks:
+  internal:
+    driver: bridge

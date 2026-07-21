@@ -1,0 +1,16 @@
+.git
+.env
+.venv
+**/.venv
+**/node_modules
+**/dist
+**/target
+**/__pycache__
+artifacts
+backups
+*.log
+*.pbix
+*.xlsx
+*.xls
+*.csv
+*.zip

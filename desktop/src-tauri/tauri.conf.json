@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Commerce Analytics",
+  "version": "0.1.0",
+  "identifier": "com.commerceanalytics.desktop",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../apps/web run dev -- --host 0.0.0.0",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm --prefix ../apps/web run build",
+    "frontendDist": "../../apps/web/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Commerce Analytics",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://*:* https://*; img-src 'self' asset: http://asset.localhost blob: data: https:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "Business",
+    "shortDescription": "Secure commerce file collection and analytics client"
+  }
+}

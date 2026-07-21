@@ -1,0 +1,10 @@
+import { ArrowUp, MessageSquareText, Sparkles } from 'lucide-react'
+import { FormEvent, useState } from 'react'
+import { useApp } from '../context/AppContext'
+
+type Msg = { side: 'user'|'assistant'; text: string; options?: string[] }
+export default function AskBusiness() {
+  const { api, filters } = useApp(); const [question,setQuestion]=useState(''); const [busy,setBusy]=useState(false); const [messages,setMessages]=useState<Msg[]>([{side:'assistant',text:'想了解哪项经营情况？我会使用已确认的数据回答，并注明店铺和时间范围。',options:['本月哪家店铺利润增长最快？','广告费用占比有什么变化？','哪些商品退款率需要关注？']}])
+  const ask = async (text = question) => { if(text.trim().length<3 || busy) return; setQuestion(''); setMessages(v=>[...v,{side:'user',text}]);setBusy(true); try { const r=await api.ask(text,filters);setMessages(v=>[...v,{side:'assistant',text:r.answer,options:r.options?.slice(0,3)}]) } catch { setMessages(v=>[...v,{side:'assistant',text:'当前 AI 服务不可用。经营看板和确定性计算不受影响；这个问题已加入实施人员待处理队列。',options:['返回经营看板','导出本月结果']}]) } finally {setBusy(false)} }
+  return <div className="ask-page"><div className="page-heading"><div><h1>问业务</h1><p>当前范围：{filters.period} · {filters.storeId ? '所选店铺' : '全部店铺'}</p></div></div><section className="conversation" aria-live="polite">{messages.map((m,i)=><div className={`message ${m.side}`} key={i}>{m.side==='assistant'&&<span className="assistant-mark"><Sparkles size={18}/></span>}<div><p>{m.text}</p>{m.options&&<div className="answer-options">{m.options.map(o=><button key={o} onClick={()=>o==='返回经营看板'?location.assign('/dashboard'):ask(o)}>{o}</button>)}</div>}</div></div>)}{busy&&<div className="message assistant"><span className="assistant-mark"><Sparkles size={18}/></span><p>正在核对已确认的经营数据…</p></div>}</section><form className="question-box" onSubmit={(e:FormEvent)=>{e.preventDefault();ask()}}><MessageSquareText/><input aria-label="业务问题" value={question} onChange={e=>setQuestion(e.target.value)} placeholder="例如：6 月哪家店铺的经营利润增长最快？"/><button aria-label="发送问题" disabled={busy||question.trim().length<3}><ArrowUp/></button></form><small className="ask-caption">回答只使用您有权查看的已确认数据；AI 不会更改正式金额。</small></div>
+}

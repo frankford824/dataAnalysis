@@ -1,0 +1,2 @@
+order_id,occurred_at,revenue,refund,platform_fee,advertising_fee,shipping_fee,product_cost,event_type
+HOME-202606-001,2026-06-18T09:00:00Z,300,20,15,10,5,100,sale
