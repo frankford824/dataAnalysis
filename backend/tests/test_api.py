@@ -13,7 +13,13 @@ def test_tenant_isolation_and_rbac(client, tenants):
     assert created.status_code == 200
     assert client.get("/api/v1/stores", headers=tenant_headers(second)).json() == []
     assert client.get(f"/api/v1/stores/{created.json()['id']}", headers=tenant_headers(second)).status_code == 404
-    denied = client.post("/api/v1/stores", headers=tenant_headers(first, "viewer"), json={"name": "No", "activation_at": "2026-01-01T00:00:00Z"})
+    spoof = client.get("/api/v1/stores", headers={"X-Enterprise-ID": second, "X-Role": "platform_admin", "X-User-ID": "forged"})
+    assert spoof.status_code == 400
+    invited = client.post("/api/v1/users/invite", headers=tenant_headers(first), json={"name": "Viewer", "email": "viewer@example.test", "role": "viewer", "password": "viewer-password-123", "store_ids": []})
+    assert invited.status_code == 200, invited.text
+    login = client.post("/api/v1/auth/login", json={"email": "viewer@example.test", "password": "viewer-password-123"})
+    assert login.status_code == 200
+    denied = client.post("/api/v1/stores", json={"name": "No", "activation_at": "2026-01-01T00:00:00Z"})
     assert denied.status_code == 403
 
 
@@ -33,7 +39,7 @@ def test_user_roles_are_persisted_and_tenant_scoped(client, tenants):
     created = client.post(
         "/api/v1/users",
         headers=tenant_headers(first),
-        json={"name": "Store Analyst", "email": "analyst@example.invalid", "role": "analyst", "store_ids": []},
+        json={"name": "Store Analyst", "email": "analyst@example.invalid", "role": "analyst", "store_ids": [], "password": "analyst-password-123"},
     )
     assert created.status_code == 200, created.text
     assert created.json()["role"] == "analyst"
@@ -118,6 +124,18 @@ def test_certified_export_is_tenant_scoped(client, tenants):
     assert result.status_code == 200
     assert result.headers["content-type"].startswith("text/csv")
     assert result.text.startswith("store_id,period_start")
+    internal = client.get(
+        "/api/v1/exports/certified",
+        headers=headers,
+        params={"format": "json", "date_from": "2026-07-01", "date_to": "2026-08-01T00:00:00Z"},
+    )
+    assert internal.status_code == 200 and internal.json() == {"rows": []}
+    overview = client.get(
+        "/api/v1/analytics/overview",
+        headers=headers,
+        params={"date_from": "2026-07-01", "date_to": "2026-08-01T00:00:00Z"},
+    )
+    assert overview.status_code == 200
 
 
 def test_superset_embed_token_is_short_lived_and_tenant_scoped(client, tenants):
@@ -208,7 +226,7 @@ def test_source_and_pbix_assets_bind_to_multiple_scopes(client, tenants):
         for index, (scope_type, scope_id) in enumerate(scopes)
     ]
     assert all(response.status_code == 200 for response in model_bindings)
-    assert len(client.get("/api/v1/source-bindings", headers=headers).json()) == 2
+    assert len([item for item in client.get("/api/v1/source-bindings", headers=headers).json() if item["source_definition_id"] == source["id"]]) == 2
     assert len(client.get("/api/v1/model-scope-bindings", headers=headers).json()) == 3
 
 

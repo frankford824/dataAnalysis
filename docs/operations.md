@@ -2,11 +2,11 @@
 
 ## Daily checks
 
-Run `./scripts/diagnose.sh` and monitor API job failures, queue depth, PostgreSQL disk/connection utilization, MinIO capacity, certificate expiry, and the most recent successful backup. `/health` reports dependency readiness; `/api/v1/health/diagnostics` is restricted to administrators.
+Run `./scripts/diagnose.sh` and monitor API job failures, queue depth, PostgreSQL disk/connection utilization, MinIO capacity, certificate expiry, and the most recent successful backup. `/health` is process liveness, `/ready` verifies database and object storage, and `/api/v1/health/diagnostics` is an authenticated dependency check.
 
 ## Backup and restore
 
-`./scripts/backup.sh /secure/backup/path` writes custom-format dumps for the application and Superset metadata databases, every current object from the three product buckets, runtime configuration, and a SHA-256 manifest. Raw keys are content-addressed and never overwritten, so this includes every formal original even though MinIO's internal version IDs are not preserved. It does not back up Redis because Redis contains disposable queue/cache state. Encrypt backup media and restrict it as customer data.
+`./scripts/backup.sh /secure/backup/path` writes custom-format dumps for the application, Superset metadata, and optional LiteLLM metadata databases; every current object from the three product buckets; the Superset/runtime configuration; and a SHA-256 manifest. Raw keys are content-addressed and never overwritten, so this includes every formal original even though MinIO's internal version IDs are not preserved. It does not back up Redis because Redis contains disposable queue/cache state. Encrypt backup media and restrict it as customer data.
 
 Restore is intentionally destructive and requires an explicit flag:
 
@@ -14,7 +14,7 @@ Restore is intentionally destructive and requires an explicit flag:
 ./scripts/restore.sh --confirm /secure/backup/path
 ```
 
-The script verifies hashes, pauses application writers, restores PostgreSQL and object versions, restarts services, and runs the smoke test. Restore to a separate instance for rehearsals. A restore is complete only after checking configuration/rule/model/dashboard counts, sample locked periods, and several raw object hashes.
+The script verifies hashes, pauses application writers, restores PostgreSQL and current objects, restarts services, and runs the smoke test. `./scripts/backup-restore-test.sh --confirm` additionally runs the deterministic two-store reconciliation before and after a destructive rehearsal. A restore is complete only after checking configuration/rule/model/dashboard counts, sample locked periods, and several raw object hashes; the smoke test alone does not prove business-level completeness.
 
 ## Upgrade
 

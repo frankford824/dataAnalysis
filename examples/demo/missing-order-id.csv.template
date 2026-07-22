@@ -1,0 +1,2 @@
+occurred_at,store_id,event_type,revenue,refund,platform_fee,advertising_fee,shipping_fee,product_cost
+2026-06-15T09:00:00Z,STORE_ALPHA,sale,999.00,0.00,0.00,0.00,0.00,300.00

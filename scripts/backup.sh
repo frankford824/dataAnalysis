@@ -13,6 +13,7 @@ if [ -f .env ]; then
 fi
 cp compose.yaml "$destination/config/compose.yaml"
 cp -R docs/config "$destination/config/templates"
+cp -R infra/superset "$destination/config/superset"
 
 docker compose exec -T postgres pg_dump \
   --username "${POSTGRES_USER:-commerce}" \
@@ -22,6 +23,10 @@ docker compose exec -T postgres pg_dump \
   --username "${POSTGRES_USER:-commerce}" \
   --dbname superset \
   --format=custom > "$destination/postgres/superset.dump"
+docker compose exec -T postgres pg_dump \
+  --username "${POSTGRES_USER:-commerce}" \
+  --dbname litellm \
+  --format=custom > "$destination/postgres/litellm.dump"
 
 network="${COMPOSE_PROJECT_NAME:-commerce-analytics}_internal"
 docker run --rm --network "$network" \

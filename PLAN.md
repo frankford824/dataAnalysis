@@ -1,11 +1,15 @@
-# Commerce Analytics Platform delivery plan
+# 商用演示就绪整改计划
 
-1. Establish the monorepo contract: FastAPI/PostgreSQL/Redis/MinIO processing core, React web and shared Tauri desktop client, Superset BI adapter, and LiteLLM gateway with an explicit no-AI mode.
-2. Build the enterprise-scoped domain and versioned configuration APIs, deterministic ingestion pipeline, certified-query boundary, RBAC/audit controls, migrations, seed tenants, and acceptance tests.
-3. Build the three-step business experience plus administration and embedded analytics surfaces, keeping operational language business-facing and sharing upload behavior with the desktop shell.
-4. Wire a reproducible Docker stack with health checks, setup/backup/restore/SBOM utilities, capacity and offline deployment guidance, then verify tests, builds, migrations, containers, tenant isolation, and end-to-end upload/publish/query behavior.
-5. Review only task-owned changes, commit on `main`, and push the verified result to `origin/main`.
+1. 以本地账号安全会话替换浏览器身份请求头，并把企业、店铺范围统一应用到上传、查询、看板、问答和导出。
+2. 将内置电商标准模型接入真实解析、Decimal 金额计算、质量门禁、发布与认证数据，补齐可人工复算的固定样例。
+3. 把普通用户界面收缩为“首页、添加本月数据、经营看板、问业务”，把首次设置、数据设置、待处理问题、用户权限、报表设计和系统状态放入独立管理入口。
+4. 用真实 PostgreSQL、MinIO、API 和浏览器完成登录至发布看板的黄金路径，验证跨租户、受限店铺、防重、异常接手、导出和固定问答。
+5. 更新中文交付文档，运行完整测试与容器健康检查，只提交本轮范围并推送 `main`。
 
-## Delivery boundary
+## 本轮删减清单
 
-The repository ships a production-shaped single-customer/single-instance baseline with tenant keys and isolation tests. External Power BI Desktop automation, live third-party AI calls, and customer-specific Superset SSO require the customer's licensed software or credentials; the shipped adapters must degrade safely without them.
+- 从普通界面隐藏任意模型 JSON、PBIX、AI 服务商等高级 CRUD。
+- 删除演示数据回退、固定待办、空箭头、无行为切换和虚假的“已交给实施人员”提示。
+- 不展示未实现的任意 AI 问答、目录监控、自动分摊、PBIX 自动转换和高级自定义模型能力。
+- 上传只支持已验证大小范围内的 CSV/XLSX/ZIP；不宣称浏览器或桌面端支持 10GB 内存拼接。
+- 只保留可执行的内置电商标准经营模型，暂不提供万能表达式或低代码建模。

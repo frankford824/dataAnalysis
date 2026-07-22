@@ -39,21 +39,21 @@ def client():
 
 
 def platform_headers() -> dict[str, str]:
-    return {"X-Role": "platform_admin", "X-User-ID": "platform-owner"}
+    return {}
 
 
 def tenant_headers(enterprise_id: str, role: str = "admin") -> dict[str, str]:
-    return {"X-Enterprise-ID": enterprise_id, "X-Role": role, "X-User-ID": f"{role}-user"}
+    return {"X-Act-As-Enterprise-ID": enterprise_id}
 
 
 @pytest.fixture
 def tenants(client):
-    ids = []
-    for name in ["Northwind Commerce", "Contoso Retail"]:
-        response = client.post("/api/v1/enterprises", headers=platform_headers(), json={"name": name, "activation_at": "2026-01-01T00:00:00Z"})
-        assert response.status_code == 200, response.text
-        ids.append(response.json()["id"])
-    return ids
+    setup = client.post("/api/v1/setup", json={"enterprise_name": "Northwind Commerce", "activation_at": "2026-01-01T00:00:00Z", "name": "Platform Owner", "email": "owner@example.test", "password": "correct-horse-battery-staple"})
+    assert setup.status_code == 200, setup.text
+    first = setup.json()["user"]["enterprise_id"]
+    second_response = client.post("/api/v1/enterprises", json={"name": "Contoso Retail", "activation_at": "2026-01-01T00:00:00Z"})
+    assert second_response.status_code == 200, second_response.text
+    return [first, second_response.json()["id"]]
 
 
 @pytest.fixture

@@ -66,7 +66,11 @@ class Store(VersionedTenantMixin, Base):
     business_entity_id: Mapped[str | None] = mapped_column(ForeignKey("business_entities.id", ondelete="RESTRICT"), index=True)
     activation_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     external_store_id: Mapped[str | None] = mapped_column(Text)
-    __table_args__ = (Index("ix_stores_enterprise_status", "enterprise_id", "status"),)
+    logical_id: Mapped[str] = mapped_column(String(36), default=uuid4_str, nullable=False)
+    __table_args__ = (
+        Index("ix_stores_enterprise_status", "enterprise_id", "status"),
+        Index("ix_stores_logical_effective", "enterprise_id", "logical_id", "effective_from"),
+    )
 
 
 class UserAccount(VersionedTenantMixin, Base):
@@ -74,7 +78,22 @@ class UserAccount(VersionedTenantMixin, Base):
     email: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     store_ids: Mapped[list[str]] = mapped_column(SAJSON, default=list, nullable=False)
-    __table_args__ = (UniqueConstraint("enterprise_id", "email", "version", name="uq_user_email_version"),)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    password_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("email", name="uq_user_email_global"),)
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    user_id: Mapped[str] = mapped_column(ForeignKey("user_accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class SourceDefinition(VersionedTenantMixin, Base):
@@ -133,8 +152,11 @@ class IngestionRun(Base):
     coverage_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     coverage_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_config_id: Mapped[str] = mapped_column(String(36), nullable=False)
     rule_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    rule_config_id: Mapped[str] = mapped_column(String(36), nullable=False)
     model_version: Mapped[int | None] = mapped_column(Integer)
+    semantic_model_id: Mapped[str | None] = mapped_column(String(36))
     quality_result: Mapped[dict[str, Any]] = mapped_column(SAJSON, default=dict, nullable=False)
     summary: Mapped[dict[str, Any]] = mapped_column(SAJSON, default=dict, nullable=False)
     confirmed_by: Mapped[str | None] = mapped_column(Text)
@@ -144,7 +166,7 @@ class IngestionRun(Base):
     created_by: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     __table_args__ = (
-        UniqueConstraint("enterprise_id", "source_definition_id", "source_sha256", name="uq_ingestion_file"),
+        UniqueConstraint("enterprise_id", "source_sha256", name="uq_ingestion_file_global"),
         Index("ix_ingestion_tenant_status", "enterprise_id", "status", "created_at"),
     )
 
@@ -153,7 +175,7 @@ class UploadSession(Base):
     __tablename__ = "upload_sessions"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id", ondelete="RESTRICT"), nullable=False, index=True)
-    source_definition_id: Mapped[str] = mapped_column(ForeignKey("source_definitions.id", ondelete="RESTRICT"), nullable=False, index=True)
+    source_definition_id: Mapped[str | None] = mapped_column(ForeignKey("source_definitions.id", ondelete="RESTRICT"), index=True)
     store_id: Mapped[str | None] = mapped_column(ForeignKey("stores.id", ondelete="RESTRICT"), index=True)
     filename: Mapped[str] = mapped_column(Text, nullable=False)
     expected_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -271,6 +293,10 @@ class CertifiedAggregate(Base):
     order_count: Mapped[int] = mapped_column(Integer, nullable=False)
     revenue: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
     refund: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
+    platform_fee: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
+    advertising_fee: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
+    shipping_fee: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
+    product_cost: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
     fees: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
     profit: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
     __table_args__ = (
@@ -291,3 +317,31 @@ class AuditLog(Base):
     details: Mapped[dict[str, Any]] = mapped_column(SAJSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     __table_args__ = (Index("ix_audit_tenant_created", "enterprise_id", "created_at"),)
+
+
+class Problem(Base):
+    __tablename__ = "problems"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id", ondelete="RESTRICT"), nullable=False, index=True)
+    ingestion_run_id: Mapped[str | None] = mapped_column(ForeignKey("ingestion_runs.id", ondelete="RESTRICT"), index=True)
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    technical_detail: Mapped[dict[str, Any]] = mapped_column(SAJSON, default=dict, nullable=False)
+    resolution: Mapped[dict[str, Any]] = mapped_column(SAJSON, default=dict, nullable=False)
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    resolved_by: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (Index("ix_problem_tenant_status", "enterprise_id", "status", "created_at"),)
+
+
+class ReviewQueueItem(Base):
+    __tablename__ = "review_queue"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id", ondelete="RESTRICT"), nullable=False, index=True)
+    problem_id: Mapped[str] = mapped_column(ForeignKey("problems.id", ondelete="CASCADE"), nullable=False, unique=True)
+    assigned_to: Mapped[str | None] = mapped_column(ForeignKey("user_accounts.id", ondelete="SET NULL"))
+    priority: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)

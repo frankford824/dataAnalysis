@@ -1,19 +1,55 @@
-# Security and integration boundaries
+# 安全与集成边界
 
-## Tenant and publication boundary
+## 身份与权限
 
-All formal domain records carry `enterprise_id`; API authorization and tests must reject cross-enterprise identifiers even if a user guesses a UUID. Raw objects are stored under enterprise-scoped keys and retrieved through short-lived URLs after authorization. Draft rules have no direct path to certified data. Amounts, joins, deduplication, allocation, and aggregation are deterministic; AI output remains a draft until reviewed, compiled, regression-tested, and version-published.
+平台默认使用本地账号密码和短期服务端会话。密码使用 Argon2 哈希；会话令牌只保存哈希，浏览器 Cookie 为 HttpOnly 和 SameSite。企业、角色和店铺范围从有效的 `UserAccount` 加载，并应用于列表、上传、认证查询、问答、看板令牌和导出。
+
+客户端提交的 `X-Enterprise-ID`、`X-User-ID`、`X-Role` 或 `X-Store-IDs` 会被拒绝，不能用来获得管理员权限。可选可信代理模式默认关闭；启用后只接受来自允许地址、带时间戳和 HMAC 签名的代理断言。
+
+角色边界：
+
+- 企业管理员：组织设置、用户权限、发布和系统状态；
+- 实施人员：数据准备、问题处理和报表设计；
+- 分析师：授权范围内查看、问答和导出；
+- 只读用户：只查看授权经营结果。
+
+首个管理员初始化是一次性操作。已有账号后再次调用初始化接口必须失败；新用户由管理员创建并明确分配角色和店铺。
+
+## 数据与发布
+
+所有正式记录带 `enterprise_id`。API 在应用层验证企业和店铺引用，PostgreSQL 迁移为认证表和视图配置租户策略。对象存储键包含企业与内容哈希，原文件不覆盖。
+
+金额从文本直接解析为精确小数，并按 PostgreSQL `Numeric(20,4)` 边界校验。销售、退款、平台费、广告费、运费、商品成本和利润由确定性代码计算。必填字段、内容时间、店铺范围、业务键重复和可选控制总额未通过时，不允许发布认证结果。
+
+AI 不能直接写正式金额、跳过质量门禁或发布数据。无 AI 模式是默认且完整支持的运行方式。
+
+## 认证查询与导出
+
+认证查询只允许单条只读 `SELECT`，限定认证数据集、行数和执行时间。服务端额外注入当前企业和授权店铺范围；客户端 SQL 无法移除这些条件。
+
+CSV/XLSX 导出与门户筛选使用同一企业、店铺、平台和月份范围。XLSX 由服务端生成真正的 Office 工作簿，不以 CSV 内容冒充。
 
 ## Superset
 
-Superset connects as `analytics_reader`, which can only `SELECT` from the `certified` schema, is forced into read-only transactions, and has a 60-second statement timeout. It cannot see raw/staging tables or write back. `register_analytics.py` disables SQL Lab exposure, DML, CTAS/CVAS, and file upload on the certified connection. Implementation staff use the separate Superset admin account through the internal design route.
+Superset 使用最小权限账号 `analytics_reader`：
 
-The backend publishes enterprise-specific datasets and grants embedded dashboard access after its own RBAC check. It mints five-minute guest tokens server-side. Never expose `SUPERSET_SECRET_KEY`, `SUPERSET_GUEST_TOKEN_SECRET`, database credentials, or admin credentials to the browser. Production reverse proxies must add TLS, clickjacking/CSP policy compatible with the single approved portal origin, and access logs.
+- 只能 `SELECT` 认证 schema；
+- 事务强制只读并设置语句超时；
+- 不开放上传、DML、CTAS/CVAS 或原始表；
+- 普通用户只获得五分钟短时 guest token；
+- token 同时包含企业和授权店铺行级条件。
 
-## AI
+`SUPERSET_SECRET_KEY`、`SUPERSET_GUEST_TOKEN_SECRET`、数据库密码和管理员密码不得进入浏览器或 Git。生产反向代理需要配置 TLS、允许的嵌入来源、CSP/点击劫持保护和访问日志。
 
-LiteLLM is an optional profile and has no enabled provider model in source control. Provider keys are encrypted at rest by the backend and supplied to the private runtime configuration. Cloud tasks receive only filenames, headers, field profiles, and a small masked sample by default. Natural-language SQL is limited to certified views, one read-only statement, a row cap, and a timeout, with prompt/model/query/audit metadata retained. Provider failure cannot open a deterministic publication gate.
+## 文件与密钥
 
-## Object and secret handling
+MinIO 桶禁止匿名访问；原始桶启用版本化和对象锁。ZIP 上传检查解压大小、压缩比和路径安全。浏览器与桌面上传受相同服务端上限约束。
 
-MinIO buckets prohibit anonymous access; raw inputs have versioning and object lock. Original object keys are content-addressed and never overwritten. `.env`, backups, uploaded files, PBIX files, and generated exports are ignored by Git. Rotate all development defaults before production; `validate-config.sh` rejects them in `APP_ENV=production`.
+`.env`、备份、客户文件、PBIX、导出和真实密钥均在 Git 忽略范围内。`APP_ENV=production` 时，配置校验会拒绝开发默认密钥。生产环境应定期轮换会话密钥、Superset 密钥、数据库密码和对象存储凭据，并在升级前完成可恢复备份。
+
+## 当前未启用的安全相关能力
+
+- 本版本没有内置 OIDC/SAML 管理界面；接入需使用经过签名验证的可信反向代理模式。
+- 没有浏览器端 10GB 流式上传；服务端会拒绝超过配置范围的文件。
+- 未启用任意自然语言 SQL；业务问答只执行固定、受限的认证查询。
+- PBIX 自动解析失败时只能由实施人员人工登记，不能视为已验证模型。

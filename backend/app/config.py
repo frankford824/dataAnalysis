@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     litellm_base_url: str | None = None
     sql_timeout_seconds: int = 10
     sql_max_rows: int = 1000
+    session_ttl_minutes: int = 30
+    session_cookie_secure: bool = False
+    max_upload_bytes: int = 100 * 1024 * 1024
+    max_uncompressed_bytes: int = 500 * 1024 * 1024
+    max_input_rows: int = 5_000_000
+    trusted_proxy_enabled: bool = False
+    trusted_proxy_secret: str | None = None
+    trusted_proxy_ips: str = "127.0.0.1,::1"
 
     @property
     def is_postgres(self) -> bool:

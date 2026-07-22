@@ -1,0 +1,2 @@
+This deliberately is not a PBIX package. The demo uploads a generated copy
+with a .pbix filename to prove parser failure falls back to manual metadata.

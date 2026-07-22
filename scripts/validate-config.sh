@@ -13,11 +13,33 @@ set -a
 . "$env_file"
 set +a
 
-required="POSTGRES_PASSWORD ANALYTICS_READER_PASSWORD MINIO_ROOT_PASSWORD APP_SECRET_KEY APP_ENCRYPTION_KEY SUPERSET_SECRET_KEY SUPERSET_GUEST_TOKEN_SECRET SUPERSET_ADMIN_PASSWORD"
+required="POSTGRES_PASSWORD ANALYTICS_READER_PASSWORD MINIO_ROOT_PASSWORD APP_SECRET_KEY APP_ENCRYPTION_KEY SUPERSET_SECRET_KEY SUPERSET_GUEST_TOKEN_SECRET SUPERSET_ADMIN_PASSWORD COMMERCE_MAX_UPLOAD_BYTES COMMERCE_MAX_UNCOMPRESSED_BYTES COMMERCE_MAX_INPUT_ROWS"
 for name in $required; do
   eval "value=\${$name:-}"
   [ -n "$value" ] || { echo "$name must not be empty" >&2; exit 1; }
 done
+
+check_integer_range() {
+  name="$1"
+  minimum="$2"
+  maximum="$3"
+  eval "value=\${$name}"
+  case "$value" in
+    *[!0-9]*|'') echo "$name must be a positive integer" >&2; exit 1 ;;
+  esac
+  if [ "$value" -lt "$minimum" ] || [ "$value" -gt "$maximum" ]; then
+    echo "$name must be between $minimum and $maximum" >&2
+    exit 1
+  fi
+}
+
+check_integer_range COMMERCE_MAX_UPLOAD_BYTES 1048576 10737418240
+check_integer_range COMMERCE_MAX_UNCOMPRESSED_BYTES 1048576 53687091200
+check_integer_range COMMERCE_MAX_INPUT_ROWS 1 100000000
+[ "$COMMERCE_MAX_UNCOMPRESSED_BYTES" -ge "$COMMERCE_MAX_UPLOAD_BYTES" ] || {
+  echo "COMMERCE_MAX_UNCOMPRESSED_BYTES must be at least COMMERCE_MAX_UPLOAD_BYTES" >&2
+  exit 1
+}
 
 if [ "${APP_ENV:-development}" = production ]; then
   case "${POSTGRES_PASSWORD}|${ANALYTICS_READER_PASSWORD}|${MINIO_ROOT_PASSWORD}|${APP_SECRET_KEY}|${SUPERSET_SECRET_KEY}|${SUPERSET_ADMIN_PASSWORD}" in
@@ -30,6 +52,26 @@ if [ "${APP_ENV:-development}" = production ]; then
     echo "set a real SUPERSET_ADMIN_EMAIL in production" >&2
     exit 1
   }
+  [ "${SESSION_COOKIE_SECURE:-false}" = true ] || {
+    echo "SESSION_COOKIE_SECURE=true is required in production" >&2
+    exit 1
+  }
+fi
+
+case "${DEMO_AUTO_SETUP:-false}" in
+  true|false) ;;
+  *) echo "DEMO_AUTO_SETUP must be true or false" >&2; exit 1 ;;
+esac
+
+if [ "${DEMO_AUTO_SETUP:-false}" = true ]; then
+  [ "${APP_ENV:-development}" != production ] || {
+    echo "DEMO_AUTO_SETUP is forbidden in production" >&2
+    exit 1
+  }
+  for name in DEMO_ENTERPRISE_NAME DEMO_ADMIN_NAME DEMO_ADMIN_EMAIL DEMO_ADMIN_PASSWORD; do
+    eval "value=\${$name:-}"
+    [ -n "$value" ] || { echo "$name is required when DEMO_AUTO_SETUP=true" >&2; exit 1; }
+  done
 fi
 
 case "${AI_MODE:-disabled}" in

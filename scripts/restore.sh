@@ -15,12 +15,16 @@ source_dir="$(cd "$2" && pwd)"
 docker compose stop backend worker scheduler web superset
 docker compose cp "$source_dir/postgres/commerce.dump" postgres:/tmp/commerce.dump
 docker compose cp "$source_dir/postgres/superset.dump" postgres:/tmp/superset.dump
+docker compose cp "$source_dir/postgres/litellm.dump" postgres:/tmp/litellm.dump
 docker compose exec -T postgres pg_restore \
   --username "${POSTGRES_USER:-commerce}" --dbname "${POSTGRES_DB:-commerce}" \
   --clean --if-exists --no-owner /tmp/commerce.dump
 docker compose exec -T postgres pg_restore \
   --username "${POSTGRES_USER:-commerce}" --dbname superset \
   --clean --if-exists --no-owner /tmp/superset.dump
+docker compose exec -T postgres pg_restore \
+  --username "${POSTGRES_USER:-commerce}" --dbname litellm \
+  --clean --if-exists --no-owner /tmp/litellm.dump
 
 network="${COMPOSE_PROJECT_NAME:-commerce-analytics}_internal"
 docker run --rm --network "$network" \
@@ -34,7 +38,7 @@ docker run --rm --network "$network" \
     mc alias set target http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
     for bucket in "$S3_RAW_BUCKET" "$S3_INTERMEDIATE_BUCKET" "$S3_EXPORT_BUCKET"; do
       mc mb --ignore-existing "target/$bucket"
-      mc mirror --overwrite "/backup/$bucket" "target/$bucket"
+      mc mirror --overwrite --remove "/backup/$bucket" "target/$bucket"
     done
   '
 

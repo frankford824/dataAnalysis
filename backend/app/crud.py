@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, TypeVar
 
 from fastapi import HTTPException
-from sqlalchemy import inspect, select
+from sqlalchemy import inspect, or_, select
 from sqlalchemy.orm import Session
 
 from .audit import record_audit
@@ -26,7 +26,7 @@ from .models import (
     Store,
     UserAccount,
 )
-from .security import RequestContext, WRITE_ROLES, encrypt_secret
+from .security import RequestContext, WRITE_ROLES, encrypt_secret, hash_password
 
 
 RESOURCE_MODELS = {
@@ -54,6 +54,12 @@ def serialize(obj: Any) -> dict[str, Any]:
     result = {column.key: getattr(obj, column.key) for column in inspect(obj).mapper.column_attrs}
     if "encrypted_api_key" in result:
         result["has_api_key"] = bool(result.pop("encrypted_api_key"))
+    if "password_hash" in result:
+        result.pop("password_hash")
+    if isinstance(obj, IngestionRun):
+        result["checks"] = (obj.quality_result or {}).get("checks", [])
+        result["cost"] = (obj.summary or {}).get("product_cost", "0.0000")
+        result["duplicate_rows_removed"] = (obj.summary or {}).get("duplicate_rows_removed", 0)
     return result
 
 
@@ -82,10 +88,12 @@ def validate_references(db: Session, model, data: dict, enterprise_id: str) -> N
         if data.get(field):
             _validate_tenant_reference(db, target_model, data[field], enterprise_id)
     if model is UserAccount:
-        if data.get("role") not in {"admin", "implementer", "analyst", "viewer"}:
+        if "role" in data and data.get("role") not in {"admin", "implementer", "analyst", "viewer"}:
             raise HTTPException(status_code=422, detail="invalid enterprise role")
         for store_id in data.get("store_ids", []):
             _validate_tenant_reference(db, Store, store_id, enterprise_id)
+        if "store_ids" in data:
+            data["store_ids"] = [db.get(Store, store_id).logical_id for store_id in data["store_ids"]]
     if model in {SourceBinding, ModelScopeBinding} and data.get("scope_type") != "enterprise":
         target_map = {
             "store": Store,
@@ -101,7 +109,7 @@ def validate_references(db: Session, model, data: dict, enterprise_id: str) -> N
         raise HTTPException(status_code=422, detail="enterprise scope must reference current enterprise")
 
 
-def create_resource(db: Session, ctx: RequestContext, resource: str, payload: dict) -> dict:
+def create_resource(db: Session, ctx: RequestContext, resource: str, payload: dict, *, commit: bool = True) -> dict:
     ctx.require(WRITE_ROLES)
     if not ctx.enterprise_id:
         raise HTTPException(status_code=400, detail="enterprise context required")
@@ -110,6 +118,16 @@ def create_resource(db: Session, ctx: RequestContext, resource: str, payload: di
     validate_references(db, model, data, ctx.enterprise_id)
     if model is AIProvider and payload.get("api_key"):
         data["encrypted_api_key"] = encrypt_secret(payload["api_key"])
+    if model is UserAccount:
+        if not payload.get("password"):
+            raise HTTPException(status_code=422, detail="password is required for a user account")
+        data["email"] = data.get("email", "").strip().lower()
+        if db.scalar(select(UserAccount.id).where(UserAccount.email == data["email"])):
+            raise HTTPException(status_code=409, detail="email is already registered")
+        data["password_hash"] = hash_password(payload["password"])
+        data.setdefault("must_change_password", False)
+    if model is Store:
+        data.setdefault("logical_id", __import__("uuid").uuid4().hex)
     required = {
         PlatformAccount: ["platform"],
         Store: ["activation_at"],
@@ -129,8 +147,9 @@ def create_resource(db: Session, ctx: RequestContext, resource: str, payload: di
     db.add(obj)
     db.flush()
     record_audit(db, ctx, "create", resource, obj.id, {"version": obj.version})
-    db.commit()
-    db.refresh(obj)
+    if commit:
+        db.commit()
+        db.refresh(obj)
     return serialize(obj)
 
 
@@ -140,8 +159,22 @@ def list_resources(db: Session, ctx: RequestContext, resource: str, include_arch
     model = RESOURCE_MODELS[resource]
     stmt = select(model).where(model.enterprise_id == ctx.enterprise_id)
     if not include_archived:
-        stmt = stmt.where(model.archived_at.is_(None))
-    return [serialize(item) for item in db.scalars(stmt.order_by(model.created_at.desc())).all()]
+        now = datetime.now(timezone.utc)
+        stmt = stmt.where(
+            model.archived_at.is_(None),
+            or_(model.effective_from.is_(None), model.effective_from <= now),
+            or_(model.effective_to.is_(None), model.effective_to > now),
+        )
+    items = list(db.scalars(stmt.order_by(model.version.desc(), model.created_at.desc())).all())
+    if model is Store:
+        if ctx.store_ids is not None:
+            items = [item for item in items if item.id in ctx.store_ids or item.logical_id in ctx.store_ids]
+        if not include_archived:
+            current: dict[str, Any] = {}
+            for item in items:
+                current.setdefault(item.logical_id, item)
+            items = list(current.values())
+    return [serialize(item) for item in items]
 
 
 def get_resource(db: Session, ctx: RequestContext, resource: str, object_id: str):
@@ -150,6 +183,8 @@ def get_resource(db: Session, ctx: RequestContext, resource: str, object_id: str
     model = RESOURCE_MODELS[resource]
     obj = db.scalar(select(model).where(model.id == object_id, model.enterprise_id == ctx.enterprise_id))
     if not obj:
+        raise HTTPException(status_code=404, detail="resource not found")
+    if model is Store and ctx.store_ids is not None and obj.id not in ctx.store_ids and obj.logical_id not in ctx.store_ids:
         raise HTTPException(status_code=404, detail="resource not found")
     return obj
 
@@ -161,9 +196,13 @@ def update_resource(db: Session, ctx: RequestContext, resource: str, object_id: 
     data = {key: value for key, value in payload.items() if value is not None and key in _columns(model)}
     if model is AIProvider and payload.get("api_key"):
         data["encrypted_api_key"] = encrypt_secret(payload["api_key"])
+    if model is UserAccount and payload.get("password"):
+        data["password_hash"] = hash_password(payload["password"])
+        data["password_changed_at"] = datetime.now(timezone.utc)
+        data["must_change_password"] = False
     validate_references(db, model, data, ctx.enterprise_id or "")
     immutable_statuses = {"active", "approved", "published", "locked"}
-    if obj.status in immutable_statuses and any(key not in {"status", "approved_by", "effective_to"} for key in data):
+    if model is not UserAccount and obj.status in immutable_statuses and any(key not in {"status", "approved_by", "effective_to"} for key in data):
         clone_data = {
             column.key: getattr(obj, column.key)
             for column in inspect(model).mapper.column_attrs
@@ -173,7 +212,7 @@ def update_resource(db: Session, ctx: RequestContext, resource: str, object_id: 
         clone_data.update(version=obj.version + 1, status="draft", created_by=ctx.user_id, approved_by=None, archived_at=None)
         now = datetime.now(timezone.utc)
         obj.effective_to = now
-        clone_data.setdefault("effective_from", now)
+        clone_data["effective_from"] = now
         new_obj = model(**clone_data)
         db.add(new_obj)
         db.flush()

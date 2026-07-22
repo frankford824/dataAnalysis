@@ -52,7 +52,7 @@ def _json_value(value: Any) -> Any:
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
-def execute_certified_query(db: Session, enterprise_id: str, sql: str) -> dict[str, Any]:
+def execute_certified_query(db: Session, enterprise_id: str, sql: str, store_ids: set[str] | None = None) -> dict[str, Any]:
     safe_sql = validate_readonly_sql(sql)
     dialect = db.get_bind().dialect.name
     if dialect == "postgresql":
@@ -62,15 +62,27 @@ def execute_certified_query(db: Session, enterprise_id: str, sql: str) -> dict[s
             text("SELECT set_config('statement_timeout', :timeout, true)"),
             {"timeout": f"{get_settings().sql_timeout_seconds}s"},
         )
-    certified_cte = """
+    store_clause = ""
+    parameters: dict[str, Any] = {"enterprise_id": enterprise_id}
+    if store_ids is not None:
+        if not store_ids:
+            store_clause = " AND 1 = 0"
+        else:
+            placeholders = []
+            for index, store_id in enumerate(sorted(store_ids)):
+                key = f"store_{index}"
+                placeholders.append(f":{key}")
+                parameters[key] = store_id
+            store_clause = f" AND store_id IN ({', '.join(placeholders)})"
+    certified_cte = f"""
         WITH certified_sales AS (
           SELECT enterprise_id, store_id, period_start, grain, row_count, order_count,
-                 revenue, refund, fees, profit
+                 revenue, refund, platform_fee, advertising_fee, shipping_fee, product_cost, fees, profit
           FROM certified_aggregates
-          WHERE enterprise_id = :enterprise_id
+          WHERE enterprise_id = :enterprise_id {store_clause}
         )
     """
-    result = db.execute(text(f"{certified_cte} {safe_sql}"), {"enterprise_id": enterprise_id})
+    result = db.execute(text(f"{certified_cte} {safe_sql}"), parameters)
     columns = list(result.keys())
     rows = [[_json_value(value) for value in row] for row in result.fetchall()]
     return {"columns": columns, "rows": rows, "row_count": len(rows)}

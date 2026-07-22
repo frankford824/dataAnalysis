@@ -85,8 +85,35 @@ with app.app_context():
     }
     for column in dataset.columns:
         column.verbose_name = column_labels.get(column.column_name, column.column_name)
-    if not any(metric.metric_name == "order_count" for metric in dataset.metrics):
-        dataset.metrics.append(SqlMetric(metric_name="order_count", verbose_name="订单数", expression="SUM(order_count)", metric_type="sum"))
+    metric_contract = {
+        "order_count": ("订单数", "SUM(order_count)"),
+        "revenue": ("净销售额", "SUM(revenue)"),
+        "refund": ("退款", "SUM(refund)"),
+        "fees": ("总费用", "SUM(fees)"),
+        "product_cost": ("商品成本", "SUM(revenue - refund - fees - profit)"),
+        "profit": ("经营利润", "SUM(profit)"),
+    }
+    existing_metrics = {metric.metric_name: metric for metric in dataset.metrics}
+    for metric_name, (verbose_name, expression) in metric_contract.items():
+        metric = existing_metrics.get(metric_name)
+        if metric is None:
+            metric = SqlMetric(metric_name=metric_name, expression=expression, metric_type="sum")
+            dataset.metrics.append(metric)
+        metric.verbose_name = verbose_name
+        metric.expression = expression
+        metric.description = "由平台已发布语义模型生成，禁止在 Superset 内重定义口径"
+        metric.d3format = ",.2f"
+    dataset.template_params = json.dumps(
+        {"enterprise_id": "required guest-token RLS", "store_ids": "optional guest-token RLS"}
+    )
+    dataset.extra = json.dumps(
+        {
+            "certification": {
+                "certified_by": "Commerce Analytics semantic model",
+                "details": "Only published runs that passed deterministic quality gates.",
+            }
+        }
+    )
 
     chart = db.session.query(Slice).filter_by(slice_name="商析 · 认证经营数据").one_or_none()
     if chart is None:
@@ -110,7 +137,7 @@ with app.app_context():
         "time_range": "No filter",
         "granularity_sqla": "period_start",
         "groupby": ["period_start"],
-        "metrics": ["order_count", "revenue", "refund", "fees", "profit"],
+        "metrics": ["order_count", "revenue", "refund", "fees", "product_cost", "profit"],
         "row_limit": 1000,
         "order_desc": True,
     }, ensure_ascii=False)
@@ -161,9 +188,9 @@ with app.app_context():
         db.session.add(embedded)
     db.session.commit()
 
-    # Embedded users get a minimal role. Dataset access is granted per enterprise
-    # by the backend when a dashboard is published; no broad datasource grant is
-    # assigned here.
+    # Embedded users get a minimal role plus this certified dataset. The backend
+    # always supplies enterprise/store RLS in its short-lived guest token, so the
+    # role can see the dataset definition but never receives an unscoped query.
     security_manager = app.appbuilder.sm
     embedded_role = security_manager.add_role("EmbeddedViewer")
     gamma_role = security_manager.find_role("Gamma")
@@ -173,4 +200,8 @@ with app.app_context():
             permission for permission in gamma_role.permissions
             if permission.permission and permission.permission.name not in blocked
         ]
+        dataset_permission = security_manager.find_permission_view_menu(
+            "datasource access", dataset.get_perm()
+        ) or security_manager.add_permission_view_menu("datasource access", dataset.get_perm())
+        security_manager.add_permission_role(embedded_role, dataset_permission)
     db.session.commit()

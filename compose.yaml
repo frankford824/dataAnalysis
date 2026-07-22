@@ -14,6 +14,11 @@ x-backend-environment: &backend-environment
   COMMERCE_S3_EXPORT_BUCKET: ${S3_EXPORT_BUCKET:-commerce-exports}
   COMMERCE_SECRET_KEY: ${APP_SECRET_KEY:-development-only-change-me}
   COMMERCE_AUTO_CREATE_SCHEMA: "false"
+  COMMERCE_TRUSTED_PROXY_ENABLED: "false"
+  COMMERCE_SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+  COMMERCE_MAX_UPLOAD_BYTES: ${COMMERCE_MAX_UPLOAD_BYTES:-104857600}
+  COMMERCE_MAX_UNCOMPRESSED_BYTES: ${COMMERCE_MAX_UNCOMPRESSED_BYTES:-524288000}
+  COMMERCE_MAX_INPUT_ROWS: ${COMMERCE_MAX_INPUT_ROWS:-5000000}
   APP_ENCRYPTION_KEY: ${APP_ENCRYPTION_KEY:-mD9rPz9D1Gm1pj6uOvBtwxSVtvzRLRk8P4n4zAL1L7o=}
   AI_MODE: ${AI_MODE:-disabled}
   COMMERCE_LITELLM_BASE_URL: ${LITELLM_BASE_URL:-http://litellm:4000}
@@ -49,7 +54,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${MANAGEMENT_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -80,8 +85,8 @@ services:
     volumes:
       - minio-data:/data
     ports:
-      - "${MINIO_API_PORT:-9000}:9000"
-      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+      - "${MANAGEMENT_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-9000}:9000"
+      - "${MANAGEMENT_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:9000/minio/health/live >/dev/null"]
       interval: 5s
@@ -110,7 +115,7 @@ services:
     <<: *backend
     command: ["/app/infra/docker/backend-entrypoint.sh", "api"]
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${MANAGEMENT_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/ready"]
       interval: 10s
@@ -150,7 +155,7 @@ services:
       backend:
         condition: service_healthy
     ports:
-      - "${WEB_PORT:-3000}:8080"
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3000}:8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -164,12 +169,14 @@ services:
       dockerfile: infra/superset/Dockerfile
     restart: unless-stopped
     environment:
+      APP_ENV: ${APP_ENV:-development}
       SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
       SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-development-superset-secret-change-me}
       SUPERSET_GUEST_TOKEN_SECRET: ${SUPERSET_GUEST_TOKEN_SECRET:-development-guest-secret-change-me}
       SUPERSET_ADMIN_USERNAME: ${SUPERSET_ADMIN_USERNAME:-admin}
       SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-admin-dev-only}
       SUPERSET_ADMIN_EMAIL: ${SUPERSET_ADMIN_EMAIL:-admin@example.invalid}
+      SUPERSET_EMBED_ALLOWED_DOMAINS: ${SUPERSET_EMBED_ALLOWED_DOMAINS:-http://localhost:3000}
       SUPERSET_METADATA_DATABASE_URI: postgresql+psycopg2://${POSTGRES_USER:-commerce}:${POSTGRES_PASSWORD:-commerce-dev-only}@postgres:5432/superset
       ANALYTICS_DATABASE_URI: postgresql+psycopg2://analytics_reader:${ANALYTICS_READER_PASSWORD:-analytics-dev-only}@postgres:5432/${POSTGRES_DB:-commerce}?options=-csearch_path%3Dcertified
       REDIS_HOST: redis
@@ -183,7 +190,7 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "${SUPERSET_PORT:-8088}:8088"
+      - "${MANAGEMENT_BIND_ADDRESS:-127.0.0.1}:${SUPERSET_PORT:-8088}:8088"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8088/health"]
       interval: 15s
@@ -209,7 +216,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "${LITELLM_PORT:-4000}:4000"
+      - "${MANAGEMENT_BIND_ADDRESS:-127.0.0.1}:${LITELLM_PORT:-4000}:4000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=3)"]
       interval: 15s

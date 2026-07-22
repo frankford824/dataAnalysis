@@ -9,6 +9,7 @@ description = "Enterprise-scoped deterministic commerce analytics API"
 requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.13,<2",
+  "argon2-cffi>=23.1,<26",
   "boto3>=1.34,<2",
   "celery[redis]>=5.4,<6",
   "cryptography>=42,<46",
@@ -25,10 +26,11 @@ dependencies = [
   "sqlalchemy>=2.0.36,<3",
   "sqlglot>=26,<28",
   "uvicorn[standard]>=0.34,<1",
+  "xlsxwriter>=3.2,<4",
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8.3,<9", "pytest-cov>=6,<7", "xlsxwriter>=3.2,<4"]
+test = ["pytest>=8.3,<9", "pytest-cov>=6,<7"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

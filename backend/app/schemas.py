@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -27,9 +27,11 @@ class ResourceCreate(APIModel):
     business_entity_id: str | None = None
     activation_at: datetime | None = None
     external_store_id: str | None = None
+    logical_id: str | None = None
     email: str | None = None
     role: Literal["admin", "implementer", "analyst", "viewer"] | None = None
     store_ids: list[str] | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=256)
     file_types: list[str] | None = None
     recognition: dict[str, Any] | None = None
     field_aliases: dict[str, Any] | None = None
@@ -90,6 +92,7 @@ class ResourcePatch(APIModel):
     email: str | None = None
     role: Literal["admin", "implementer", "analyst", "viewer"] | None = None
     store_ids: list[str] | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=256)
     field_aliases: dict[str, Any] | None = None
     recognition: dict[str, Any] | None = None
     validations: list[dict[str, Any]] | None = None
@@ -114,12 +117,12 @@ class BusinessConfirmation(APIModel):
 
 
 class UploadInitiate(APIModel):
-    source_definition_id: str
+    source_definition_id: str | None = None
     store_id: str | None = None
     filename: str = Field(min_length=1, max_length=255)
     sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
     size: int = Field(gt=0, le=10_000_000_000)
-    part_size: int = Field(default=8 * 1024 * 1024, ge=256 * 1024, le=64 * 1024 * 1024)
+    part_size: int = Field(default=8 * 1024 * 1024, ge=256 * 1024, le=16 * 1024 * 1024)
     backfill: bool = False
 
 
@@ -141,12 +144,54 @@ class ManualPBIXMetadata(APIModel):
 
 class NaturalLanguageQuestion(APIModel):
     question: str = Field(min_length=3, max_length=2000)
+    question_type: Literal["sales", "refund", "fees", "profit", "ranking", "month_comparison", "refund_rate", "profit_margin"] | None = None
+    platform_id: str | None = None
     store_ids: list[str] = Field(default_factory=list, max_length=50)
     date_from: datetime | None = None
     date_to: datetime | None = None
 
     @model_validator(mode="after")
     def validate_context(self):
+        if self.date_from and self.date_from.tzinfo is None:
+            self.date_from = self.date_from.replace(tzinfo=timezone.utc)
+        if self.date_to and self.date_to.tzinfo is None:
+            self.date_to = self.date_to.replace(tzinfo=timezone.utc)
         if self.date_from and self.date_to and self.date_from > self.date_to:
             raise ValueError("date_from must not be after date_to")
         return self
+
+
+class SetupComplete(APIModel):
+    enterprise_name: str = Field(min_length=2, max_length=200)
+    activation_at: datetime
+    name: str = Field(min_length=2, max_length=200)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=12, max_length=256)
+    platform: str = Field(default="generic", min_length=2, max_length=100)
+    platform_account_name: str = Field(default="Primary platform account", min_length=2, max_length=200)
+    store_name: str = Field(default="Primary store", min_length=2, max_length=200)
+
+
+class LoginRequest(APIModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class PasswordChange(APIModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=12, max_length=256)
+
+
+class UserInvite(APIModel):
+    name: str = Field(min_length=2, max_length=200)
+    email: str = Field(min_length=3, max_length=320)
+    role: Literal["admin", "implementer", "analyst", "viewer"]
+    store_ids: list[str] = Field(default_factory=list)
+    password: str | None = Field(default=None, min_length=12, max_length=256)
+
+
+class ProblemResolution(APIModel):
+    action: Literal["resolve", "retry_with_mapping", "reject"]
+    resolution: str = Field(default="", max_length=2000)
+    source_definition_id: str | None = None
+    field_mapping: dict[str, str] = Field(default_factory=dict)
