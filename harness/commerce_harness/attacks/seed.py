@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -111,6 +112,80 @@ def ensure_seed_attacks(database: DuckDBMemory) -> int:
                 attack["severity"],
                 attack["discovered_by"],
                 attack.get("origin_pack"),
+            ],
+        )
+        seeded += 1
+    return seeded
+
+
+def seed_attacks_from_rejected_claims(
+    database: DuckDBMemory,
+    *,
+    claim_ids: Sequence[str] | None = None,
+) -> int:
+    """Promote rejected claims into the attack library for future experiments.
+
+    Pass ``claim_ids`` to seed only the claims that just changed; the full scan
+    is for backfills.
+    """
+
+    if claim_ids is not None:
+        if not claim_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in claim_ids)
+        rows = database.execute(
+            f"""
+            SELECT claim_id, reason_code, claimed_amount, subject_kind, subject_key
+            FROM claim
+            WHERE status = 'rejected' AND claim_id IN ({placeholders})
+            """,
+            list(claim_ids),
+        ).fetchall()
+    else:
+        rows = database.execute(
+            """
+            SELECT claim_id, reason_code, claimed_amount, subject_kind, subject_key
+            FROM claim
+            WHERE status = 'rejected'
+              AND claim_id NOT IN (
+                  SELECT replace(attack_id, 'attack-claim-reject-', '')
+                  FROM attack_case
+                  WHERE discovered_by = 'external_verdict'
+              )
+            """
+        ).fetchall()
+    seeded = 0
+    for row in rows:
+        claim_id, reason_code, amount, subject_kind, subject_key = row
+        attack_id = f"attack-claim-reject-{claim_id}"
+        method = {
+            "technique": "external_rejection",
+            "description": "平台驳回的索赔样本，用于回归试算",
+            "payload": {
+                "claim_id": claim_id,
+                "reason_code": reason_code,
+                "amount": format(amount, "f") if amount is not None else "0",
+                "subject_kind": subject_kind,
+                "subject_key": subject_key,
+            },
+        }
+        database.execute(
+            """
+            INSERT INTO attack_case (
+                attack_id, target, method_json, expected_detection,
+                severity, discovered_by, origin_pack
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (attack_id) DO NOTHING
+            """,
+            [
+                attack_id,
+                "claim",
+                json.dumps(method, ensure_ascii=False, sort_keys=True),
+                f"claim:rejected:{reason_code}",
+                "high",
+                "external_verdict",
+                "claim_feedback",
             ],
         )
         seeded += 1

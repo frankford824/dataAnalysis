@@ -1,8 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Protocol
 
-from .models import EvidenceRecord, GuardFailure, GuardResult, SuggestionCandidate
+from .models import EvidenceCitation, EvidenceRecord, GuardFailure, GuardResult
+
+
+class CitationCarrier(Protocol):
+    """Anything that carries citations: model suggestions, review copy, reports.
+
+    Read-only so frozen dataclasses satisfy it.
+    """
+
+    @property
+    def citations(self) -> tuple[EvidenceCitation, ...]: ...
 
 
 class EvidenceLedger:
@@ -19,7 +30,7 @@ class EvidenceLedger:
 class CiteGuard:
     """核验 file_id×row_no×metric×period×shop×value×口径完整元组。"""
 
-    def verify(self, candidate: SuggestionCandidate, ledger: EvidenceLedger) -> GuardResult:
+    def verify(self, candidate: CitationCarrier, ledger: EvidenceLedger) -> GuardResult:
         failures: list[GuardFailure] = []
         seen: set[tuple[object, ...]] = set()
         for citation in candidate.citations:

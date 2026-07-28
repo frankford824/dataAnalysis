@@ -26,6 +26,7 @@ from .performance_engine import (
 )
 from .phase_a import adjudicate_workspace, normalize_workspace, reconcile_period
 from .profiling import profile_snapshots
+from .role import reads_customer_sources
 from .target_plan import TargetPlan, build_target_plan
 from .workbench import WorkbenchPaths
 
@@ -887,19 +888,54 @@ class AutoComputeRunner:
             }
         return payload
 
+    def _uploaded_snapshot_signature(self) -> str:
+        """Signature of what edge has uploaded so far.
+
+        Core cannot scan the customer's disk, so "did anything change" is
+        answered by the content-addressed snapshots it has received.
+        """
+        with DuckDBMemory(self.workbench.database) as database:
+            row = database.execute(
+                """
+                SELECT count(*), coalesce(max(captured_at)::VARCHAR, ''),
+                       coalesce(string_agg(content_sha256, ',' ORDER BY content_sha256), '')
+                FROM source_snapshot
+                """
+            ).fetchone()
+        count, latest, digest_source = (
+            (int(row[0] or 0), str(row[1] or ""), str(row[2] or ""))
+            if row is not None
+            else (0, "", "")
+        )
+        digest = hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+        return f"uploaded:{count}:{latest}:{digest}"
+
     def _run_cycle(self) -> None:
         cycle_id = f"cycle_{uuid.uuid4().hex}"
-        inventory_job = self._new_job(
-            cycle_id=cycle_id,
-            kind="inventory",
-            label="检查全部店铺的新文件",
-        )
-        inventory_result = self._run_job(
-            inventory_job,
-            "正在只读检查 finance-win 文件",
-            lambda: scan_inventory(self.config, self.workbench),
-        )
-        inventory_signature = _manifest_signature(inventory_result.path)
+        if reads_customer_sources():
+            inventory_job = self._new_job(
+                cycle_id=cycle_id,
+                kind="inventory",
+                label="检查全部店铺的新文件",
+            )
+            inventory_signature = _manifest_signature(
+                self._run_job(
+                    inventory_job,
+                    "正在只读检查 finance-win 文件",
+                    lambda: scan_inventory(self.config, self.workbench),
+                ).path
+            )
+        else:
+            inventory_job = self._new_job(
+                cycle_id=cycle_id,
+                kind="inventory",
+                label="清点已收到的文件",
+            )
+            inventory_signature = self._run_job(
+                inventory_job,
+                "正在清点已上传的文件",
+                self._uploaded_snapshot_signature,
+            )
         signature = _execution_signature(
             self.config,
             self.workbench,
@@ -934,24 +970,27 @@ class AutoComputeRunner:
         if signature == previous_signature and self._all_scope_results_current():
             return
 
-        freeze_job = self._new_job(
-            cycle_id=cycle_id,
-            kind="freeze",
-            label="保存本次计算使用的原始文件",
-        )
-        self._run_job(
-            freeze_job,
-            "正在制作不可覆盖的只读副本",
-            partial(
-                freeze_candidates,
-                self.config,
-                self.workbench,
-                progress_callback=partial(
-                    self._update_freeze_progress_on_connection,
-                    freeze_job,
+        if reads_customer_sources():
+            freeze_job = self._new_job(
+                cycle_id=cycle_id,
+                kind="freeze",
+                label="保存本次计算使用的原始文件",
+            )
+            self._run_job(
+                freeze_job,
+                "正在制作不可覆盖的只读副本",
+                partial(
+                    freeze_candidates,
+                    self.config,
+                    self.workbench,
+                    progress_callback=partial(
+                        self._update_freeze_progress_on_connection,
+                        freeze_job,
+                    ),
                 ),
-            ),
-        )
+            )
+        # Uploads are already immutable content-addressed copies, so core has
+        # nothing left to freeze.
         sync_performance_sources(
             self.workbench,
             enterprise_id=stable_identity("enterprise", "local-enterprise"),

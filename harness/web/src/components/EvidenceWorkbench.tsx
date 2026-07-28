@@ -220,7 +220,7 @@ export function EvidenceWorkbench({
         !preview &&
         !error ? (
           <div className="evidence-loading" role="status">
-            正在从只读快照中定位原始行…
+            正在从原始文件存档里定位这一行…
           </div>
         ) : null}
 

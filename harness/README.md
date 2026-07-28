@@ -23,16 +23,35 @@
 - 终结账期不能被普通重跑覆盖；迟到文件只能形成有证据的调整或重述。
 - 有限模板未命中必须进入待处理，不得让模型开放式猜测文件类型。
 
-## 本地开发
+## 云形边界（本机双角色）
+
+`compose.harness.yaml` 拆成两个服务，**不得共享 volume**：
+
+- `core`：确定性内核、模型编排、DuckDB 工作台（端口 8765）
+- `edge`：只读客户侧 inbox，经 HTTP 上传快照到 core（端口 8766）
+
+迁移验收：把 core 搬到另一台机器后，只改 `FA_CORE_BASE_URL`。本地脚本：
 
 ```bash
-cd /home/wsfwk/dataAnalysis
-python3 -m venv harness/.venv
-harness/.venv/bin/pip install -e './host-agent' -e './harness[dev]'
+bash scripts/verify-edge-core-boundary.sh
+```
 
-harness/.venv/bin/python -m commerce_harness \
-  init --workspace ~/fa-workbench
-cp harness/config.example.toml ~/fa-workbench/config.toml
+日常管道收成一条：
+
+```bash
+python -m commerce_harness run --workspace ~/fa-workbench
+```
+
+文案门禁（扫描 `web/src/home`）：
+
+```bash
+python harness/scripts/check_copy_gate.py
+```
+
+离线认证验证器（零 harness 依赖）：
+
+```bash
+PYTHONPATH=. python -m verifier path/to/cert_report.json
 ```
 
 真实配置必须位于仓库外，并显式填写只读来源目录。默认工作台分层：

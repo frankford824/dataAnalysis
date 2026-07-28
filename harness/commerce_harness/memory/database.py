@@ -92,6 +92,7 @@ class DuckDBMemory:
     def _initialize_database(self) -> None:
         self._migrate_checklist_result_v8()
         self._migrate_run_log_skipped_v16()
+        self._migrate_claim_soft_references_v18()
         with self.transaction() as connection:
             for statement in SCHEMA_STATEMENTS:
                 connection.execute(statement)
@@ -209,6 +210,63 @@ class DuckDBMemory:
             raise RuntimeError(
                 "input_revision_state contains dangling revision references"
             )
+        for table in ("claim_event", "external_verdict"):
+            dangling_claims = int(
+                self.fetchone_required(
+                    f"""
+                    SELECT count(*)
+                    FROM {table} AS child
+                    LEFT JOIN claim ON claim.claim_id = child.claim_id
+                    WHERE claim.claim_id IS NULL
+                    """
+                )[0]
+            )
+            if dangling_claims:
+                raise RuntimeError(f"{table} contains dangling claim references")
+
+    def _claim_reference_tables_with_foreign_keys(self) -> set[str]:
+        try:
+            rows = self.connection.execute(
+                """
+                SELECT DISTINCT table_name
+                FROM duckdb_constraints()
+                WHERE constraint_type = 'FOREIGN KEY'
+                  AND table_name IN ('claim_event', 'external_verdict')
+                """
+            ).fetchall()
+        except duckdb.Error:
+            return set()
+        return {str(row[0]) for row in rows}
+
+    def _migrate_claim_soft_references_v18(self) -> None:
+        """Rebuild claim child tables that still carry a physical claim FK.
+
+        A physical FK on ``claim_id`` makes DuckDB refuse every claim status
+        update, so databases created by the first Phase 4 build must be
+        rebuilt without it. Data is preserved; only the constraint goes away.
+        """
+
+        tables = self.table_names()
+        affected = self._claim_reference_tables_with_foreign_keys() & tables
+        if not affected:
+            return
+        for table in sorted(affected):
+            with self.transaction() as connection:
+                connection.execute(
+                    f"CREATE TEMP TABLE {table}_migration AS SELECT * FROM {table}"
+                )
+                connection.execute(f"DROP TABLE {table}")
+                for statement in SCHEMA_STATEMENTS:
+                    if f"CREATE TABLE IF NOT EXISTS {table} (" in statement:
+                        connection.execute(statement)
+                        break
+                else:  # pragma: no cover - schema and migration must agree
+                    raise RuntimeError(f"no DDL found for {table}")
+                connection.execute(
+                    f"INSERT INTO {table} SELECT * FROM {table}_migration"
+                )
+                connection.execute(f"DROP TABLE {table}_migration")
+        _log.info("rebuilt %s without physical claim foreign keys", sorted(affected))
 
     def _migrate_checklist_result_v8(self) -> None:
         tables = self.table_names()

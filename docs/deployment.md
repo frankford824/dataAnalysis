@@ -24,6 +24,7 @@ export FA_CONNECTION_DIR=/home/wsfwk/fa-workbench/ssh
 export FA_SSH_DIR=/home/wsfwk/.ssh
 export FA_UID="$(id -u)"
 export FA_GID="$(id -g)"
+export FA_EDGE_TOKEN="$(openssl rand -hex 32)"
 
 docker compose -f compose.harness.yaml up -d --build
 curl -fsS http://127.0.0.1:8765/readyz

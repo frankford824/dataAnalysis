@@ -51,31 +51,36 @@ import type {
 import { EvidenceWorkbench } from "./components/EvidenceWorkbench";
 import { PerformancePanel } from "./components/PerformancePanel";
 import { TrustCenter } from "./components/TrustCenter";
+import { HomeScreen } from "./home/HomeScreen";
 
 type View =
+  | "home"
   | "trust"
   | "analytics"
   | "catalog"
   | "progress"
   | "balances"
   | "reviews"
-  | "models";
-type PrimaryView = "trust" | "analytics" | "reviews" | "models";
+  | "models"
+  | "decide";
+type PrimaryView = "home" | "trust" | "analytics" | "reviews" | "models";
 type OverlayView = "catalog" | "progress" | "balances";
 
 const VIEW_LABELS: Record<View, string> = {
+  home: "这个月",
   trust: "数据可信度",
   analytics: "经营看板",
   catalog: "数据目录",
   progress: "处理进度",
   balances: "核对结果",
   reviews: "待处理",
-  models: "模型辅助"
+  models: "模型辅助",
+  decide: "需要你定"
 };
 const PRIMARY_VIEWS: PrimaryView[] = [
-  "trust",
-  "analytics",
+  "home",
   "reviews",
+  "analytics",
   "models"
 ];
 
@@ -1602,16 +1607,18 @@ function ProgressView({
             disabled={!progress.compute.enabled || runPhase === "running"}
             onClick={() => void startCompute()}
             type="button"
+            className="compute-fallback"
+            title="文件放进目录后会自动发现与计算；这里只是兜底入口"
           >
             {runPhase === "running"
-              ? "正在开始…"
+              ? "正在再看一遍…"
               : progress.compute.running
-                ? "再次检查新文件"
-                : "开始处理全部范围"}
+                ? "正在自动处理…"
+                : "文件没动？再检查一遍"}
           </button>
           {!progress.compute.enabled ? (
             <p className="compute-disabled">
-              本机自动处理尚未启用；现有结果仍可查看，外部模型不影响确定性计算。
+              自动处理已关闭。日常应开启自动发现；这里只保留兜底入口。
             </p>
           ) : null}
           {runMessage ? (
@@ -3020,7 +3027,7 @@ function ModelsView({
 
 export default function App() {
   const initialSearch = new URLSearchParams(window.location.search);
-  const [view, setView] = useState<PrimaryView>("trust");
+  const [view, setView] = useState<PrimaryView>("home");
   const [overlay, setOverlay] = useState<OverlayView | null>(null);
   const [scope, setScope] = useState<{
     storeId: string | null;
@@ -3158,6 +3165,14 @@ export default function App() {
         ) : null}
         {!loading && !error && data ? (
           <>
+            {view === "home" ? (
+              <HomeScreen
+                onOpenDecide={() => setView("reviews")}
+                onOpenFiles={() => setOverlay("catalog")}
+                onOpenRecoverable={() => setView("reviews")}
+                onOpenConclusion={() => setView("analytics")}
+              />
+            ) : null}
             {view === "trust" ? (
               <TrustCenter
                 onOpenAnalytics={() => setView("analytics")}
@@ -3192,6 +3207,14 @@ export default function App() {
               <ModelsView data={data} onDashboardRefresh={refresh} />
             ) : null}
           </>
+        ) : null}
+        {!loading && !error && !data && view === "home" ? (
+          <HomeScreen
+            onOpenDecide={() => setView("reviews")}
+            onOpenFiles={() => setOverlay("catalog")}
+            onOpenRecoverable={() => setView("reviews")}
+            onOpenConclusion={() => setView("analytics")}
+          />
         ) : null}
       </main>
       {data ? (

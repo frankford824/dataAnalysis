@@ -41,7 +41,9 @@ packages = ["commerce_harness"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["../host-agent"]
+# ".." makes the standalone `verifier` package importable without installing
+# it; the verifier itself must never import commerce_harness.
+pythonpath = ["../host-agent", ".."]
 addopts = "-q --strict-markers"
 markers = [
   "integration: requires DuckDB or local filesystem integration",

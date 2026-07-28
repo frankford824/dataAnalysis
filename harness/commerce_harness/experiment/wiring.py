@@ -42,13 +42,11 @@ def _candidate_rules(
 
 
 def period_is_locked(database: DuckDBMemory, *, period_id: str) -> bool:
-    row = database.execute(
-        "SELECT status FROM accounting_period WHERE period_id = ?",
-        [period_id],
-    ).fetchone()
-    if not row:
-        return False
-    return str(row[0]) in ("preclosed", "closed")
+    from commerce_harness.period_service import (
+        period_is_locked as _effective_period_is_locked,
+    )
+
+    return _effective_period_is_locked(database, period_id)
 
 
 def build_shadow_run(

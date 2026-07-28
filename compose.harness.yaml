@@ -1,7 +1,20 @@
 name: finance-reconciliation-harness
 
+# Cloud-shaped local simulation:
+# - core: deterministic kernel + model orchestration + DuckDB workbench
+# - edge: customer-side read/upload only
+# The two services MUST NOT share a volume. Crossing is HTTP only.
+# Migration acceptance: move core elsewhere, change FA_CORE_BASE_URL only.
+#
+# The service formerly called `workbench` is now `core`; docs and scripts that
+# still say `workbench` must be read as `core`.
+#
+# FA_EDGE_TOKEN is the shared secret for edge → core uploads and has no default
+# on purpose: run `./scripts/generate-env.sh` or
+# `export FA_EDGE_TOKEN="$(openssl rand -hex 32)"` before bringing the stack up.
+
 services:
-  workbench:
+  core:
     build:
       context: .
       dockerfile: harness/Dockerfile
@@ -20,16 +33,18 @@ services:
       FA_WEB_DIST: /app/harness/web/dist
       FA_SOURCE_READONLY_ENFORCED: "1"
       FA_AUTO_COMPUTE: "${FA_AUTO_COMPUTE:-1}"
+      FA_ROLE: core
+      FA_EDGE_TOKEN: ${FA_EDGE_TOKEN:?请先设置 FA_EDGE_TOKEN（边界上传令牌）}
+      # Set to 0 once files arrive through edge uploads; while it is 1, core
+      # still reads finance-win over SSH and the boundary is not yet closed.
+      FA_ALLOW_CORE_SOURCE_READ: "${FA_LEGACY_SSH_SOURCE:-1}"
       HOME: /home/harness
     volumes:
       - type: bind
-        # Leading // is POSIX-equivalent to / and prevents Docker Desktop
-        # Compose from rewriting a writable WSL path into an invalid UNC volume.
         source: ${FA_WORKBENCH_BIND:-//home/wsfwk/fa-workbench}
         target: /workbench
-      # Docker Desktop can reject individual WSL file binds after a restart.
-      # Directory binds preserve the same read-only boundary and work in both
-      # native Linux Docker and Docker Desktop's WSL bridge.
+      # Only needed while FA_LEGACY_SSH_SOURCE=1. Remove these two binds when
+      # core no longer dials SSH.
       - type: bind
         source: ${FA_CONNECTION_DIR:-/home/wsfwk/fa-workbench/ssh}
         target: /run/connection
@@ -57,4 +72,66 @@ services:
       interval: 10s
       timeout: 10s
       start_period: 20s
+      retries: 5
+
+  edge:
+    # Same image as core; declared here so `docker compose up edge` can build it
+    # on its own instead of failing on a missing image.
+    build:
+      context: .
+      dockerfile: harness/Dockerfile
+      args:
+        HARNESS_UID: ${FA_UID:-1000}
+        HARNESS_GID: ${FA_GID:-1000}
+        HARNESS_GIT_SHA: ${FA_HARNESS_GIT_SHA:-79bdbd2bdbe851a8901cf16327841cbfd6fa2ff2}
+    image: finance-reconciliation-harness:local
+    depends_on:
+      core:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FA_EDGE_PORT:-8766}:8766"
+    environment:
+      FA_ROLE: edge
+      FA_CORE_BASE_URL: http://core:8765
+      FA_EDGE_INBOX: /edge-inbox
+      FA_EDGE_TOKEN: ${FA_EDGE_TOKEN:?请先设置 FA_EDGE_TOKEN（边界上传令牌）}
+      FA_CONTAINER_BIND: "1"
+      HOME: /home/harness
+    volumes:
+      # Edge inbox is a SEPARATE bind from core workbench. Do not point this
+      # at FA_WORKBENCH_BIND — that would violate the cloud boundary.
+      - type: bind
+        source: ${FA_EDGE_INBOX_BIND:-//home/wsfwk/fa-edge-inbox}
+        target: /edge-inbox
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    entrypoint:
+      - python
+      - -m
+      - commerce_harness
+      - edge
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8766"
+      - --core-url
+      - http://core:8765
+      - --inbox
+      - /edge-inbox
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8766/healthz', timeout=5).read()"
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
       retries: 5

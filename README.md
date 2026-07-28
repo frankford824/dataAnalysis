@@ -77,8 +77,12 @@ finance-win 仍使用 OS 级只读账号；宿主 SSH 目录以只读方式挂�
 export FA_WORKBENCH_BIND=//home/wsfwk/fa-workbench
 export FA_CONNECTION_DIR=/home/wsfwk/fa-workbench/ssh
 export FA_SSH_DIR=/home/wsfwk/.ssh
+export FA_EDGE_TOKEN="$(openssl rand -hex 32)"
 docker compose -f compose.harness.yaml up -d --build
 ```
+
+两个服务分别是 `core`（内核与页面，8765）和 `edge`（只读客户侧 inbox，8766）；
+`FA_EDGE_TOKEN` 是二者之间的上传令牌，未设置时不会启动。
 
 `FA_WORKBENCH_BIND` 的双斜杠是有效 POSIX 路径，同时避免 Docker Desktop Compose
 把可写 WSL 目录误改写为无效 UNC 卷名。默认路径与上面一致，不修改路径时可不设置三个变量。

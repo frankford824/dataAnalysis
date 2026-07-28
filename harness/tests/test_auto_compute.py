@@ -220,6 +220,79 @@ def test_inventory_signature_ignores_scan_timestamp_and_non_candidates(
     assert _manifest_signature(inventory) == first
 
 
+def test_core_role_counts_uploaded_files_instead_of_scanning_disk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FA_ROLE", "core")
+    monkeypatch.delenv("FA_ALLOW_CORE_SOURCE_READ", raising=False)
+    config = HarnessConfig(
+        workspace=WorkspaceConfig(root=tmp_path),
+        compute=ComputeConfig(enabled=True, run_on_startup=False),
+    )
+    workbench = initialize(config)
+    with DuckDBMemory(workbench.database) as database:
+        database.initialize()
+
+    monkeypatch.setattr(
+        auto_compute_module,
+        "scan_inventory",
+        lambda *_args: pytest.fail("core 不允许直接读取客户文件"),
+    )
+    monkeypatch.setattr(
+        auto_compute_module,
+        "freeze_candidates",
+        lambda *_args, **_kwargs: pytest.fail("上传件已经是不可覆盖副本，无需再冻结"),
+    )
+    monkeypatch.setattr(
+        auto_compute_module,
+        "profile_snapshots",
+        lambda *_args: {"matched": 0},
+    )
+    monkeypatch.setattr(
+        auto_compute_module,
+        "refresh_target_plan",
+        lambda *_args: TargetPlan(
+            scope_start=date(2026, 2, 1),
+            scope_end=date(2026, 2, 28),
+            targets=(),
+            review_required=(),
+        ),
+    )
+    runner = AutoComputeRunner(config, workbench)
+
+    empty_signature = runner._uploaded_snapshot_signature()
+    runner._run_cycle()
+    with DuckDBMemory(workbench.database) as database:
+        database.execute(
+            """
+            INSERT INTO source_snapshot (
+                snapshot_id, content_sha256, byte_size, object_uri,
+                source_uri, source_modified_ns, captured_at, manifest_json
+            )
+            VALUES (
+                'snapshot-uploaded', ?, 10, 'objects/uploaded',
+                'edge-inbox://orders.csv', 1, current_timestamp, '{}'
+            )
+            """,
+            ["e" * 64],
+        )
+
+    assert runner._uploaded_snapshot_signature() != empty_signature
+    with DuckDBMemory(workbench.database) as database:
+        inventory = database.fetchone_required(
+            """
+            SELECT status, business_label,
+                   json_extract_string(metrics_json, '$.inventory_signature')
+            FROM compute_job
+            WHERE job_kind = 'inventory'
+            """
+        )
+    assert inventory[0] == "succeeded"
+    assert inventory[1] == "清点已收到的文件"
+    assert str(inventory[2]).startswith("uploaded:0:")
+
+
 def test_runner_is_disabled_by_default_and_schema_contains_job_table(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

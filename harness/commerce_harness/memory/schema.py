@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from commerce_harness.memory.experiment_tables import MAIN_EXPERIMENT_TABLE_DDL
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 18
 
 REQUIRED_TABLES = frozenset(
     {
         "accounting_period",
+        "accounting_period_state",
         "adjustment_entry",
         "adjudication",
         "baseline",
@@ -14,6 +15,8 @@ REQUIRED_TABLES = frozenset(
         "business_decision_event",
         "checklist_requirement",
         "checklist_result",
+        "claim",
+        "claim_event",
         "cost_asof",
         "evidence_record",
         "evidence_binding",
@@ -23,6 +26,7 @@ REQUIRED_TABLES = frozenset(
         "historical_output",
         "input_revision",
         "input_revision_state",
+        "invariant_claim_stats",
         "llm_call_log",
         "normalized_artifact",
         "pnl_cell",
@@ -63,6 +67,7 @@ REQUIRED_TABLES = frozenset(
         "adjudication_case",
         "attack_case",
         "attack_result",
+        "external_verdict",
     }
 )
 
@@ -273,6 +278,21 @@ SCHEMA_STATEMENTS = (
             CHECK (status IN ('candidate', 'current', 'superseded', 'rejected')),
         reason VARCHAR,
         approved_by VARCHAR,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+    )
+    """,
+    # Period close state lives beside accounting_period rather than in it:
+    # DuckDB implements UPDATE as delete+insert and therefore refuses
+    # status-only updates to a period row that any child table references.
+    # Readers resolve the effective status with
+    # coalesce(state.status, period.status), mirroring input_revision_state.
+    """
+    CREATE TABLE IF NOT EXISTS accounting_period_state (
+        period_id VARCHAR PRIMARY KEY,
+        status VARCHAR NOT NULL
+            CHECK (status IN ('open', 'preclosed', 'closed', 'restated')),
+        closed_at TIMESTAMPTZ,
+        closed_by VARCHAR,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
     )
     """,
@@ -1101,6 +1121,70 @@ SCHEMA_STATEMENTS = (
     ADD COLUMN IF NOT EXISTS trust_tier VARCHAR DEFAULT 'certified'
     """,
     """
+    CREATE TABLE IF NOT EXISTS claim (
+        claim_id VARCHAR PRIMARY KEY,
+        contract_id VARCHAR NOT NULL REFERENCES reconciliation_contract(contract_id),
+        period_id VARCHAR NOT NULL REFERENCES accounting_period(period_id),
+        store_id VARCHAR NOT NULL,
+        invariant_version_id VARCHAR NOT NULL
+            REFERENCES invariant_version(invariant_version_id),
+        subject_kind VARCHAR NOT NULL,
+        subject_key VARCHAR NOT NULL,
+        reason_code VARCHAR NOT NULL,
+        claimed_amount DECIMAL(38,4) NOT NULL,
+        currency VARCHAR NOT NULL DEFAULT 'CNY',
+        status VARCHAR NOT NULL
+            CHECK (
+                status IN (
+                    'draft', 'packaged', 'submitted',
+                    'accepted', 'partially_accepted', 'rejected',
+                    'recovered', 'closed'
+                )
+            ),
+        packet_sha256 VARCHAR,
+        operator_name VARCHAR,
+        submitted_at TIMESTAMPTZ,
+        external_ref VARCHAR,
+        responded_at TIMESTAMPTZ,
+        accepted_amount DECIMAL(38,4),
+        recovered_amount DECIMAL(38,4),
+        recovered_at TIMESTAMPTZ,
+        adjustment_id VARCHAR,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS claim_event (
+        event_id VARCHAR PRIMARY KEY,
+        -- DuckDB implements UPDATE as delete+insert for referenced rows and
+        -- therefore blocks every claim status update once an event row points
+        -- at the claim. Same trade-off as checklist_result.revision_id: the
+        -- reference stays soft and initialize() rejects dangling claim ids.
+        claim_id VARCHAR NOT NULL,
+        from_status VARCHAR NOT NULL,
+        to_status VARCHAR NOT NULL,
+        actor VARCHAR NOT NULL,
+        response_text VARCHAR,
+        payload_json JSON NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS invariant_claim_stats (
+        invariant_version_id VARCHAR PRIMARY KEY
+            REFERENCES invariant_version(invariant_version_id),
+        total_claims INTEGER NOT NULL DEFAULT 0,
+        accepted_count INTEGER NOT NULL DEFAULT 0,
+        partially_accepted_count INTEGER NOT NULL DEFAULT 0,
+        rejected_count INTEGER NOT NULL DEFAULT 0,
+        recovered_count INTEGER NOT NULL DEFAULT 0,
+        total_claimed DECIMAL(38,4) NOT NULL DEFAULT 0,
+        total_accepted DECIMAL(38,4) NOT NULL DEFAULT 0,
+        total_recovered DECIMAL(38,4) NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+    )
+    """,
+    """
     CREATE INDEX IF NOT EXISTS idx_item_business_key
     ON reconciliation_item(business_key)
     """,
@@ -1112,4 +1196,28 @@ SCHEMA_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_artifact_digest ON normalized_artifact(content_sha256)",
     "CREATE INDEX IF NOT EXISTS idx_compute_job_status ON compute_job(status, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_compute_job_scope ON compute_job(store_id, period_token)",
+    """
+    CREATE TABLE IF NOT EXISTS external_verdict (
+        verdict_id VARCHAR PRIMARY KEY,
+        -- Soft reference for the same reason as claim_event.claim_id; verified
+        -- at initialize() instead of by a physical foreign key.
+        claim_id VARCHAR NOT NULL,
+        case_id VARCHAR,
+        verdict VARCHAR NOT NULL
+            CHECK (
+                verdict IN (
+                    'accepted', 'partially_accepted', 'rejected', 'recovered'
+                )
+            ),
+        accepted_amount DECIMAL(38,4),
+        recovered_amount DECIMAL(38,4),
+        verdict_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp,
+        source VARCHAR NOT NULL,
+        note VARCHAR
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_claim_status ON claim(status)",
+    "CREATE INDEX IF NOT EXISTS idx_claim_period ON claim(period_id, store_id)",
+    "CREATE INDEX IF NOT EXISTS idx_claim_event_claim ON claim_event(claim_id)",
+    "CREATE INDEX IF NOT EXISTS idx_external_verdict_claim ON external_verdict(claim_id)",
 )

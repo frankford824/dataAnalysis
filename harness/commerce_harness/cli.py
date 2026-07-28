@@ -111,6 +111,23 @@ def _parser() -> argparse.ArgumentParser:
     invariants_seed = subparsers.add_parser("invariants-seed", help="填充内置不变量定义")
     invariants_seed.add_argument("--workspace", type=Path, required=True)
 
+    run = subparsers.add_parser(
+        "run",
+        help="一键执行扫描→冻结→识别→归一→对账（日常入口）",
+    )
+    run.add_argument("--workspace", type=Path, required=True)
+    run.add_argument("--period", help="可选：只跑一个账期 YYMM 或 YYYY-MM")
+    run.add_argument("--store", help="可选：只跑一个店铺")
+
+    edge = subparsers.add_parser(
+        "edge",
+        help="启动客户侧 edge（只读本地 inbox，经 HTTP 上传到 core）",
+    )
+    edge.add_argument("--host", default="127.0.0.1")
+    edge.add_argument("--port", default=8766, type=int)
+    edge.add_argument("--core-url", default=None)
+    edge.add_argument("--inbox", type=Path, default=None)
+
     serve = subparsers.add_parser("serve", help="启动本机对账工作台")
     serve.add_argument("--workspace", type=Path, required=True)
     serve.add_argument("--host", default="127.0.0.1")
@@ -466,7 +483,41 @@ def main(argv: list[str] | None = None) -> int:
                 store.initialize()
                 seeded = store.seed_builtin_invariants()
             result = {"invariants_seeded": seeded}
-        else:
+        elif args.command == "run":
+            from .pipeline import run_pipeline
+
+            config = load_config(args.config, args.workspace)
+            workbench = require_initialized(config)
+            run_result = run_pipeline(
+                config,
+                workbench,
+                period=args.period,
+                store_id=args.store,
+            )
+            print(
+                json.dumps(
+                    run_result.to_dict(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    indent=2,
+                )
+            )
+            if not run_result.ok:
+                for failure in run_result.failures:
+                    print(f"fa-harness: 对账失败 {failure}", file=sys.stderr)
+                return 1
+            return 0
+        elif args.command == "edge":
+            from .edge.server import run_edge
+
+            run_edge(
+                host=args.host,
+                port=args.port,
+                core_base_url=args.core_url,
+                inbox=args.inbox,
+            )
+            return 0
+        elif args.command == "serve":
             container_bind = os.getenv("FA_CONTAINER_BIND") == "1"
             if args.host not in {"127.0.0.1", "localhost", "::1"} and not container_bind:
                 raise ValueError("阶段 B 工作台默认只允许绑定本机回环地址")
@@ -494,6 +545,8 @@ def main(argv: list[str] | None = None) -> int:
                 log_level="info",
             )
             return 0
+        else:
+            raise ValueError(f"unknown command: {args.command}")
         print(json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2))
         return 0
     except Exception as exc:

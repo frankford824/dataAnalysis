@@ -49,4 +49,5 @@ S3_RAW_BUCKET=commerce-raw
 S3_INTERMEDIATE_BUCKET=commerce-intermediate
 S3_EXPORT_BUCKET=commerce-exports
 PUBLIC_API_BASE_URL=/api/v1
+FA_EDGE_TOKEN=$(random_hex 32)
 EOF

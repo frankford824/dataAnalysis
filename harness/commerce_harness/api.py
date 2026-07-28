@@ -293,6 +293,19 @@ def create_app(config: HarnessConfig, web_dist: Path | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.compute_runner = compute_runner
+    from .certify.router import build_certify_router
+    from .claims.router import build_claims_router
+    from .edge.receive import build_edge_router
+    from .home import build_home_router
+    from .intelligence_api import build_intelligence_router
+    from .period.router import build_period_router
+
+    app.include_router(build_edge_router(workbench))
+    app.include_router(build_period_router(workbench))
+    app.include_router(build_claims_router(workbench))
+    app.include_router(build_home_router(workbench))
+    app.include_router(build_intelligence_router(workbench))
+    app.include_router(build_certify_router(workbench))
 
     @contextmanager
     def memory() -> Iterator[DuckDBMemory]:
@@ -1159,7 +1172,7 @@ def create_app(config: HarnessConfig, web_dist: Path | None = None) -> FastAPI:
                 """
                 SELECT revision.contract_id, revision.period_id,
                        revision.logical_input_key, revision.source_kind,
-                       period.status,
+                       coalesce(period_state.status, period.status),
                        coalesce(state.status, revision.status),
                        state.approved_by, snapshot.original_name
                 FROM input_revision revision
@@ -1169,6 +1182,8 @@ def create_app(config: HarnessConfig, web_dist: Path | None = None) -> FastAPI:
                   ON snapshot.snapshot_id = revision.snapshot_id
                 LEFT JOIN input_revision_state state
                   ON state.revision_id = revision.revision_id
+                LEFT JOIN accounting_period_state period_state
+                  ON period_state.period_id = revision.period_id
                 WHERE revision.revision_id = ?
                 """,
                 [revision_id],
@@ -2980,8 +2995,16 @@ def create_app(config: HarnessConfig, web_dist: Path | None = None) -> FastAPI:
             "difference_explanation": "解释已确定差额的可能原因",
             "rule_draft": "把人工结论整理成候选规则",
         }
+        # effectiveLevel is sourced from LearningEvaluator: it remains L0
+        # unless a completed evaluation has proposed_level > L0. The
+        # AutonomyEvaluator L2 is advisory-only and does NOT affect this field.
+        effective_level = (
+            str(latest_evaluation[3])
+            if latest_evaluation is not None and latest_evaluation[0]
+            else "L0"
+        )
         return {
-            "effectiveLevel": "L0",
+            "effectiveLevel": effective_level,
             "levelReason": (
                 "能力范围可以扩展，但模型仍只生成建议；金额、规则发布和绩效结果由确定性代码控制。"
             ),

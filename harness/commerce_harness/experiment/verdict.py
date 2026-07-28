@@ -78,6 +78,11 @@ def decide_verdict(
         reasons.append("金额加权自动率下降")
         return "rejected", reasons
 
+    claim_acceptance_delta = _delta("claim_acceptance_rate")
+    if "claim_acceptance_rate" in metrics and claim_acceptance_delta < _ZERO:
+        reasons.append("申诉接受率下降")
+        return "rejected", reasons
+
     # Support needs a measured improvement on at least one primary measure.
     # Amount-weighted rates lead, because a line-count improvement can hide a
     # large-amount regression.

@@ -148,8 +148,12 @@ export FA_CONNECTION_DIR=/home/wsfwk/fa-workbench/ssh
 export FA_SSH_DIR=/home/wsfwk/.ssh
 export FA_UID="$(id -u)"
 export FA_GID="$(id -g)"
+export FA_EDGE_TOKEN="$(openssl rand -hex 32)"
 docker compose -f compose.harness.yaml up -d --build
 ```
+
+`FA_EDGE_TOKEN` 是 edge 向 core 上传的共享令牌，未设置时 Compose 会直接报错，
+core 也会拒收上传。服务名为 `core`（旧文档中的 `workbench`）与 `edge`。
 
 `//home/...` 与 `/home/...` 在 Linux 上等价。这里保留双斜杠，是为了阻止部分 Docker
 Desktop Compose 版本把可写 WSL 路径改写成无法挂载的 UNC 卷名。默认工作台路径就是
@@ -164,7 +168,7 @@ Desktop Compose 版本把可写 WSL 路径改写成无法挂载的 UNC 卷名。
 ```bash
 docker compose -f compose.harness.yaml config --quiet
 docker compose -f compose.harness.yaml up -d --build
-docker inspect finance-reconciliation-harness-workbench-1 \
+docker inspect finance-reconciliation-harness-core-1 \
   --format '{{range .Mounts}}{{println .Source .Destination}}{{end}}'
 ```
 
@@ -303,7 +307,8 @@ wsl.exe -d Ubuntu -u root -- ln -sfn `
 
 ```bash
 docker compose -f compose.harness.yaml ps
-docker compose -f compose.harness.yaml logs --tail=200 workbench
+docker compose -f compose.harness.yaml logs --tail=200 core
+docker compose -f compose.harness.yaml logs --tail=200 edge
 curl -fsS http://127.0.0.1:8765/readyz
 docker compose -f compose.harness.yaml down
 ```

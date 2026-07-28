@@ -24,7 +24,7 @@ ARCHIVED_DETAIL_TABLES = (
     "reconciliation_link_member",
 )
 
-LOCKED_PERIOD_STATUSES = ("preclosed", "closed")
+LOCKED_PERIOD_STATUSES = ("preclosed", "closed", "restated")
 
 
 def _record_maintenance(
@@ -164,10 +164,12 @@ def archive_stale_reconcile_details(database: DuckDBMemory) -> dict[str, int]:
         SELECT run.run_id
         FROM run_log run
         JOIN accounting_period period ON period.period_id = run.period_id
+        LEFT JOIN accounting_period_state period_state
+          ON period_state.period_id = period.period_id
         WHERE run.run_kind = 'reconcile'
           AND run.status IN ('succeeded', 'skipped', 'cancelled')
           AND run.period_id IS NOT NULL
-          AND period.status NOT IN ({locked_list})
+          AND coalesce(period_state.status, period.status) NOT IN ({locked_list})
           AND run.run_id NOT IN (SELECT run_id FROM hygiene_keep_runs)
         """
     )

@@ -100,9 +100,12 @@ def _summarize(
         "missing_profit_components": Decimal(
             len(_missing_profit_components(rows))
         ),
-        # Safety metrics are produced by the comparison, not by one side alone.
+        # Safety metrics partially computed per-side; comparison may override.
         "major_reversal_count": _ZERO,
         "newly_unresolved_count": _ZERO,
+        # baseline_regression_count: subjects that were balanced but now are
+        # unresolved. Per-side we can only report the raw unresolved set;
+        # the real regression count requires the comparison (see compare_outcomes).
         "baseline_regression_count": _ZERO,
         "evidence_integrity_failures": _ZERO,
     }
@@ -204,9 +207,20 @@ def compare_outcomes(
             "is_reversal": is_reversal,
         })
 
+    # baseline_regression_count: subjects that were balanced (not in the
+    # before unresolved set) but became unresolved in the after set.
+    # This is the real regression count — not a hardcoded zero.
+    baseline_regressions = sum(
+        1
+        for key in after_subjects
+        if key not in before_subjects
+        and after_subjects[key] >= materiality_floor
+    )
+
     after_summary = dict(after.summary)
     after_summary["newly_unresolved_count"] = Decimal(len(newly_unresolved))
     after_summary["major_reversal_count"] = Decimal(major_reversals)
+    after_summary["baseline_regression_count"] = Decimal(baseline_regressions)
     return after_summary, deltas
 
 

@@ -19,6 +19,14 @@ for name in $required; do
   [ -n "$value" ] || { echo "$name must not be empty" >&2; exit 1; }
 done
 
+# Upgrades from before the edge/core split have no token yet, so say exactly
+# how to add one instead of letting compose fail on interpolation.
+[ -n "${FA_EDGE_TOKEN:-}" ] || {
+  echo "FA_EDGE_TOKEN 未设置：core 会拒绝所有上传。" >&2
+  echo "补一行到 $env_file：FA_EDGE_TOKEN=\$(openssl rand -hex 32)" >&2
+  exit 1
+}
+
 check_integer_range() {
   name="$1"
   minimum="$2"

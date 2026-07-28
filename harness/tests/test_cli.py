@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import uvicorn
 
 from commerce_harness.cli import _parser, main
+from commerce_harness.pipeline import RunResult
 
 
 def test_cli_exposes_all_phase_a_execution_commands() -> None:
@@ -117,6 +118,52 @@ def test_cli_dispatches_all_phase_a_commands(
         ("diff", ("2602", "store-a")),
         ("baseline", ("2602", "store-a", True, "tester")),
     ]
+
+
+def test_cli_run_exit_code_follows_reconcile_outcome(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    workspace = tmp_path / "workbench"
+    assert main(["init", "--workspace", str(workspace)]) == 0
+    capsys.readouterr()
+
+    def _pipeline(outcome: RunResult):
+        return lambda *_args, **_kwargs: outcome
+
+    succeeded = RunResult(
+        inventory={"skipped": True},
+        freeze={"skipped": True},
+        profile={},
+        normalize={},
+        adjudication={},
+        reconcile=[{"period": "2603"}],
+    )
+    monkeypatch.setattr(
+        "commerce_harness.pipeline.run_pipeline",
+        _pipeline(succeeded),
+    )
+    assert main(["run", "--workspace", str(workspace)]) == 0
+    capsys.readouterr()
+
+    failed = RunResult(
+        inventory={"skipped": True},
+        freeze={"skipped": True},
+        profile={},
+        normalize={},
+        adjudication={},
+        reconcile=[],
+        failures=("2603: 对账口径缺失",),
+    )
+    monkeypatch.setattr(
+        "commerce_harness.pipeline.run_pipeline",
+        _pipeline(failed),
+    )
+    assert main(["run", "--workspace", str(workspace)]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["ok"] is False
+    assert "对账口径缺失" in captured.err
 
 
 def test_cli_initializes_reports_status_and_schema(tmp_path, capsys) -> None:

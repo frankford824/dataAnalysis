@@ -26,6 +26,7 @@ METRIC_NAMES = frozenset({
     "evidence_integrity_failures",
     "certifiable",
     "profit_completeness",
+    "claim_acceptance_rate",
 })
 
 
@@ -93,6 +94,12 @@ def compute_metrics(
     a_pc = _get(after, "profit_completeness", _ZERO)
     metrics["profit_completeness"] = {
         "before": b_pc, "after": a_pc, "delta": subtract_money(a_pc, b_pc),
+    }
+
+    b_car = _get(before, "claim_acceptance_rate", _ZERO)
+    a_car = _get(after, "claim_acceptance_rate", _ZERO)
+    metrics["claim_acceptance_rate"] = {
+        "before": b_car, "after": a_car, "delta": subtract_money(a_car, b_car),
     }
 
     return metrics

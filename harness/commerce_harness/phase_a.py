@@ -2327,6 +2327,16 @@ def reconcile_period(
                 period_token,
                 store_id=store_id,
             )
+            from .period_service import LOCKED_STATUSES, effective_period_status
+
+            period_status = effective_period_status(database, period_id)
+            if period_status in LOCKED_STATUSES:
+                from .kernel.period import PeriodLockedError
+
+                raise PeriodLockedError(
+                    f"账期 {period_id} 已处于 {period_status} 状态，"
+                    "不允许再执行核对；如需调整请使用调整分录接口"
+                )
             platform_code = str(
                 database.fetchone_required(
                     """
