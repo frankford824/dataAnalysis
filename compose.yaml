@@ -15,6 +15,7 @@ x-backend-environment: &backend-environment
   COMMERCE_SECRET_KEY: ${APP_SECRET_KEY:-development-only-change-me}
   COMMERCE_AUTO_CREATE_SCHEMA: "false"
   COMMERCE_TRUSTED_PROXY_ENABLED: "false"
+  COMMERCE_LEGACY_UPLOAD_ENABLED: "false"
   COMMERCE_SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
   COMMERCE_MAX_UPLOAD_BYTES: ${COMMERCE_MAX_UPLOAD_BYTES:-104857600}
   COMMERCE_MAX_UNCOMPRESSED_BYTES: ${COMMERCE_MAX_UNCOMPRESSED_BYTES:-524288000}
@@ -123,26 +124,6 @@ services:
       retries: 30
       start_period: 30s
 
-  worker:
-    <<: *backend
-    command: ["/app/infra/docker/backend-entrypoint.sh", "worker"]
-    healthcheck:
-      test: ["CMD-SHELL", "celery -A app.worker.celery_app inspect ping -d celery@$${HOSTNAME} --timeout 5 | grep -q pong"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-
-  scheduler:
-    <<: *backend
-    command: ["/app/infra/docker/backend-entrypoint.sh", "scheduler"]
-    healthcheck:
-      test: ["CMD-SHELL", "tr '\\0' ' ' </proc/1/cmdline | grep -q 'celery.*beat'"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
   web:
     build:
       context: .
@@ -164,6 +145,7 @@ services:
     networks: [internal]
 
   superset:
+    profiles: ["bi"]
     build:
       context: .
       dockerfile: infra/superset/Dockerfile

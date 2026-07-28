@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     trusted_proxy_enabled: bool = False
     trusted_proxy_secret: str | None = None
     trusted_proxy_ips: str = "127.0.0.1,::1"
+    legacy_upload_enabled: bool = True
 
     @property
     def is_postgres(self) -> bool:

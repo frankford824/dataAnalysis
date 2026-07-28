@@ -9,12 +9,22 @@ type AuthValue = {
   signIn(email: string, password: string): Promise<void>
   signOut(): Promise<void>
   refresh(): Promise<void>
-  canManage: boolean
+  canManageUsers: boolean
+  canCorrectLocked: boolean
+  canConfigureData: boolean
+  canResolveProblems: boolean
   canUpload: boolean
+  canManageConnectors: boolean
+  canManageLlm: boolean
+  canViewOperations: boolean
+  canViewResults: boolean
+  canViewSystem: boolean
+  capabilities: string[]
 }
 
 const AuthContext = createContext<AuthValue | null>(null)
-const MANAGEMENT_ROLES = new Set<Role>(['platform_admin', 'admin', 'implementer'])
+const USER_ADMIN_ROLES = new Set<Role>(['platform_admin', 'admin'])
+const DATA_ROLES = new Set<Role>(['platform_admin', 'admin', 'implementer'])
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading')
@@ -56,15 +66,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('unauthenticated')
   }, [])
 
-  const value = useMemo<AuthValue>(() => ({
-    status,
-    user,
-    signIn,
-    signOut,
-    refresh,
-    canManage: Boolean(user && MANAGEMENT_ROLES.has(user.role)),
-    canUpload: Boolean(user && MANAGEMENT_ROLES.has(user.role)),
-  }), [status, user, signIn, signOut, refresh])
+  const value = useMemo<AuthValue>(() => {
+    const canAdmin = Boolean(user && USER_ADMIN_ROLES.has(user.role))
+    const canOperate = Boolean(user && DATA_ROLES.has(user.role))
+    const capabilities = [
+      ...(canOperate ? ['manage_connectors', 'confirm_decisions', 'view_system'] : []),
+      ...(canAdmin ? ['manage_llm', 'manage_users', 'approve_high_risk_decisions'] : []),
+      ...(user ? ['view_operations', 'view_results'] : []),
+    ]
+    return {
+      status,
+      user,
+      signIn,
+      signOut,
+      refresh,
+      canManageUsers: canAdmin,
+      canCorrectLocked: canAdmin,
+      canConfigureData: canOperate,
+      canResolveProblems: canOperate,
+      canUpload: canOperate,
+      canManageConnectors: canOperate,
+      canManageLlm: canAdmin,
+      canViewOperations: Boolean(user),
+      canViewResults: Boolean(user),
+      canViewSystem: canOperate,
+      capabilities,
+    }
+  }, [status, user, signIn, signOut, refresh])
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }

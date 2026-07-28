@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, request, setAccessToken } from './http'
+import { ApiError, request } from './http'
 
-beforeEach(() => { vi.restoreAllMocks(); setAccessToken(null) })
+beforeEach(() => { vi.restoreAllMocks() })
 
 describe('authenticated HTTP client', () => {
   it('uses HttpOnly-compatible credentials without spoofed identity headers', async () => {
@@ -13,14 +13,14 @@ describe('authenticated HTTP client', () => {
     expect(init.headers).not.toHaveProperty('X-Enterprise-ID')
     expect(init.headers).not.toHaveProperty('X-User-ID')
     expect(init.headers).not.toHaveProperty('X-Role')
+    expect(init.headers).not.toHaveProperty('Authorization')
   })
 
-  it('sends an actual bearer token when the login endpoint returns one', async () => {
-    setAccessToken('signed-token')
+  it('never exposes a bearer token to frontend JavaScript', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
     vi.stubGlobal('fetch', fetchMock)
     await request('/stores')
-    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer signed-token')
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined()
   })
 
   it('preserves structured recognition conflicts', async () => {

@@ -13,7 +13,7 @@ COPY backend/pyproject.toml /app/pyproject.toml
 COPY backend/app/__init__.py /app/app/__init__.py
 RUN --mount=type=cache,target=/root/.cache/pip \
     if [ -f requirements.txt ]; then pip install -r requirements.txt; \
-    elif [ -f pyproject.toml ]; then pip install '.[test]'; \
+    elif [ -f pyproject.toml ]; then pip install '.'; \
     else echo "backend requires requirements.txt or pyproject.toml" >&2; exit 1; fi
 
 COPY backend/ /app/

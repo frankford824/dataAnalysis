@@ -22,7 +22,10 @@ from .models import AuthSession, Enterprise, Store, UserAccount, utcnow
 
 ROLES = {"platform_admin", "admin", "implementer", "analyst", "viewer"}
 WRITE_ROLES = {"platform_admin", "admin", "implementer"}
-APPROVE_ROLES = {"platform_admin", "admin", "implementer"}
+APPROVE_ROLES = {"platform_admin", "admin"}
+USER_ADMIN_ROLES = {"platform_admin", "admin"}
+DATA_CONFIG_ROLES = {"platform_admin", "admin", "implementer"}
+PROBLEM_ROLES = {"platform_admin", "admin", "implementer"}
 IDENTITY_HEADERS = {"x-enterprise-id", "x-user-id", "x-role", "x-store-ids"}
 PASSWORD_HASHER = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=2, hash_len=32, salt_len=16)
 SESSION_COOKIE = "commerce_session"
@@ -123,10 +126,9 @@ def _current_user(request: Request, db: Session) -> tuple[UserAccount, AuthSessi
     proxy_user = _trusted_proxy_user(request, db)
     if proxy_user:
         return proxy_user, None
-    authorization = request.headers.get("Authorization", "")
-    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else request.cookies.get(SESSION_COOKIE)
+    token = request.cookies.get(SESSION_COOKIE)
     if not token:
-        raise HTTPException(status_code=401, detail="authentication required", headers={"WWW-Authenticate": "Bearer"})
+        raise HTTPException(status_code=401, detail="authentication required")
     session = db.scalar(select(AuthSession).where(AuthSession.token_hash == _token_hash(token)))
     now = utcnow()
     if not session or session.revoked_at is not None or _aware(session.expires_at) <= now:
@@ -151,6 +153,12 @@ def get_context(request: Request, db: Session = Depends(get_db)) -> RequestConte
         raise HTTPException(status_code=403, detail="account is not yet effective")
     if user.effective_to and _aware(user.effective_to) <= now:
         raise HTTPException(status_code=403, detail="account is no longer effective")
+    if user.must_change_password and request.url.path not in {
+        "/api/v1/auth/me",
+        "/api/v1/auth/logout",
+        "/api/v1/auth/change-password",
+    }:
+        raise HTTPException(status_code=403, detail={"code": "password_change_required", "message": "首次登录必须先设置新密码"})
     enterprise_id = user.enterprise_id
     act_as = request.headers.get("X-Act-As-Enterprise-ID")
     if act_as:

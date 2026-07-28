@@ -46,10 +46,10 @@ export default function DashboardPage() {
 }
 
 function DashboardContent({ data }: { data: DashboardSummary }) {
-  const metrics = [['销售', data.revenue], ['退款', data.refund], ['费用', data.fees], ['成本', data.cost], ['经营利润', data.profit]] as const
+  const metrics = [['销售', data.revenue, 'currency'], ['退款', data.refund, 'currency'], ['费用', data.fees, 'currency'], ['成本', data.cost, 'currency'], ['经营利润', data.profit, 'currency'], ['订单数', data.order_count, 'count']] as const
   return <>
-    <section className="metric-strip">{metrics.map(([label, value]) => <article className="metric" key={label}><div><span>{label}</span><strong>{currency.format(value)}</strong></div></article>)}</section>
+    <section className="metric-strip">{metrics.map(([label, value, kind]) => <article className="metric" key={label}><div><span>{label}</span><strong>{kind === 'count' ? value.toLocaleString('zh-CN') : currency.format(value)}</strong></div></article>)}</section>
     <section className="panel chart-panel"><div className="panel-title"><h2>净销售额与经营利润趋势</h2><div className="legend"><span className="rev" />净销售额 <span className="profit" />经营利润</div></div><TrendChart values={data.trend} /></section>
-    <section className="panel table-panel"><h2>店铺经营表现</h2><div className="table-scroll"><table><thead><tr><th>店铺</th><th>销售</th><th>退款</th><th>费用</th><th>成本</th><th>经营利润</th><th>利润率</th></tr></thead><tbody>{data.stores.map((store) => <tr key={store.id}><td>{store.name}</td><td>{currency.format(store.revenue)}</td><td className="refund-value">{currency.format(store.refund)}</td><td>{currency.format(store.fees)}</td><td>{currency.format(store.cost)}</td><td>{currency.format(store.profit)}</td><td>{store.profit_margin.toFixed(2)}%</td></tr>)}</tbody></table></div></section>
+    <section className="panel table-panel"><h2>店铺经营表现</h2><div className="table-scroll"><table><thead><tr><th>店铺</th><th>订单数</th><th>销售</th><th>退款</th><th>费用</th><th>成本</th><th>经营利润</th><th>利润率</th></tr></thead><tbody>{data.stores.map((store) => <tr key={store.id}><td>{store.name}</td><td>{store.order_count.toLocaleString('zh-CN')}</td><td>{currency.format(store.revenue)}</td><td className="refund-value">{currency.format(store.refund)}</td><td>{currency.format(store.fees)}</td><td>{currency.format(store.cost)}</td><td>{currency.format(store.profit)}</td><td>{store.profit_margin.toFixed(2)}%</td></tr>)}</tbody></table></div></section>
   </>
 }

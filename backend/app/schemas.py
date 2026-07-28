@@ -43,6 +43,10 @@ class ResourceCreate(APIModel):
     dedupe_keys: list[str] | None = None
     validations: list[dict[str, Any]] | None = None
     store_field: str | None = None
+    logical_id: str | None = None
+    import_mode: Literal["monthly_snapshot", "incremental"] | None = None
+    source_kind: Literal["orders", "fees", "mixed"] | None = None
+    amount_directions: dict[str, Literal["positive", "negative"]] | None = None
     source_definition_id: str | None = None
     scope_type: Literal["enterprise", "business_entity", "platform_account", "store", "source"] | None = None
     scope_id: str | None = None
@@ -97,6 +101,18 @@ class ResourcePatch(APIModel):
     recognition: dict[str, Any] | None = None
     validations: list[dict[str, Any]] | None = None
     expected_rows: int | None = None
+    platform: str | None = None
+    external_account_id: str | None = None
+    external_store_id: str | None = None
+    coverage_time_field: str | None = None
+    data_granularity: Literal["event", "hour", "day", "month", "custom"] | None = None
+    arrival_frequency: Literal["hourly", "daily", "monthly", "adhoc"] | None = None
+    required: bool | None = None
+    dedupe_keys: list[str] | None = None
+    store_field: str | None = None
+    import_mode: Literal["monthly_snapshot", "incremental"] | None = None
+    source_kind: Literal["orders", "fees", "mixed"] | None = None
+    amount_directions: dict[str, Literal["positive", "negative"]] | None = None
     definition: dict[str, Any] | None = None
     quality_gates: list[dict[str, Any]] | None = None
     expression: str | None = None
@@ -180,6 +196,11 @@ class LoginRequest(APIModel):
 class PasswordChange(APIModel):
     current_password: str = Field(min_length=1, max_length=256)
     new_password: str = Field(min_length=12, max_length=256)
+
+
+class LockedCorrection(APIModel):
+    reason: str = Field(min_length=10, max_length=1000)
+    locked_run_id: str | None = None
 
 
 class UserInvite(APIModel):

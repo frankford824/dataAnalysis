@@ -1,6 +1,6 @@
-# 商用演示就绪设计规范
+# 商用演示界面设计规范
 
-本规范从五张产品概念图提取，只约束已实现的黄金路径。概念图中的数值仅用于布局，不得作为运行时数据；实际界面必须完全使用当前 API 返回值。
+本规范从 `commercial-v2-*` 产品概念图提取，只约束已实现的黄金路径。概念图中的数值仅用于布局，不得作为运行时数据；实际界面必须完全使用当前 API 返回值。整改审计与差异记录分别见 [commercial-v2-audit.md](commercial-v2-audit.md) 和 [commercial-v2-fidelity.md](commercial-v2-fidelity.md)。
 
 ## 设计令牌
 
@@ -28,8 +28,10 @@
 
 ## 概念图
 
-- `demo-ready-setup.png`：首次设置。
-- `demo-ready-confirm.png`：上传核对与更新。
-- `demo-ready-dashboard.png`：经营看板。
-- `demo-ready-issues.png`：实施人员待处理问题。
-- `demo-ready-mobile-home.png`：移动端首页。
+- `commercial-v2-home.png`：普通用户首页。
+- `commercial-v2-upload-review.png`：上传核对与更新。
+- `commercial-v2-dashboard.png`：经营看板。
+- `commercial-v2-data-settings.png`：数据设置。
+- `commercial-v2-problems.png`：实施人员待处理问题。
+- `commercial-v2-change-password.png`：首次修改密码。
+- `commercial-v2-mobile-review.png`：移动关键流。

@@ -1,0 +1,60 @@
+name: finance-reconciliation-harness
+
+services:
+  workbench:
+    build:
+      context: .
+      dockerfile: harness/Dockerfile
+      args:
+        HARNESS_UID: ${FA_UID:-1000}
+        HARNESS_GID: ${FA_GID:-1000}
+        HARNESS_GIT_SHA: ${FA_HARNESS_GIT_SHA:-79bdbd2bdbe851a8901cf16327841cbfd6fa2ff2}
+    image: finance-reconciliation-harness:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FA_HARNESS_PORT:-8765}:8765"
+    environment:
+      FA_WORKBENCH: /workbench
+      FA_CONFIG: /workbench/config.toml
+      FA_CONTAINER_BIND: "1"
+      FA_WEB_DIST: /app/harness/web/dist
+      FA_SOURCE_READONLY_ENFORCED: "1"
+      FA_AUTO_COMPUTE: "${FA_AUTO_COMPUTE:-1}"
+      HOME: /home/harness
+    volumes:
+      - type: bind
+        # Leading // is POSIX-equivalent to / and prevents Docker Desktop
+        # Compose from rewriting a writable WSL path into an invalid UNC volume.
+        source: ${FA_WORKBENCH_BIND:-//home/wsfwk/fa-workbench}
+        target: /workbench
+      # Docker Desktop can reject individual WSL file binds after a restart.
+      # Directory binds preserve the same read-only boundary and work in both
+      # native Linux Docker and Docker Desktop's WSL bridge.
+      - type: bind
+        source: ${FA_CONNECTION_DIR:-/home/wsfwk/fa-workbench/ssh}
+        target: /run/connection
+        read_only: true
+      - type: bind
+        source: ${FA_SSH_DIR:-/home/wsfwk/.ssh}
+        target: /run/ssh-host
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=4g,mode=1777
+      - /home/harness/.ssh:size=1m,mode=0700,uid=1000,gid=1000
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    stop_grace_period: 30s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/readyz', timeout=8).read()"
+      interval: 10s
+      timeout: 10s
+      start_period: 20s
+      retries: 5

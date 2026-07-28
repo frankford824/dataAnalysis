@@ -1,0 +1,12 @@
+[agent]
+control_plane_url = "http://127.0.0.1:8000"
+name = "local-fixture-reader"
+connector = "local_fixture"
+fixture_root = "./fixtures"
+state_dir = ".finance-agent-fixture"
+poll_seconds = 1
+heartbeat_seconds = 5
+
+[safety]
+stable_for_seconds = 0
+max_materialize_bytes = 104857600

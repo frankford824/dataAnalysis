@@ -1,28 +1,28 @@
-# Operations, backup, upgrade, and rollback
+# 运维、备份、升级与回滚
 
-## Daily checks
+## 日常检查
 
-Run `./scripts/diagnose.sh` and monitor API job failures, queue depth, PostgreSQL disk/connection utilization, MinIO capacity, certificate expiry, and the most recent successful backup. `/health` is process liveness, `/ready` verifies database and object storage, and `/api/v1/health/diagnostics` is an authenticated dependency check.
+运行 `./scripts/diagnose.sh`，并监控 API 任务失败、队列深度、PostgreSQL 磁盘与连接、MinIO 容量、证书到期时间和最近一次成功备份。`/health` 只表示进程存活，`/ready` 检查数据库和对象存储，`/api/v1/health/diagnostics` 是需要登录的依赖诊断。
 
-## Backup and restore
+## 备份与恢复
 
-`./scripts/backup.sh /secure/backup/path` writes custom-format dumps for the application, Superset metadata, and optional LiteLLM metadata databases; every current object from the three product buckets; the Superset/runtime configuration; and a SHA-256 manifest. Raw keys are content-addressed and never overwritten, so this includes every formal original even though MinIO's internal version IDs are not preserved. It does not back up Redis because Redis contains disposable queue/cache state. Encrypt backup media and restrict it as customer data.
+`./scripts/backup.sh /安全的备份目录` 会保存应用库、Superset 元数据库和可选 LiteLLM 元数据库的自定义格式转储，三个产品桶中的当前对象，Superset/运行配置，以及 SHA-256 清单。原文件使用内容寻址且从不覆盖，因此正式原文件都会进入备份；但 MinIO 内部版本号不在恢复承诺内。Redis 只保存可丢弃的队列和缓存状态，不进入备份。备份介质属于客户数据，必须加密并限制访问。
 
-Restore is intentionally destructive and requires an explicit flag:
+恢复会覆盖当前数据，必须显式确认：
 
 ```bash
-./scripts/restore.sh --confirm /secure/backup/path
+./scripts/restore.sh --confirm /安全的备份目录
 ```
 
-The script verifies hashes, pauses application writers, restores PostgreSQL and current objects, restarts services, and runs the smoke test. `./scripts/backup-restore-test.sh --confirm` additionally runs the deterministic two-store reconciliation before and after a destructive rehearsal. A restore is complete only after checking configuration/rule/model/dashboard counts, sample locked periods, and several raw object hashes; the smoke test alone does not prove business-level completeness.
+脚本先校验哈希，再暂停写入服务，恢复 PostgreSQL 和对象，重启服务并执行冒烟检查。`./scripts/backup-restore-test.sh --confirm` 还会在破坏性演练前后执行双店铺确定性对账。恢复完成不能只看服务健康；还应核对配置、规则、模型、看板数量，抽查锁定月份和原文件哈希。
 
-## Upgrade
+## 升级
 
-1. Export configuration, record the current Git commit and image digests, and run a fresh backup.
-2. Rehearse migration and smoke/E2E tests against a restored copy.
-3. Pull the signed release, review `.env.example` changes, then run `docker compose build`.
-4. Stop workers and scheduler, run the backend migration role, and start the full stack.
-5. Verify health, tenant isolation, a certified query, an export, and an embedded dashboard before reopening uploads.
+1. 导出配置，记录当前 Git 提交和镜像摘要，并执行新备份。
+2. 在恢复副本上演练迁移、冒烟和端到端测试。
+3. 获取已签名版本，审查 `.env.example` 变化，再构建镜像。
+4. 停止 worker 和 scheduler，运行数据库迁移，然后启动完整栈。
+5. 验证健康、租户隔离、认证查询、导出和嵌入看板后再开放上传。
 
 ```bash
 docker compose stop worker scheduler
@@ -31,6 +31,6 @@ docker compose up -d --build
 ./scripts/smoke-test.sh
 ```
 
-## Rollback
+## 回滚
 
-Application-only rollback is allowed when the database migration is backward-compatible: redeploy the recorded image digests. If a migration is not backward-compatible, stop all writers, restore the pre-upgrade backup, then deploy the prior images. Never point older code at a schema that its release notes mark incompatible. Locked periods remain immutable; rollback must not republish or recalculate them.
+数据库迁移向后兼容时，可以重新部署记录过的旧镜像摘要。若迁移不兼容，先停止所有写入服务，恢复升级前备份，再部署旧镜像。禁止让旧代码连接其版本不支持的新 schema。回滚不得重新发布或重算锁定月份；业务数据更正必须走管理员授权和审计流程。

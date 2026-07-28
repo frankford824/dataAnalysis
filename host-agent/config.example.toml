@@ -1,0 +1,65 @@
+[agent]
+control_plane_url = "http://127.0.0.1:8000"
+name = "finance-win-reader"
+connector = "ssh_windows"
+state_dir = ".finance-agent"
+poll_seconds = 5
+heartbeat_seconds = 20
+request_timeout_seconds = 30
+materialize_timeout_seconds = 1800
+
+[windows]
+ssh_alias = "finance-win-ro"
+# auto：WSL 下优先使用 Windows OpenSSH，以复用 C:\Users\...\ .ssh\config；
+# 原生 Linux/Windows 则使用 PATH 中的 ssh。也可以写绝对路径。
+ssh_binary = "auto"
+recent_shortcuts_root = 'C:\Users\finance_reader\AppData\Roaming\Microsoft\Windows\Recent'
+
+[safety]
+stable_for_seconds = 600
+max_materialize_bytes = 2147483648
+sensitive_extensions = [".key", ".pem", ".pfx", ".p12", ".kdbx", ".db", ".sqlite", ".bak", ".zip"]
+excluded_fragments = [
+  '\工资',
+  '\汇总',
+  '\学习',
+  '\测试',
+  '\WeChat Files',
+  '\凭证',
+  '\早期数据',
+  '\$RECYCLE.BIN',
+]
+
+[[sources]]
+path = 'D:\FinanceData\BI'
+purpose = "pbix_asset"
+extensions = [".pbix"]
+
+[[sources]]
+path = 'D:\FinanceData\订单'
+purpose = "orders"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm"]
+
+[[sources]]
+path = 'D:\FinanceData\广告'
+purpose = "advertising"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm"]
+
+[[sources]]
+path = 'D:\FinanceData\结算'
+purpose = "settlement"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm"]
+
+[[sources]]
+path = 'D:\FinanceData\成本'
+purpose = "product_cost"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm"]
+
+[[sources]]
+path = 'D:\FinanceData\运费'
+purpose = "shipping"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm"]
+
+# 凭据绝不写入本文件：
+# FINANCE_AGENT_ENROLLMENT_TOKEN 仅在 register 时使用。
+# FINANCE_AGENT_ACCESS_TOKEN 可选；register 返回的访问令牌默认保存在权限收紧的本地状态库。

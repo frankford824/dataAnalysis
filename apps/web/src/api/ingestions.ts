@@ -31,3 +31,10 @@ export function confirmIngestion(id: string, accepted: boolean, note?: string) {
 export function publishIngestion(id: string) {
   return request<IngestionRun>(`/ingestions/${id}/publish`, { method: 'POST' })
 }
+
+export function authorizeCorrection(id: string, reason: string) {
+  return request<IngestionRun>(`/ingestions/${id}/authorize-correction`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  })
+}

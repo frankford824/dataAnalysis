@@ -8,12 +8,23 @@ export function RequireAuth() {
   if (auth.status === 'loading') return <main className="center-screen"><LoadingState label="正在确认登录状态…" /></main>
   if (auth.status === 'setup_required') return <Navigate to="/setup" replace />
   if (auth.status !== 'authenticated') return <Navigate to="/login" replace state={{ from: location.pathname }} />
+  if (auth.user?.must_change_password && location.pathname !== '/change-password') return <Navigate to="/change-password" replace />
   return <Outlet />
 }
 
-export function RequireAdmin() {
+export function RequireUserAdmin() {
   const auth = useAuth()
-  return auth.canManage ? <Outlet /> : <Navigate to="/" replace />
+  return auth.canManageUsers ? <Outlet /> : <Navigate to="/" replace />
+}
+
+export function RequireDataConfig() {
+  const auth = useAuth()
+  return auth.canConfigureData ? <Outlet /> : <Navigate to="/" replace />
+}
+
+export function RequireProblems() {
+  const auth = useAuth()
+  return auth.canResolveProblems ? <Outlet /> : <Navigate to="/" replace />
 }
 
 export function RequireUpload() {

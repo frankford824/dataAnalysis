@@ -1,142 +1,63 @@
 # 部署配置指南
 
-## 部署边界
+当前有效产品是电商财务对账 Harness。详细操作、Windows/WSL 两种 Docker 启动方式、
+安全边界、诊断和备份步骤见：
 
-生产环境采用“单客户、单实例”的 Linux 服务器或虚拟机。业务服务、处理引擎、对象存储和 Superset 位于客户内网；Windows 和 macOS 仅作为客户端。即使一个实例当前只服务一个客户，正式记录仍保留 `enterprise_id`，API 和认证视图继续执行企业与店铺隔离。
+- [Harness 本机部署与运维指南](harness-deployment.md)
+- [Harness 重构执行边界](harness-refactor.md)
 
-建议最低软件版本：Docker Engine 26、Docker Compose v2.27。容量选择见 [容量规划](capacity.md)。
+## 当前部署形态
 
-## 首次安装
+- finance-win：专用 OS 级只读账号，只提供原始文件读取；
+- WSL 主机：执行 `scan`、`freeze`、`profile`，不向远端写文件；
+- Docker：单实例 DuckDB、FastAPI 和 React 工作台；
+- 客户数据：全部保存在仓库外 `~/fa-workbench`；
+- 人员与商品归属：finance-win 员工表、运营链接和 2026 历史绩效文件进入只读参考层；
+  历史绩效来源、临时人员和临时商品不会进入正式绩效执行器；
+- 外部模型：可在页面启停，未配置或失败时不影响确定性流程。
 
-```bash
-./scripts/generate-env.sh > .env
-chmod 600 .env
-
-# 按客户环境修改域名、端口和密钥后校验
-./scripts/validate-config.sh .env
-docker compose config --quiet
-
-docker compose up -d --build
-./scripts/smoke-test.sh
-```
-
-常规安装不得自动写入示例公司、店铺或经营数据。首次打开业务门户后，由首位管理员在浏览器中完成：
-
-1. 创建管理员密码；
-2. 填写公司、平台账号和首家店铺；
-3. 选择数据启用日期；
-4. 启用内置标准经营模型。
-
-完成后再创建受限业务账号并分配店铺。首个管理员初始化完成后，公开初始化接口会被关闭。
-
-默认本机入口：
-
-- 业务门户：`http://127.0.0.1:3000`
-- API 文档：`http://127.0.0.1:8000/docs`
-- Superset：`http://127.0.0.1:8088`
-- MinIO 管理端：`http://127.0.0.1:9001`
-
-Compose 默认把管理端口绑定到回环地址。生产环境只应通过客户管理的 TLS 反向代理开放业务门户；数据库、Redis、MinIO 和 Superset 管理端不得直接暴露到互联网。
-
-## 身份认证
-
-默认认证方式为平台本地账号密码：
-
-- 密码使用 Argon2 哈希保存；
-- 浏览器使用 HttpOnly、SameSite 会话 Cookie；
-- 会话短期有效，可登出或由服务端撤销；
-- 企业、角色和店铺范围从数据库账号加载，不从浏览器身份头加载。
-
-生产环境通过 HTTPS 访问时必须设置：
-
-```dotenv
-SESSION_COOKIE_SECURE=true
-```
-
-系统保留可选的可信反向代理身份模式，但默认关闭。启用前必须同时配置代理来源地址和至少 32 字符的共享签名密钥；代理必须删除客户端同名请求头并使用短时签名断言重新注入。仅设置 `X-Enterprise-ID`、`X-User-ID` 或 `X-Role` 不会获得权限。
-
-## 网络与浏览器地址
-
-`.env` 中至少应确认：
-
-```dotenv
-WEB_BIND_ADDRESS=127.0.0.1
-MANAGEMENT_BIND_ADDRESS=127.0.0.1
-PUBLIC_API_BASE_URL=/api/v1
-PUBLIC_SUPERSET_URL=https://bi.example.internal
-SUPERSET_EMBED_ALLOWED_DOMAINS=https://analytics.example.internal
-```
-
-`PUBLIC_SUPERSET_URL` 是用户浏览器可访问的地址，不是 Docker 内部服务名。修改前端构建变量后需要重新构建：
+## 快速启动
 
 ```bash
-docker compose build web
-docker compose up -d web
+export FA_WORKBENCH_BIND=//home/wsfwk/fa-workbench
+export FA_CONNECTION_DIR=/home/wsfwk/fa-workbench/ssh
+export FA_SSH_DIR=/home/wsfwk/.ssh
+export FA_UID="$(id -u)"
+export FA_GID="$(id -g)"
+
+docker compose -f compose.harness.yaml up -d --build
+curl -fsS http://127.0.0.1:8765/readyz
 ```
 
-反向代理需要保留 `Host` 和 `X-Forwarded-Proto`，限制请求体大小不低于平台配置的上传上限，并为普通 API 设置合理超时。不要向后端转发外部客户端自行提供的身份头。
+页面入口为 <http://127.0.0.1:8765>。
 
-## 文件与数据边界
+双斜杠工作台路径用于兼容 Docker Desktop 的 WSL 路径转换；它在 Linux 中与单斜杠等价。
+Docker Desktop 必须启用 Ubuntu 集成，并从 Ubuntu 终端执行 Compose。
 
-- 浏览器和桌面端均受服务端 `COMMERCE_MAX_UPLOAD_BYTES` 限制；当前实现不是 10GB 流式合并方案。
-- ZIP 同时限制解压总大小、压缩比和路径穿越。
-- 原文件以内容哈希保存，不允许覆盖；同一企业重复上传相同内容不会重复发布。
-- 内容日期必须不早于企业、店铺和数据来源三者中最晚的启用日期。
-- 历史回填是独立任务，不得覆盖同一来源、同一店铺的锁定账期。
+## 重要限制
 
-Docker 命名卷：
+当前 API 没有多用户登录，Compose 只能绑定主机回环地址，禁止直接暴露到局域网。
+容器健康只证明工作台可运行，不证明对账已经正确。以下门禁仍需完成：
 
-- `postgres-data`：账号、权限、配置、审计、认证经营数据和 Superset 元数据；
-- `minio-data`：原文件、中间结果和导出；
-- `redis-data`：任务队列状态；
-- `superset-home`：Superset 运行文件。
+1. 三项业务口径裁决；
+2. 支付宝分类和订单号规则回放；
+3. 订单—平台钱包确定性核对的真实样本回放；银行腿当前明确不适用；
+4. 2602–2604 历史差异裁决和黄金基线；
+5. 2605 封存盲测；
+6. 备份恢复演练和局域网身份认证。
 
-## Superset
+人员绩效页当前是历史参考核验，不是正式绩效结算。2026 年 6 月及以后没有明确负责人来源时
+不会沿用 5 月归属；只有认证账本产生商品粒度结果并通过绩效政策版本校验后，才能形成正式绩效。
+参考层只暴露 2026-02 之后的人员×商品明细；同目录中的店铺月汇总只作为原始证据保存。
+平台模板没有使用的费用列按零值参与旧公式复核，而不是把整份文件误报为导入失败。
+L0 表示模型无账本写入权限，不表示只能执行单一任务；当前外部模型只接线差额说明草案和独立复核。
+当前正式证据规则为 `finite-normalization-v5`。旧版本绑定和旧 JSON 线索只保留审计，必须从
+不可变快照重新处理；缺行号或 XLSX 缺工作表的证据不能通过模型引用或人员绩效门禁。独立复核失败
+的样本不计入规则晋升准确率。同一金额或差额只要混入一条无效绑定，整组即不可用，不会挑选剩余
+行继续计算。schema 15 会撤销旧策略学习资格和旧绩效 current head；学习 v2 每次评估都会重新
+比对当前完整绑定摘要。当前绩效执行器为 `certified-person-performance-v2`，旧 v1 head 会被
+撤销；“认证绩效可用”只按当前选择的店铺、月份和 complete 状态判断。
+页面中的“通过系统检查”不是人工批准或正式发布记录。
 
-Superset 使用只读 `analytics_reader` 连接认证视图，不能读取原始表或写入业务库。普通用户从平台取得带企业和授权店铺条件的短时 guest token；实施人员使用独立管理账号进入设计环境。
-
-门户看板与 Superset 必须读取同一认证聚合结果。若 Superset 尚未配置，管理端显示“尚未启用”，普通门户仍可使用内置经营看板，不得显示假看板。
-
-## AI 模式
-
-默认 `AI_MODE=disabled`，常规启动不会启动 LiteLLM。固定经营问题、金额计算、质量门禁、发布、导出和看板均不依赖 AI。
-
-启用经过客户批准的模型后才运行：
-
-```bash
-docker compose --profile ai up -d litellm
-```
-
-外部模型只能辅助理解问题或解释结果；正式数字仍由认证查询产生。模型密钥只放在客户密钥系统或未提交的部署配置中。
-
-## 演示环境
-
-以下命令仅用于可丢弃演示实例：
-
-```bash
-./scripts/demo-reset.sh --confirm
-```
-
-它会删除当前 Compose 项目的命名卷，重建服务并写入明确标识的演示账号与固定对账数据。不得在已有客户数据的实例执行。人工基准位于 `examples/demo/expected-reconciliation.csv`。
-
-## 备份、恢复与上线检查
-
-```bash
-./scripts/backup.sh /安全的备份目录
-./scripts/restore.sh --confirm /安全的备份目录
-./scripts/diagnose.sh
-./scripts/smoke-test.sh
-```
-
-恢复属于覆盖操作，必须在隔离实例定期演练。上线前至少验证：
-
-- 未登录访问业务 API 返回 401，伪造身份头不能提权；
-- 两个企业和受限店铺账号不能越权；
-- 固定样例销售、退款、费用、成本和利润与人工基准一致；
-- 重复文件不增加认证行；
-- CSV 与 XLSX 导出内容服从当前月份、平台和店铺；
-- AI 关闭时黄金路径正常；
-- PostgreSQL、Redis、MinIO 和 Superset 管理端不对外网开放；
-- 备份恢复后账号、配置、文件、模型和看板引用完整。
-
-更多资料：[安全边界](security.md)、[运维指南](operations.md)、[离线部署](offline-deployment.md)、[Superset 集成](superset.md)。
+上一轮 PostgreSQL、Redis、MinIO、Superset 通用平台栈保留在旧代码中作迁移参考，
+不再作为当前启动入口或完成证据。

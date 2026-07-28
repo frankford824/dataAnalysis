@@ -3,10 +3,11 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import type { SessionUser } from './types'
 
-const viewer = { id: 'u1', name: '林经理', email: 'lin@example.com', role: 'viewer', enterprise_id: 'e1', enterprise_name: '海风户外用品', store_ids: ['s1'] }
-const implementer = { ...viewer, role: 'implementer', name: '王实施' }
-const admin = { ...viewer, role: 'admin', name: '张管理员' }
+const viewer: SessionUser = { id: 'u1', name: '林经理', email: 'lin@example.com', role: 'viewer', enterprise_id: 'e1', enterprise_name: '海风户外用品', store_ids: ['s1'] }
+const implementer: SessionUser = { ...viewer, role: 'implementer', name: '王实施' }
+const admin: SessionUser = { ...viewer, role: 'admin', name: '张管理员' }
 
 function json(body: unknown, status = 200) {
   return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }))
@@ -17,6 +18,12 @@ function baseApi(user = viewer) {
     const path = String(input)
     if (path.endsWith('/setup')) return json({ initialized: true })
     if (path.endsWith('/auth/me')) return json(user)
+    if (path.endsWith('/control/overview')) return json({
+      agents: [{ id: 'agent-1', name: 'finance-win', status: 'online', last_heartbeat_at: '2026-07-22T08:00:00Z' }],
+      current_operation: null,
+      pending_review_count: 0,
+      generated_at: '2026-07-22T08:10:00Z',
+    })
     if (path.endsWith('/stores')) return json([{ id: 's1', name: '北辰旗舰店', status: 'active' }])
     if (path.endsWith('/sources')) return json([{ id: 'src1', name: '销售明细', status: 'active' }])
     if (path.endsWith('/ingestions')) return json([])
@@ -48,7 +55,7 @@ describe('golden path application', () => {
     await user.type(await screen.findByLabelText('邮箱'), 'admin@example.com')
     await user.type(screen.getByLabelText('密码'), 'safe-password')
     await user.click(screen.getByRole('button', { name: '登录' }))
-    expect(await screen.findByRole('heading', { name: '首页' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '工作台' })).toBeInTheDocument()
     const loginCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/auth/login'))
     expect(loginCall?.[1]?.credentials).toBe('include')
     const headers = loginCall?.[1]?.headers as Record<string, string>
@@ -60,10 +67,17 @@ describe('golden path application', () => {
   it('hides upload and management from a restricted viewer', async () => {
     vi.stubGlobal('fetch', baseApi(viewer))
     render(<MemoryRouter initialEntries={['/']}><App /></MemoryRouter>)
-    expect(await screen.findByRole('heading', { name: '首页' })).toBeInTheDocument()
-    expect(screen.getAllByRole('link', { name: /经营看板/ }).length).toBeGreaterThan(0)
+    expect(await screen.findByRole('heading', { name: '工作台' })).toBeInTheDocument()
+    expect(screen.getAllByRole('link', { name: /经营结果/ }).length).toBeGreaterThan(0)
     expect(screen.queryByRole('link', { name: /添加本月数据/ })).not.toBeInTheDocument()
     expect(screen.queryByText('管理')).not.toBeInTheDocument()
+  })
+
+  it('forces a temporary-password user to change it before opening the business portal', async () => {
+    vi.stubGlobal('fetch', baseApi({ ...viewer, must_change_password: true }))
+    render(<MemoryRouter initialEntries={['/dashboard']}><App /></MemoryRouter>)
+    expect(await screen.findByRole('heading', { name: '设置您自己的密码' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '经营看板' })).not.toBeInTheDocument()
   })
 
   it('uploads, confirms, and publishes through real endpoints', async () => {

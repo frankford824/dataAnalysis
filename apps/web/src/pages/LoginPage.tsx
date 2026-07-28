@@ -12,6 +12,7 @@ export default function LoginPage() {
   const [busy, setBusy] = useState(false)
 
   if (auth.status === 'authenticated') {
+    if (auth.user?.must_change_password) return <Navigate to="/change-password" replace />
     const from = (location.state as { from?: string } | null)?.from || '/'
     return <Navigate to={from} replace />
   }

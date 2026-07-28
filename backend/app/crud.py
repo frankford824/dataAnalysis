@@ -26,7 +26,7 @@ from .models import (
     Store,
     UserAccount,
 )
-from .security import RequestContext, WRITE_ROLES, encrypt_secret, hash_password
+from .security import DATA_CONFIG_ROLES, RequestContext, USER_ADMIN_ROLES, WRITE_ROLES, encrypt_secret, hash_password
 
 
 RESOURCE_MODELS = {
@@ -94,6 +94,12 @@ def validate_references(db: Session, model, data: dict, enterprise_id: str) -> N
             _validate_tenant_reference(db, Store, store_id, enterprise_id)
         if "store_ids" in data:
             data["store_ids"] = [db.get(Store, store_id).logical_id for store_id in data["store_ids"]]
+    if model is SourceDefinition:
+        if data.get("import_mode") == "incremental" and not data.get("dedupe_keys"):
+            raise HTTPException(status_code=422, detail="增量导入必须配置稳定业务键")
+        if data.get("source_kind") == "fees" and "order_id" in (data.get("dedupe_keys") or []):
+            # Fee exports may carry reference IDs, but they are not order facts.
+            pass
     if model in {SourceBinding, ModelScopeBinding} and data.get("scope_type") != "enterprise":
         target_map = {
             "store": Store,
@@ -110,7 +116,9 @@ def validate_references(db: Session, model, data: dict, enterprise_id: str) -> N
 
 
 def create_resource(db: Session, ctx: RequestContext, resource: str, payload: dict, *, commit: bool = True) -> dict:
-    ctx.require(WRITE_ROLES)
+    if resource in {"metrics", "semantic-models"}:
+        raise HTTPException(status_code=405, detail="标准模型与指标元数据只读，由内置注册表发布")
+    ctx.require(USER_ADMIN_ROLES if resource == "users" else DATA_CONFIG_ROLES if resource in {"platforms", "stores", "sources", "source-bindings", "source-schedules"} else WRITE_ROLES)
     if not ctx.enterprise_id:
         raise HTTPException(status_code=400, detail="enterprise context required")
     model = RESOURCE_MODELS[resource]
@@ -126,11 +134,11 @@ def create_resource(db: Session, ctx: RequestContext, resource: str, payload: di
             raise HTTPException(status_code=409, detail="email is already registered")
         data["password_hash"] = hash_password(payload["password"])
         data.setdefault("must_change_password", False)
-    if model is Store:
+    if model in {Store, PlatformAccount, SourceDefinition}:
         data.setdefault("logical_id", __import__("uuid").uuid4().hex)
     required = {
         PlatformAccount: ["platform"],
-        Store: ["activation_at"],
+        Store: ["activation_at", "platform_account_id"],
         SourceDefinition: ["coverage_time_field", "data_granularity", "arrival_frequency", "activation_at"],
         SourceBinding: ["source_definition_id", "scope_type", "scope_id"],
         SourceSchedule: ["source_definition_id", "cron"],
@@ -157,6 +165,8 @@ def list_resources(db: Session, ctx: RequestContext, resource: str, include_arch
     if not ctx.enterprise_id:
         raise HTTPException(status_code=400, detail="enterprise context required")
     model = RESOURCE_MODELS[resource]
+    if model is UserAccount:
+        ctx.require(USER_ADMIN_ROLES)
     stmt = select(model).where(model.enterprise_id == ctx.enterprise_id)
     if not include_archived:
         now = datetime.now(timezone.utc)
@@ -174,6 +184,11 @@ def list_resources(db: Session, ctx: RequestContext, resource: str, include_arch
             for item in items:
                 current.setdefault(item.logical_id, item)
             items = list(current.values())
+    if model in {PlatformAccount, SourceDefinition} and not include_archived:
+        current = {}
+        for item in items:
+            current.setdefault(item.logical_id, item)
+        items = list(current.values())
     return [serialize(item) for item in items]
 
 
@@ -181,6 +196,8 @@ def get_resource(db: Session, ctx: RequestContext, resource: str, object_id: str
     if not ctx.enterprise_id:
         raise HTTPException(status_code=400, detail="enterprise context required")
     model = RESOURCE_MODELS[resource]
+    if model is UserAccount:
+        ctx.require(USER_ADMIN_ROLES)
     obj = db.scalar(select(model).where(model.id == object_id, model.enterprise_id == ctx.enterprise_id))
     if not obj:
         raise HTTPException(status_code=404, detail="resource not found")
@@ -190,7 +207,9 @@ def get_resource(db: Session, ctx: RequestContext, resource: str, object_id: str
 
 
 def update_resource(db: Session, ctx: RequestContext, resource: str, object_id: str, payload: dict) -> dict:
-    ctx.require(WRITE_ROLES)
+    if resource in {"metrics", "semantic-models"}:
+        raise HTTPException(status_code=405, detail="标准模型与指标元数据只读，由内置注册表发布")
+    ctx.require(USER_ADMIN_ROLES if resource == "users" else DATA_CONFIG_ROLES if resource in {"platforms", "stores", "sources", "source-bindings", "source-schedules"} else WRITE_ROLES)
     obj = get_resource(db, ctx, resource, object_id)
     model = type(obj)
     data = {key: value for key, value in payload.items() if value is not None and key in _columns(model)}
@@ -209,13 +228,91 @@ def update_resource(db: Session, ctx: RequestContext, resource: str, object_id: 
             if column.key not in {"id", "version", "created_at", "updated_at", "archived_at", "approved_by", "status", "effective_to"}
         }
         clone_data.update(data)
-        clone_data.update(version=obj.version + 1, status="draft", created_by=ctx.user_id, approved_by=None, archived_at=None)
+        immediately_effective = model in {PlatformAccount, Store, SourceDefinition}
+        clone_data.update(
+            version=obj.version + 1,
+            status=obj.status if immediately_effective else "draft",
+            created_by=ctx.user_id,
+            approved_by=ctx.user_id if immediately_effective else None,
+            archived_at=None,
+        )
         now = datetime.now(timezone.utc)
         obj.effective_to = now
         clone_data["effective_from"] = now
         new_obj = model(**clone_data)
         db.add(new_obj)
         db.flush()
+        if model is SourceDefinition:
+            bindings = db.scalars(
+                select(SourceBinding).where(
+                    SourceBinding.enterprise_id == obj.enterprise_id,
+                    SourceBinding.source_definition_id == obj.id,
+                    SourceBinding.archived_at.is_(None),
+                    or_(SourceBinding.effective_to.is_(None), SourceBinding.effective_to > now),
+                )
+            ).all()
+            for binding in bindings:
+                binding.effective_to = now
+                db.add(SourceBinding(
+                    enterprise_id=binding.enterprise_id,
+                    name=binding.name,
+                    source_definition_id=new_obj.id,
+                    scope_type=binding.scope_type,
+                    scope_id=binding.scope_id,
+                    status=binding.status,
+                    version=binding.version + 1,
+                    effective_from=now,
+                    created_by=ctx.user_id,
+                    approved_by=ctx.user_id,
+                ))
+        elif model is PlatformAccount:
+            current_stores = db.scalars(
+                select(Store).where(
+                    Store.enterprise_id == obj.enterprise_id,
+                    Store.platform_account_id == obj.id,
+                    Store.archived_at.is_(None),
+                    or_(Store.effective_to.is_(None), Store.effective_to > now),
+                )
+            ).all()
+            for store in current_stores:
+                store.effective_to = now
+                store_data = {
+                    column.key: getattr(store, column.key)
+                    for column in inspect(Store).mapper.column_attrs
+                    if column.key not in {"id", "version", "created_at", "updated_at", "effective_from", "effective_to", "archived_at", "approved_by", "created_by"}
+                }
+                store_data.update(
+                    platform_account_id=new_obj.id,
+                    version=store.version + 1,
+                    effective_from=now,
+                    status=store.status,
+                    created_by=ctx.user_id,
+                    approved_by=ctx.user_id,
+                )
+                db.add(Store(**store_data))
+            platform_bindings = db.scalars(
+                select(SourceBinding).where(
+                    SourceBinding.enterprise_id == obj.enterprise_id,
+                    SourceBinding.scope_type == "platform_account",
+                    SourceBinding.scope_id == obj.id,
+                    SourceBinding.archived_at.is_(None),
+                    or_(SourceBinding.effective_to.is_(None), SourceBinding.effective_to > now),
+                )
+            ).all()
+            for binding in platform_bindings:
+                binding.effective_to = now
+                db.add(SourceBinding(
+                    enterprise_id=binding.enterprise_id,
+                    name=binding.name,
+                    source_definition_id=binding.source_definition_id,
+                    scope_type=binding.scope_type,
+                    scope_id=new_obj.id,
+                    status=binding.status,
+                    version=binding.version + 1,
+                    effective_from=now,
+                    created_by=ctx.user_id,
+                    approved_by=ctx.user_id,
+                ))
         record_audit(db, ctx, "version", resource, new_obj.id, {"previous_id": obj.id, "version": new_obj.version})
         db.commit()
         return serialize(new_obj)
@@ -246,7 +343,9 @@ def _is_referenced(db: Session, obj: Any) -> bool:
 
 
 def delete_resource(db: Session, ctx: RequestContext, resource: str, object_id: str) -> dict:
-    ctx.require(WRITE_ROLES)
+    if resource in {"metrics", "semantic-models"}:
+        raise HTTPException(status_code=405, detail="标准模型与指标元数据只读，由内置注册表发布")
+    ctx.require(USER_ADMIN_ROLES if resource == "users" else DATA_CONFIG_ROLES if resource in {"platforms", "stores", "sources", "source-bindings", "source-schedules"} else WRITE_ROLES)
     obj = get_resource(db, ctx, resource, object_id)
     if obj.status == "draft" and not _is_referenced(db, obj):
         db.delete(obj)

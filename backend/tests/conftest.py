@@ -60,7 +60,8 @@ def tenants(client):
 def commerce_setup(client, tenants):
     enterprise_id = tenants[0]
     headers = tenant_headers(enterprise_id)
-    store = client.post("/api/v1/stores", headers=headers, json={"name": "Web Store", "status": "active", "activation_at": "2026-01-01T00:00:00Z"})
+    platform = client.get("/api/v1/platforms", headers=headers).json()[0]
+    store = client.post("/api/v1/stores", headers=headers, json={"name": "Web Store", "status": "active", "activation_at": "2026-01-01T00:00:00Z", "platform_account_id": platform["id"]})
     assert store.status_code == 200, store.text
     source = client.post(
         "/api/v1/sources",

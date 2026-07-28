@@ -1,14 +1,13 @@
 import type { SessionUser } from '../types'
-import { request, setAccessToken } from './http'
+import { request } from './http'
 
-type LoginResponse = { user: SessionUser; access_token?: string; expires_at: string }
+type LoginResponse = { user: SessionUser; expires_at: string }
 
 export async function login(email: string, password: string) {
   const result = await request<LoginResponse>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   })
-  setAccessToken(result.access_token || null)
   return result.user
 }
 
@@ -17,11 +16,14 @@ export function getSession() {
 }
 
 export async function logout() {
-  try {
-    await request<{ logged_out: boolean }>('/auth/logout', { method: 'POST' })
-  } finally {
-    setAccessToken(null)
-  }
+  await request<{ logged_out: boolean }>('/auth/logout', { method: 'POST' })
+}
+
+export function changePassword(currentPassword: string, newPassword: string) {
+  return request<{ changed: boolean }>('/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  })
 }
 
 export function setupStatus() {

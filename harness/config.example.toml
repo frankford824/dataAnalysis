@@ -1,0 +1,93 @@
+[workspace]
+root = "~/fa-workbench"
+database = "ledger.duckdb"
+snapshots = "snapshots"
+normalized = "normalized"
+reports = "reports"
+llm_logs = "llm_logs"
+
+[source]
+connector = "finance_win_ssh"
+ssh_alias = "finance-win-ro"
+stable_for_seconds = 600
+max_file_bytes = 2147483648
+# 仅在目标账单目录经过确认、并启用 ZIP 炸弹/路径穿越校验时打开。
+allow_zip_archives = true
+
+[source.scope]
+# 全量发现模式只读取 source.roots 白名单中的文件，并从文件内容和已识别模板
+# 归纳平台、店铺及账期；不会根据目录名猜测账期。
+include_all_discovered = true
+start_month = "2026-02"
+through_current_month = true
+# 固定验收范围可改用 periods = ["2602", "2603"]，并关闭 through_current_month。
+
+[compute]
+# API 容器启动后自动执行盘点、封存、画像、标准化和核对。
+enabled = true
+run_on_startup = true
+poll_seconds = 3600
+# 某个店铺或月份失败时继续处理其余独立范围，并把失败留在进度和待处理列表。
+continue_after_scope_failure = true
+
+[[source.roots]]
+path = "D:\\FinanceData\\BI"
+purpose = "pbix_asset"
+extensions = [".pbix"]
+
+[[source.roots]]
+path = "D:\\FinanceData\\订单"
+purpose = "orders"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm"]
+
+[[source.roots]]
+path = "D:\\FinanceData\\广告"
+purpose = "advertising"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm"]
+
+[[source.roots]]
+path = "D:\\FinanceData\\结算"
+purpose = "settlement"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm", ".zip"]
+
+[[source.roots]]
+path = "D:\\FinanceData\\成本"
+purpose = "product_cost"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm"]
+
+[[source.roots]]
+path = "D:\\FinanceData\\运费"
+purpose = "shipping"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm"]
+
+[[source.roots]]
+path = "C:\\FinanceReview\\示例店铺"
+purpose = "historical_workspace"
+extensions = [".csv", ".xlsx", ".xls", ".xlsm", ".zip"]
+
+[[source.roots]]
+path = "D:\\FinanceData\\人员\\员工信息表.xlsx"
+purpose = "employee_master"
+extensions = [".xlsx"]
+
+[[source.roots]]
+path = "D:\\FinanceData\\人员\\商品负责人.xlsx"
+purpose = "responsibility_corpus"
+extensions = [".xlsx"]
+
+[[source.roots]]
+path = "D:\\FinanceData\\绩效对照\\2026"
+purpose = "performance_reference"
+extensions = [".csv", ".xlsx"]
+
+[reconciliation]
+# 默认只核对订单与支付宝/微信平台钱包，不把同一份钱包流水重复冒充银行资金腿。
+# 客户另行提供独立银行流水和结算桥接规则后，才改为 "bank_three_way"。
+mode = "platform_wallet"
+
+[llm]
+enabled = false
+base_url_env = "FA_GATEWAY_BASE_URL"
+api_key_env = "FA_GATEWAY_API_KEY"
+autonomy_level = "L0"
+redaction_required = true

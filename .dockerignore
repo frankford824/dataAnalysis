@@ -14,3 +14,16 @@ backups
 *.xls
 *.csv
 *.zip
+*.duckdb
+*.db
+*.parquet
+*.jsonl
+**/.fa-workbench.json
+**/snapshots/**
+**/normalized/**
+**/reports/**
+**/llm_logs/**
+**/*.tsbuildinfo
+**/.pytest_cache
+test-objects/
+test-suite.db

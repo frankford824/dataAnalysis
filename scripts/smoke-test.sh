@@ -36,20 +36,22 @@ SQL
 docker compose exec -T redis redis-cli ping | grep -q PONG
 curl -fsS "http://localhost:${MINIO_API_PORT:-9000}/minio/health/ready" >/dev/null
 
-access_token="${SMOKE_ACCESS_TOKEN:-}"
 setup_status="$(curl -fsS "$backend_url/api/v1/setup/status")"
 initialized="$(printf '%s' "$setup_status" | python3 -c 'import json,sys; print("true" if json.load(sys.stdin).get("initialized") else "false")')"
-if [ -z "$access_token" ] && [ -n "${SMOKE_ADMIN_EMAIL:-}" ] && [ -n "${SMOKE_ADMIN_PASSWORD:-}" ]; then
+cookie_jar="$(mktemp)"
+trap 'rm -f "$cookie_jar"' EXIT
+authenticated=false
+if [ -n "${SMOKE_ADMIN_EMAIL:-}" ] && [ -n "${SMOKE_ADMIN_PASSWORD:-}" ]; then
   login_payload="$(python3 - <<'PY'
 import json, os
 print(json.dumps({"email": os.environ["SMOKE_ADMIN_EMAIL"], "password": os.environ["SMOKE_ADMIN_PASSWORD"]}))
 PY
 )"
-  login="$(curl -fsS -H 'Content-Type: application/json' --data "$login_payload" "$backend_url/api/v1/auth/login")"
-  access_token="$(printf '%s' "$login" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
+  curl -fsS -c "$cookie_jar" -H 'Content-Type: application/json' --data "$login_payload" "$backend_url/api/v1/auth/login" >/dev/null
+  authenticated=true
 fi
-if [ -n "$access_token" ]; then
-  diagnostics="$(curl -fsS -H "Authorization: Bearer $access_token" "$backend_url/api/v1/health/diagnostics")"
+if [ "$authenticated" = true ]; then
+  diagnostics="$(curl -fsS -b "$cookie_jar" "$backend_url/api/v1/health/diagnostics")"
   printf '%s' "$diagnostics" | python3 -c '
 import json, sys
 result = json.load(sys.stdin)
@@ -59,9 +61,9 @@ if result.get("status") != "healthy":
 elif [ "$initialized" = false ]; then
   echo "authenticated diagnostics skipped: browser first-run setup is pending"
 elif [ "${ALLOW_AUTH_SKIP:-false}" = true ]; then
-  echo "authenticated diagnostics skipped explicitly; supply SMOKE_ACCESS_TOKEN for a full check"
+  echo "authenticated diagnostics skipped explicitly; supply SMOKE_ADMIN_EMAIL and SMOKE_ADMIN_PASSWORD for a full check"
 else
-  echo "initialized service requires SMOKE_ACCESS_TOKEN or SMOKE_ADMIN_EMAIL/SMOKE_ADMIN_PASSWORD" >&2
+  echo "initialized service requires SMOKE_ADMIN_EMAIL and SMOKE_ADMIN_PASSWORD" >&2
   exit 1
 fi
 

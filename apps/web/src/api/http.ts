@@ -1,14 +1,9 @@
 const API_BASE = import.meta.env.VITE_API_BASE || '/api/v1'
-let accessToken: string | null = null
 
 export class ApiError extends Error {
   constructor(public status: number, message: string, public details?: unknown) {
     super(message)
   }
-}
-
-export function setAccessToken(token: string | null) {
-  accessToken = token
 }
 
 function errorMessage(body: unknown, fallback: string) {
@@ -26,7 +21,6 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     credentials: 'include',
     headers: {
       ...(isForm || !init.body ? {} : { 'Content-Type': 'application/json' }),
-      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       ...init.headers,
     },
   })
@@ -42,7 +36,6 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 export async function download(path: string, fallbackName: string) {
   const response = await fetch(`${API_BASE}${path}`, {
     credentials: 'include',
-    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
   })
   if (!response.ok) throw new ApiError(response.status, `导出失败 (${response.status})`)
   const blob = await response.blob()

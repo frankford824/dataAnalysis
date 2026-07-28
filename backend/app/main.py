@@ -26,15 +26,18 @@ from redis import Redis
 
 from .audit import record_audit
 from .config import get_settings
+from .control_plane import router as control_plane_router
 from .crud import RESOURCE_MODELS, create_resource, delete_resource, get_resource, list_resources, serialize, update_resource
 from .db import Base, engine, get_db
-from .ingestion import confirm_ingestion, create_ingestion, create_review_problem, lock_ingestion, publish_ingestion, recognize_source_candidates
+from .ingestion import authorize_locked_correction, confirm_ingestion, create_ingestion, create_review_problem, lock_ingestion, publish_ingestion, recognize_source_candidates
 from .models import AuditLog, AuthSession, CertifiedAggregate, DashboardAsset, Enterprise, IngestionRun, MetricDefinition, ModelAsset, PlatformAccount, Problem, ReviewQueueItem, SemanticModelVersion, SourceBinding, SourceDefinition, Store, UploadSession, UserAccount, utcnow
 from .pbix import parse_pbix
 from .query import execute_certified_query
-from .schemas import BusinessConfirmation, CertifiedQuery, ConfigurationImport, EnterpriseCreate, LoginRequest, ManualPBIXMetadata, NaturalLanguageQuestion, PasswordChange, ProblemResolution, ResourceCreate, ResourcePatch, SetupComplete, UploadInitiate, UserInvite
-from .security import APPROVE_ROLES, SESSION_COOKIE, RequestContext, WRITE_ROLES, create_session, get_context, hash_password, revoke_session, scoped_store_ids, verify_password
+from .schemas import BusinessConfirmation, CertifiedQuery, ConfigurationImport, EnterpriseCreate, LockedCorrection, LoginRequest, ManualPBIXMetadata, NaturalLanguageQuestion, PasswordChange, ProblemResolution, ResourceCreate, ResourcePatch, SetupComplete, UploadInitiate, UserInvite
+from .security import APPROVE_ROLES, DATA_CONFIG_ROLES, PROBLEM_ROLES, SESSION_COOKIE, USER_ADMIN_ROLES, RequestContext, WRITE_ROLES, create_session, get_context, hash_password, revoke_session, scoped_store_ids, verify_password
+from .standard_model import MODEL_KEY, MODEL_VERSION, metric_definitions, published_definition
 from .storage import get_storage
+from . import reconciliation  # noqa: F401
 
 
 @asynccontextmanager
@@ -50,6 +53,7 @@ app = FastAPI(
     description="Tenant-isolated deterministic ingestion and certified analytics API.",
     lifespan=lifespan,
 )
+app.include_router(control_plane_router)
 SETUP_LOCK = Lock()
 PUBLIC_PATHS = {"/health", "/ready", "/api/v1/setup", "/api/v1/setup/status", "/api/v1/setup/complete", "/api/v1/auth/login"}
 
@@ -59,13 +63,12 @@ def _openapi_schema():
         return app.openapi_schema
     schema = get_openapi(title=app.title, version=app.version, description=app.description, routes=app.routes)
     schemes = schema.setdefault("components", {}).setdefault("securitySchemes", {})
-    schemes["BearerAuth"] = {"type": "http", "scheme": "bearer"}
     schemes["SessionCookie"] = {"type": "apiKey", "in": "cookie", "name": SESSION_COOKIE}
     for path, operations in schema.get("paths", {}).items():
         if path not in PUBLIC_PATHS:
             for operation in operations.values():
                 if isinstance(operation, dict):
-                    operation["security"] = [{"BearerAuth": []}, {"SessionCookie": []}]
+                    operation["security"] = [{"SessionCookie": []}]
     app.openapi_schema = schema
     return schema
 
@@ -153,31 +156,45 @@ def setup_complete(body: SetupComplete, response: Response, db: Session = Depend
     db.flush()
     store = Store(enterprise_id=enterprise.id, name=body.store_name, platform_account_id=platform.id, activation_at=body.activation_at, status="active", version=1, effective_from=body.activation_at, created_by=user.id, approved_by=user.id)
     db.add(store)
-    source = SourceDefinition(
+    order_source = SourceDefinition(
         enterprise_id=enterprise.id, name="标准订单文件", status="active", version=1,
         effective_from=body.activation_at, activation_at=body.activation_at,
         file_types=["csv", "xlsx", "zip"], recognition={"required_headers": ["order_id", "occurred_at"]},
         field_aliases={"order_id": ["订单号", "order"], "occurred_at": ["交易时间", "transaction_date"], "revenue": ["销售额", "sales"], "refund": ["退款额"], "platform_fee": ["平台费"], "advertising_fee": ["广告费"], "shipping_fee": ["运费"], "product_cost": ["商品成本"]},
-        coverage_time_field="occurred_at", data_granularity="day", arrival_frequency="daily",
-        dedupe_keys=["order_id"], validations=[{"type": "required_field", "field": "order_id"}], created_by=user.id, approved_by=user.id,
+        coverage_time_field="occurred_at", data_granularity="day", arrival_frequency="monthly",
+        dedupe_keys=["order_id"], validations=[{"type": "required_field", "field": "order_id"}],
+        import_mode="monthly_snapshot", source_kind="orders", amount_directions={}, created_by=user.id, approved_by=user.id,
     )
-    db.add(source)
+    db.add(order_source)
     db.flush()
-    db.add(SourceBinding(enterprise_id=enterprise.id, name="主店铺订单文件", source_definition_id=source.id, scope_type="store", scope_id=store.id, status="active", version=1, effective_from=body.activation_at, created_by=user.id, approved_by=user.id))
-    model = SemanticModelVersion(enterprise_id=enterprise.id, name="电商标准经营模型", status="published", version=1, effective_from=body.activation_at, industry_template="ecommerce_standard", definition={"facts": ["sales", "refund", "platform_fee", "advertising_fee", "shipping_fee", "product_cost", "profit"], "dimensions": ["store", "date", "platform"]}, quality_gates=[{"key": "deterministic_reconciliation", "required": True}], created_by=user.id, approved_by=user.id)
+    fee_source = SourceDefinition(
+        enterprise_id=enterprise.id, name="标准平台费用文件", status="active", version=1,
+        effective_from=body.activation_at, activation_at=body.activation_at,
+        file_types=["csv", "xlsx", "zip"], recognition={"required_headers": ["occurred_at", "event_type"]},
+        field_aliases={"occurred_at": ["费用日期", "date"], "platform_fee": ["平台费"], "advertising_fee": ["广告费"], "shipping_fee": ["运费"]},
+        coverage_time_field="occurred_at", data_granularity="day", arrival_frequency="monthly",
+        dedupe_keys=["event_type", "occurred_at", "store_id"], validations=[], import_mode="monthly_snapshot", source_kind="fees", amount_directions={},
+        created_by=user.id, approved_by=user.id,
+    )
+    db.add(fee_source)
+    db.flush()
+    order_source.validations = list(order_source.validations) + [{"type": "cross_source_match", "mode": "required_source", "dependency_source_logical_id": fee_source.logical_id, "label": "平台费用文件"}]
+    fee_source.validations = [{"type": "cross_source_match", "mode": "required_source", "dependency_source_logical_id": order_source.logical_id, "label": "订单文件"}]
+    for source, label in ((order_source, "主店铺订单文件"), (fee_source, "主店铺平台费用文件")):
+        db.add(SourceBinding(enterprise_id=enterprise.id, name=label, source_definition_id=source.id, scope_type="store", scope_id=store.id, status="active", version=1, effective_from=body.activation_at, created_by=user.id, approved_by=user.id))
+    model = SemanticModelVersion(enterprise_id=enterprise.id, name="电商标准经营模型", status="published", version=MODEL_VERSION, effective_from=body.activation_at, industry_template=MODEL_KEY, definition=published_definition(), quality_gates=[{"key": "deterministic_reconciliation", "required": True}], created_by=user.id, approved_by=user.id)
     db.add(model)
     db.flush()
-    expressions = {"sales": "sum(revenue)", "refund": "sum(refund)", "platform_fee": "sum(platform_fee)", "advertising_fee": "sum(advertising_fee)", "shipping_fee": "sum(shipping_fee)", "product_cost": "sum(product_cost)", "profit": "sum(revenue-refund-platform_fee-advertising_fee-shipping_fee-product_cost)"}
-    for key, expression in expressions.items():
-        db.add(MetricDefinition(enterprise_id=enterprise.id, semantic_model_id=model.id, name=key.replace("_", " ").title(), key=key, expression=expression, status="published", version=1, effective_from=body.activation_at, created_by=user.id, approved_by=user.id))
-    dashboard = DashboardAsset(enterprise_id=enterprise.id, name="经营总览", status="published", version=1, effective_from=body.activation_at, created_by=user.id, approved_by=user.id, bi_adapter="builtin", definition={"template": "ecommerce_overview", "metrics": list(expressions)})
+    for spec in metric_definitions():
+        db.add(MetricDefinition(enterprise_id=enterprise.id, semantic_model_id=model.id, name=spec.name, key=spec.key, expression=spec.expression, format=spec.format, status="published", version=MODEL_VERSION, effective_from=body.activation_at, created_by=user.id, approved_by=user.id))
+    dashboard = DashboardAsset(enterprise_id=enterprise.id, name="经营总览", status="published", version=1, effective_from=body.activation_at, created_by=user.id, approved_by=user.id, bi_adapter="builtin", definition={"template": "ecommerce_overview", "model_key": MODEL_KEY, "model_version": MODEL_VERSION, "model_checksum": published_definition()["checksum"]})
     db.add(dashboard)
     db.flush()
     record_audit(db, RequestContext(enterprise.id, user.id, user.role), "bootstrap", "users", user.id)
     token, session = create_session(db, user, commit=False)
     db.commit()
     _set_session_cookie(response, token, session.expires_at)
-    return {"user": _public_user(user, db), "access_token": token, "expires_at": session.expires_at, "created": {"enterprise_id": enterprise.id, "platform_account_id": platform.id, "store_id": store.id, "source_definition_id": source.id, "semantic_model_id": model.id, "dashboard_id": dashboard.id}}
+    return {"user": _public_user(user, db), "expires_at": session.expires_at, "created": {"enterprise_id": enterprise.id, "platform_account_id": platform.id, "store_id": store.id, "source_definition_ids": [order_source.id, fee_source.id], "semantic_model_id": model.id, "dashboard_id": dashboard.id}}
 
 
 @app.post("/api/v1/auth/login", tags=["authentication"])
@@ -189,7 +206,7 @@ def login(body: LoginRequest, response: Response, db: Session = Depends(get_db))
         raise HTTPException(status_code=401, detail="invalid email or password")
     token, session = create_session(db, user)
     _set_session_cookie(response, token, session.expires_at)
-    return {"user": _public_user(user, db), "access_token": token, "token_type": "bearer", "expires_at": session.expires_at}
+    return {"user": _public_user(user, db), "expires_at": session.expires_at}
 
 
 @app.get("/api/v1/auth/me", tags=["authentication"])
@@ -289,7 +306,7 @@ def invite_user(body: UserInvite, db: Session = Depends(get_db), ctx: RequestCon
 @app.get("/api/v1/problems", tags=["review-queue"])
 @app.get("/api/v1/issues", tags=["review-queue"])
 def list_problems(status: str = Query(default="open"), db: Session = Depends(get_db), ctx: RequestContext = Depends(get_context)):
-    ctx.require({"platform_admin", "admin", "implementer"})
+    ctx.require(PROBLEM_ROLES)
     stmt = select(Problem).where(Problem.enterprise_id == ctx.enterprise_id)
     if status != "all":
         stmt = stmt.where(Problem.status == status)
@@ -299,7 +316,7 @@ def list_problems(status: str = Query(default="open"), db: Session = Depends(get
 @app.post("/api/v1/problems/{problem_id}/resolve", tags=["review-queue"])
 @app.patch("/api/v1/issues/{problem_id}", tags=["review-queue"])
 def resolve_problem(problem_id: str, body: ProblemResolution, db: Session = Depends(get_db), ctx: RequestContext = Depends(get_context)):
-    ctx.require({"platform_admin", "admin", "implementer"})
+    ctx.require(PROBLEM_ROLES)
     problem = db.scalar(select(Problem).where(Problem.id == problem_id, Problem.enterprise_id == ctx.enterprise_id))
     if not problem:
         raise HTTPException(status_code=404, detail="problem not found")
@@ -462,7 +479,7 @@ def export_certified(
         date_to = date_to.replace(tzinfo=timezone.utc)
     if date_from and date_to and date_from >= date_to:
         raise HTTPException(status_code=422, detail="date_from must be before date_to")
-    stmt = select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id)
+    stmt = select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id, CertifiedAggregate.is_current.is_(True))
     if ctx.store_ids is not None or store_id or platform_id:
         stmt = stmt.where(CertifiedAggregate.store_id.in_(permitted))
     if date_from:
@@ -491,12 +508,16 @@ def export_certified(
         for col, name in enumerate(columns):
             value = row.get(name)
             if name in {"revenue", "refund", "platform_fee", "advertising_fee", "shipping_fee", "product_cost", "fees", "profit"} and value is not None:
-                sheet.write_number(row_number, col, float(value))
+                decimal_value = Decimal(str(value))
+                if len(decimal_value.as_tuple().digits) <= 15:
+                    sheet.write_number(row_number, col, float(decimal_value))
+                else:
+                    sheet.write_string(row_number, col, format(decimal_value, "f"))
             else:
                 sheet.write(row_number, col, str(value) if value is not None else "")
     workbook.close()
     binary.seek(0)
-    return StreamingResponse(binary, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=certified-data.xlsx"})
+    return StreamingResponse(binary, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": "attachment; filename=certified-data.xlsx", "X-Precision-Policy": "amounts-with-more-than-15-significant-digits-are-text"})
 
 
 def _tenant_ingestion(db: Session, ctx: RequestContext, run_id: str) -> IngestionRun:
@@ -509,6 +530,14 @@ def _tenant_ingestion(db: Session, ctx: RequestContext, run_id: str) -> Ingestio
     if ctx.store_ids is not None and not run_stores.issubset(scoped_store_ids(db, ctx)):
         raise HTTPException(status_code=404, detail="ingestion not found")
     return run
+
+
+def _require_legacy_upload() -> None:
+    if not get_settings().legacy_upload_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="应急手工上传未启用；当前实例由 Docker 外的只读执行器自动读取数据。",
+        )
 
 
 @app.get("/api/v1/ingestions", tags=["ingestions"])
@@ -528,6 +557,7 @@ def get_ingestion(run_id: str, db: Session = Depends(get_db), ctx: RequestContex
 
 
 def _choose_source(db: Session, ctx: RequestContext, filename: str, data: bytes, store_id: str | None, requested_source_id: str | None) -> str:
+    _require_legacy_upload()
     if requested_source_id:
         source = db.scalar(select(SourceDefinition).where(SourceDefinition.id == requested_source_id, SourceDefinition.enterprise_id == ctx.enterprise_id, SourceDefinition.archived_at.is_(None)))
         if not source:
@@ -550,6 +580,7 @@ def _choose_source(db: Session, ctx: RequestContext, filename: str, data: bytes,
 
 @app.post("/api/v1/ingestions/upload", tags=["ingestions"])
 async def upload_ingestion(source_definition_id: str | None = Form(default=None), store_id: str | None = Form(default=None), backfill: bool = Form(default=False), file: UploadFile = File(...), db: Session = Depends(get_db), ctx: RequestContext = Depends(get_context)):
+    _require_legacy_upload()
     ctx.require(WRITE_ROLES)
     data = await file.read()
     if not data:
@@ -585,6 +616,7 @@ def _tenant_upload(db: Session, ctx: RequestContext, upload_id: str) -> UploadSe
 
 @app.post("/api/v1/ingestions/upload/initiate", tags=["ingestions"])
 def initiate_upload(body: UploadInitiate, db: Session = Depends(get_db), ctx: RequestContext = Depends(get_context)):
+    _require_legacy_upload()
     ctx.require(WRITE_ROLES)
     if not ctx.enterprise_id:
         raise HTTPException(status_code=400, detail="enterprise context required")
@@ -610,6 +642,7 @@ def initiate_upload(body: UploadInitiate, db: Session = Depends(get_db), ctx: Re
 
 @app.put("/api/v1/ingestions/upload/{upload_id}/parts/{part_number}", tags=["ingestions"])
 async def upload_part(upload_id: str, part_number: int, request: Request, db: Session = Depends(get_db), ctx: RequestContext = Depends(get_context)):
+    _require_legacy_upload()
     ctx.require(WRITE_ROLES)
     if part_number < 1 or part_number > 400:
         raise HTTPException(status_code=422, detail="invalid part number")
@@ -627,6 +660,7 @@ async def upload_part(upload_id: str, part_number: int, request: Request, db: Se
 
 @app.post("/api/v1/ingestions/upload/{upload_id}/complete", tags=["ingestions"])
 def complete_upload(upload_id: str, db: Session = Depends(get_db), ctx: RequestContext = Depends(get_context)):
+    _require_legacy_upload()
     ctx.require(WRITE_ROLES)
     upload = _tenant_upload(db, ctx, upload_id)
     if upload.status == "completed":
@@ -658,8 +692,15 @@ def confirm_run(run_id: str, body: BusinessConfirmation, db: Session = Depends(g
 
 @app.post("/api/v1/ingestions/{run_id}/publish", tags=["ingestions"])
 def publish_run(run_id: str, db: Session = Depends(get_db), ctx: RequestContext = Depends(get_context)):
+    _require_legacy_upload()
     ctx.require(APPROVE_ROLES)
     return serialize(publish_ingestion(db, get_storage(), ctx, _tenant_ingestion(db, ctx, run_id)))
+
+
+@app.post("/api/v1/ingestions/{run_id}/authorize-correction", tags=["ingestions"])
+def authorize_correction(run_id: str, body: LockedCorrection, db: Session = Depends(get_db), ctx: RequestContext = Depends(get_context)):
+    ctx.require(USER_ADMIN_ROLES)
+    return serialize(authorize_locked_correction(db, ctx, _tenant_ingestion(db, ctx, run_id), body.reason, body.locked_run_id))
 
 
 @app.post("/api/v1/ingestions/{run_id}/lock", tags=["ingestions"])
@@ -731,7 +772,7 @@ def business_question(body: NaturalLanguageQuestion, db: Session = Depends(get_d
     question = body.question.lower()
     metric = ({"sales": "revenue", "refund": "refund", "fees": "fees", "profit": "profit", "ranking": "profit", "month_comparison": "revenue"}.get(body.question_type or "")
               or ("profit" if any(word in question for word in ["profit", "利润"]) else "refund" if any(word in question for word in ["refund", "退款"]) else "fees" if any(word in question for word in ["fee", "费用", "费率"]) else "revenue"))
-    stmt = select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id)
+    stmt = select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id, CertifiedAggregate.is_current.is_(True))
     if ctx.store_ids is not None or body.store_ids or body.platform_id:
         stmt = stmt.where(CertifiedAggregate.store_id.in_(allowed_stores))
     if body.date_from:
@@ -764,7 +805,7 @@ def business_question(body: NaturalLanguageQuestion, db: Session = Depends(get_d
         current_start = anchor.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         previous_end = current_start
         previous_start = (current_start - timedelta(days=1)).replace(day=1)
-        previous_stmt = select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id, CertifiedAggregate.period_start >= previous_start, CertifiedAggregate.period_start < previous_end)
+        previous_stmt = select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id, CertifiedAggregate.is_current.is_(True), CertifiedAggregate.period_start >= previous_start, CertifiedAggregate.period_start < previous_end)
         if ctx.store_ids is not None or body.store_ids or body.platform_id:
             previous_stmt = previous_stmt.where(CertifiedAggregate.store_id.in_(allowed_stores))
         previous = sum((getattr(row, metric) for row in db.scalars(previous_stmt).all()), start=Decimal(0))
@@ -794,7 +835,7 @@ def analytics_overview(
         date_to = date_to.replace(tzinfo=timezone.utc)
     if platform_id:
         permitted &= set(db.scalars(select(Store.id).where(Store.enterprise_id == ctx.enterprise_id, Store.platform_account_id == platform_id)).all())
-    stmt = select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id)
+    stmt = select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id, CertifiedAggregate.is_current.is_(True))
     if ctx.store_ids is not None or store_id or platform_id:
         stmt = stmt.where(CertifiedAggregate.store_id.in_(permitted))
     if date_from:
@@ -822,10 +863,69 @@ def analytics_overview(
     comparison = None
     if date_from and date_to:
         duration = date_to - date_from
-        previous_rows = list(db.scalars(select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id, CertifiedAggregate.period_start >= date_from - duration, CertifiedAggregate.period_start < date_from, CertifiedAggregate.store_id.in_(permitted) if (ctx.store_ids is not None or store_id or platform_id) else text("1=1"))).all())
+        previous_rows = list(db.scalars(select(CertifiedAggregate).where(CertifiedAggregate.enterprise_id == ctx.enterprise_id, CertifiedAggregate.is_current.is_(True), CertifiedAggregate.period_start >= date_from - duration, CertifiedAggregate.period_start < date_from, CertifiedAggregate.store_id.in_(permitted) if (ctx.store_ids is not None or store_id or platform_id) else text("1=1"))).all())
         previous = {key: sum((getattr(row, key) for row in previous_rows), start=Decimal(0)) for key in amount_keys}
         comparison = {key: {"previous": str(previous[key]), "change": str(totals[key] - previous[key])} for key in amount_keys}
-    return {"metrics": {key: str(value) if isinstance(value, Decimal) else value for key, value in totals.items()}, "trend": trend, "by_store": by_store, "comparison": comparison, "filters": {"store_ids": sorted(permitted) if (ctx.store_ids is not None or store_id or platform_id) else [], "platform_id": platform_id, "date_from": date_from, "date_to": date_to}}
+    current_period = (date_from or (max((row.period_start for row in rows), default=utcnow()))).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    period_end = (current_period.replace(day=28) + timedelta(days=4)).replace(day=1)
+    source_rows = db.scalars(select(SourceDefinition).where(
+        SourceDefinition.enterprise_id == ctx.enterprise_id,
+        SourceDefinition.required.is_(True),
+        SourceDefinition.archived_at.is_(None),
+        SourceDefinition.status.in_(["active", "approved", "published"]),
+    ).order_by(SourceDefinition.version.desc())).all()
+    current_sources: dict[str, SourceDefinition] = {}
+    for source in source_rows:
+        current_sources.setdefault(source.logical_id, source)
+    store_rows = db.scalars(select(Store).where(
+        Store.enterprise_id == ctx.enterprise_id,
+        Store.archived_at.is_(None),
+        Store.status.in_(["active", "approved", "published"]),
+    ).order_by(Store.version.desc())).all()
+    current_stores: dict[str, Store] = {}
+    for store in store_rows:
+        if store.id in permitted:
+            current_stores.setdefault(store.logical_id, store)
+    expected: list[tuple[SourceDefinition, Store]] = []
+    for source in current_sources.values():
+        bindings = db.scalars(select(SourceBinding).where(
+            SourceBinding.enterprise_id == ctx.enterprise_id,
+            SourceBinding.source_definition_id == source.id,
+            SourceBinding.archived_at.is_(None),
+            SourceBinding.status.in_(["active", "approved", "published"]),
+        )).all()
+        logical_scope: set[str] = set()
+        if not bindings or any(item.scope_type == "enterprise" for item in bindings):
+            logical_scope = set(current_stores)
+        for binding in bindings:
+            if binding.scope_type == "store":
+                bound = db.get(Store, binding.scope_id)
+                if bound:
+                    logical_scope.add(bound.logical_id)
+            elif binding.scope_type == "platform_account":
+                logical_scope.update(store.logical_id for store in current_stores.values() if store.platform_account_id == binding.scope_id)
+            elif binding.scope_type == "business_entity":
+                logical_scope.update(store.logical_id for store in current_stores.values() if store.business_entity_id == binding.scope_id)
+        expected.extend((source, current_stores[logical_id]) for logical_id in sorted(logical_scope) if logical_id in current_stores)
+    completed_scopes = set(db.execute(select(CertifiedAggregate.source_logical_id, CertifiedAggregate.store_logical_id).where(
+        CertifiedAggregate.enterprise_id == ctx.enterprise_id,
+        CertifiedAggregate.is_current.is_(True),
+        CertifiedAggregate.period_start >= current_period,
+        CertifiedAggregate.period_start < period_end,
+    )).all())
+    missing = [
+        {"source_logical_id": source.logical_id, "source_name": source.name, "store_logical_id": store.logical_id, "store_name": store.name}
+        for source, store in expected
+        if (source.logical_id, store.logical_id) not in completed_scopes
+    ]
+    completeness = {
+        "period": current_period.strftime("%Y-%m"),
+        "status": "complete" if expected and not missing else "incomplete",
+        "expected_scope_count": len(expected),
+        "completed_scope_count": len(expected) - len(missing),
+        "missing": missing,
+    }
+    return {"metrics": {key: str(value) if isinstance(value, Decimal) else value for key, value in totals.items()}, "trend": trend, "by_store": by_store, "comparison": comparison, "completeness": completeness, "filters": {"store_ids": sorted(permitted) if (ctx.store_ids is not None or store_id or platform_id) else [], "platform_id": platform_id, "date_from": date_from, "date_to": date_to}}
 
 
 def _base64url(value: bytes) -> str:

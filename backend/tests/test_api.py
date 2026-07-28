@@ -9,7 +9,8 @@ from conftest import tenant_headers
 
 def test_tenant_isolation_and_rbac(client, tenants):
     first, second = tenants
-    created = client.post("/api/v1/stores", headers=tenant_headers(first), json={"name": "Private Store", "activation_at": "2026-01-01T00:00:00Z"})
+    platform = client.get("/api/v1/platforms", headers=tenant_headers(first)).json()[0]
+    created = client.post("/api/v1/stores", headers=tenant_headers(first), json={"name": "Private Store", "activation_at": "2026-01-01T00:00:00Z", "platform_account_id": platform["id"]})
     assert created.status_code == 200
     assert client.get("/api/v1/stores", headers=tenant_headers(second)).json() == []
     assert client.get(f"/api/v1/stores/{created.json()['id']}", headers=tenant_headers(second)).status_code == 404
@@ -26,12 +27,16 @@ def test_tenant_isolation_and_rbac(client, tenants):
 def test_active_store_change_creates_effective_version(client, tenants):
     first = tenants[0]
     headers = tenant_headers(first)
-    store = client.post("/api/v1/stores", headers=headers, json={"name": "Migrating", "status": "active", "activation_at": "2026-01-01T00:00:00Z"}).json()
+    platform = client.get("/api/v1/platforms", headers=headers).json()[0]
+    store = client.post("/api/v1/stores", headers=headers, json={"name": "Migrating", "status": "active", "activation_at": "2026-01-01T00:00:00Z", "platform_account_id": platform["id"]}).json()
     changed = client.patch(f"/api/v1/stores/{store['id']}", headers=headers, json={"name": "Migrating v2"})
     assert changed.status_code == 200
     assert changed.json()["id"] != store["id"]
     assert changed.json()["version"] == 2
-    assert changed.json()["status"] == "draft"
+    assert changed.json()["status"] == "active"
+    assert changed.json()["approved_by"]
+    current = client.get("/api/v1/stores", headers=headers).json()
+    assert [item["id"] for item in current if item["logical_id"] == store["logical_id"]] == [changed.json()["id"]]
 
 
 def test_user_roles_are_persisted_and_tenant_scoped(client, tenants):

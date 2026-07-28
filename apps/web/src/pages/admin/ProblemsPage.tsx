@@ -6,7 +6,7 @@ import PageHeader from '../../components/PageHeader'
 import { useRequest } from '../../hooks/useRequest'
 
 const kindLabels: Record<string, string> = {
-  source_not_recognized: '无法识别文件类型', source_ambiguous: '文件类型需要确认', file_validation: '文件内容需要调整', quality_gate: '经营数据检查未通过',
+  source_not_recognized: '无法识别文件类型', source_ambiguous: '文件类型需要确认', file_validation: '文件内容需要调整', quality_gate: '经营数据检查未通过', cross_source_reconciliation: '跨文件核对未通过',
 }
 const fieldLabels: Record<string, string> = {
   order_id: '订单号', occurred_at: '业务日期', store_id: '店铺', revenue: '销售金额', refund: '退款金额', platform_fee: '平台费用', advertising_fee: '广告费用', shipping_fee: '运费', product_cost: '商品成本',

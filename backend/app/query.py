@@ -79,7 +79,7 @@ def execute_certified_query(db: Session, enterprise_id: str, sql: str, store_ids
           SELECT enterprise_id, store_id, period_start, grain, row_count, order_count,
                  revenue, refund, platform_fee, advertising_fee, shipping_fee, product_cost, fees, profit
           FROM certified_aggregates
-          WHERE enterprise_id = :enterprise_id {store_clause}
+          WHERE enterprise_id = :enterprise_id AND is_current = true {store_clause}
         )
     """
     result = db.execute(text(f"{certified_cte} {safe_sql}"), parameters)

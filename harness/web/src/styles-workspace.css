@@ -1,0 +1,541 @@
+/* Layout contract loaded after every theme: the workspace stays inside the viewport. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+}
+
+.app {
+  width: min(1600px, calc(100% - 32px));
+  height: 100dvh;
+  padding: 10px 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 7px;
+  overflow: hidden;
+}
+
+.topbar {
+  min-height: 46px;
+  padding: 0 8px;
+}
+
+.topbar h1 {
+  font-size: 1.08rem;
+}
+
+.brand-kicker {
+  margin-bottom: 2px;
+  font-size: 0.62rem;
+}
+
+.nav {
+  min-height: 40px;
+  margin: 0;
+  padding: 3px;
+  border: 1px solid #29292f;
+  border-radius: 14px;
+  background: #101014;
+}
+
+.nav button {
+  min-height: 32px;
+  padding: 5px 13px;
+}
+
+main {
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.workspace-view {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.workspace-heading {
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.workspace-heading h2 {
+  margin: 1px 0 2px;
+  font-size: clamp(1.7rem, 2.35vw, 2.35rem);
+  line-height: 1;
+}
+
+.workspace-heading p:not(.eyebrow) {
+  margin: 5px 0 0;
+  color: #a7a7b0;
+  font-size: 0.82rem;
+}
+
+.scope-bar {
+  min-height: 46px;
+}
+
+.metric-grid {
+  margin: 0;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.metric-card {
+  min-height: 104px;
+  padding: 16px 18px;
+  border: 0;
+  border-radius: 18px;
+  background: linear-gradient(150deg, #292971 0%, #5865f2 100%);
+  box-shadow: none;
+}
+
+.metric-card dd {
+  margin: 8px 0 4px;
+  font-size: clamp(1.25rem, 1.75vw, 1.85rem);
+}
+
+.metric-card small {
+  max-width: none;
+  color: #dadcff;
+  font-size: 0.66rem;
+}
+
+.analytics-main-grid {
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 12px;
+}
+
+.dashboard-action-rail {
+  padding: 14px 16px;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.dashboard-action-rail strong {
+  margin: 3px 0 5px;
+}
+
+.dashboard-action-rail p {
+  line-height: 1.35;
+}
+
+.dashboard-action-rail dl div {
+  padding: 6px 0;
+}
+
+.rail-actions {
+  gap: 5px;
+}
+
+.rail-actions button {
+  min-height: 30px;
+  padding-block: 4px;
+}
+
+.dashboard-section {
+  margin: 0;
+  padding: 14px 16px 10px;
+  border-radius: 18px;
+}
+
+.dashboard-section > header {
+  margin-bottom: 8px;
+}
+
+.dashboard-section h3,
+.coverage-panel h3 {
+  font-size: 1rem;
+}
+
+.trend-chart {
+  height: 225px;
+  min-height: 0;
+  padding: 4px 10px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.trend-chart svg {
+  height: 190px;
+  min-height: 0;
+}
+
+.transaction-table,
+.coverage-panel {
+  border-radius: 18px;
+}
+
+.coverage-panel {
+  margin-top: 0;
+}
+
+.latest-preview {
+  min-height: 0;
+}
+
+.settings-panel {
+  margin: 0;
+  min-height: 0;
+  padding: 20px;
+  border-radius: 18px;
+  overflow: hidden;
+}
+
+.models-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 0.86fr) minmax(460px, 1.14fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+}
+
+.models-workspace > .workspace-heading {
+  grid-column: 1 / -1;
+}
+
+.models-workspace > .settings-panel,
+.capability-panel {
+  min-height: 0;
+  overflow: auto;
+}
+
+.capability-panel {
+  padding: 20px;
+  border: 1px solid #29292f;
+  border-radius: 18px;
+  background: #101014;
+}
+
+.model-capability-summary {
+  display: flex;
+  min-height: 0;
+  padding: 20px;
+  border: 1px solid #29292f;
+  border-radius: 18px;
+  background: #101014;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.model-capability-summary div {
+  display: grid;
+  gap: 7px;
+}
+
+.model-capability-summary strong {
+  font-size: 1.05rem;
+}
+
+.model-capability-summary span {
+  color: #a7a7b0;
+  line-height: 1.65;
+}
+
+.model-capability-summary button {
+  align-self: flex-start;
+}
+
+.capability-intro {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
+  align-items: end;
+  gap: 24px;
+  padding-bottom: 15px;
+  border-bottom: 1px solid #29292f;
+}
+
+.capability-intro h3 {
+  margin: 3px 0 0;
+  font-size: 1.15rem;
+}
+
+.capability-intro > p {
+  margin: 0;
+  color: #a7a7b0;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.capability-list {
+  margin: 0;
+  padding: 10px 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 18px;
+  list-style: none;
+}
+
+.capability-list li {
+  min-width: 0;
+  padding: 10px 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #242429;
+}
+
+.capability-list li > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.capability-list strong {
+  font-size: 0.82rem;
+}
+
+.capability-list li > div span {
+  color: #8d8d97;
+  font-size: 0.68rem;
+}
+
+.capability-state {
+  flex: none;
+  color: #c7c7ce;
+  font-size: 0.68rem;
+}
+
+.capability-state--active {
+  color: #90e0b1;
+}
+
+.capability-state--model_disabled,
+.capability-state--reference_validation,
+.capability-state--evaluation_only {
+  color: #d7bd85;
+}
+
+.learning-summary {
+  padding-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  background: #29292f;
+}
+
+.learning-summary > div {
+  padding: 10px 12px;
+  display: grid;
+  gap: 5px;
+  background: #15151a;
+}
+
+.learning-summary span {
+  color: #92929c;
+  font-size: 0.66rem;
+}
+
+.learning-summary strong {
+  font-variant-numeric: tabular-nums;
+  font-size: 1rem;
+}
+
+.promotion-note {
+  margin: 12px 0 0;
+  color: #a7a7b0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.promotion-note strong {
+  color: #ececf1;
+}
+
+@media (max-width: 720px) {
+  .app {
+    width: calc(100% - 20px);
+    height: 100dvh;
+    padding: 8px 0;
+    gap: 6px;
+  }
+
+  .topbar {
+    min-height: 44px;
+  }
+
+  .topbar button,
+  .topbar .secondary-button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .brand-kicker,
+  .topbar-actions .mode {
+    display: none;
+  }
+
+  .nav {
+    margin: 0;
+    padding: 3px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 3px;
+    overflow: visible;
+  }
+
+  .nav button {
+    min-width: 0;
+    min-height: 44px;
+    padding: 5px 3px;
+    justify-content: center;
+    font-size: 0.68rem;
+  }
+
+  .workspace-view {
+    gap: 8px;
+  }
+
+  .workspace-heading {
+    min-height: 48px;
+    gap: 10px;
+  }
+
+  .workspace-heading h2 {
+    font-size: 1.45rem;
+  }
+
+  .workspace-heading p:not(.eyebrow) {
+    display: none;
+  }
+
+  .workspace-heading > button,
+  .workspace-heading > a {
+    min-height: 36px;
+    padding: 7px 10px;
+    font-size: 0.7rem;
+  }
+
+  .metric-grid {
+    margin: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .metric-card {
+    min-height: 66px;
+    padding: 10px 12px;
+    border-radius: 12px;
+  }
+
+  .metric-card:last-child {
+    grid-column: span 2;
+  }
+
+  .metric-card dd {
+    margin: 4px 0 0;
+    font-size: 1.1rem;
+  }
+
+  .metric-card small {
+    display: none;
+  }
+
+  .analytics-main-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .dashboard-section {
+    margin: 0;
+    padding: 9px 10px 4px;
+  }
+
+  .dashboard-section h3,
+  .coverage-panel h3 {
+    font-size: 1rem;
+  }
+
+  .trend-chart {
+    height: 155px;
+    padding: 0;
+    border-radius: 0;
+  }
+
+  .trend-chart svg {
+    height: 128px;
+    min-height: 0;
+  }
+
+  .transaction-table,
+  .coverage-panel {
+    border-radius: 14px;
+  }
+
+  .latest-preview {
+    display: none;
+  }
+
+  .settings-panel {
+    padding: 12px;
+    overflow: auto;
+  }
+
+  .models-workspace {
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 0.72fr) minmax(0, 1.28fr);
+    gap: 6px;
+  }
+
+  .models-workspace > .workspace-heading {
+    grid-column: 1;
+  }
+
+  .capability-panel {
+    padding: 12px;
+    border-radius: 14px;
+  }
+
+  .model-capability-summary {
+    padding: 12px;
+    border-radius: 14px;
+    gap: 12px;
+  }
+
+  .capability-intro {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding-bottom: 9px;
+  }
+
+  .capability-intro h3 {
+    font-size: 0.95rem;
+  }
+
+  .capability-intro > p {
+    font-size: 0.68rem;
+  }
+
+  .capability-list {
+    grid-template-columns: 1fr;
+    padding: 4px 0;
+  }
+
+  .capability-list li {
+    padding: 7px 0;
+  }
+
+  .learning-summary {
+    padding-top: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .promotion-note {
+    margin-top: 8px;
+  }
+}

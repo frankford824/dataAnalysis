@@ -134,7 +134,8 @@ def test_store_version_keeps_logical_identity(client, tenants):
     from conftest import tenant_headers
 
     headers = tenant_headers(tenants[0])
-    original = client.post("/api/v1/stores", headers=headers, json={"name": "Stable", "status": "active", "activation_at": "2026-01-01T00:00:00Z"}).json()
+    platform = client.get("/api/v1/platforms", headers=headers).json()[0]
+    original = client.post("/api/v1/stores", headers=headers, json={"name": "Stable", "status": "active", "activation_at": "2026-01-01T00:00:00Z", "platform_account_id": platform["id"]}).json()
     changed = client.patch(f"/api/v1/stores/{original['id']}", headers=headers, json={"name": "Stable renamed"})
     assert changed.status_code == 200
     assert changed.json()["logical_id"] == original["logical_id"]

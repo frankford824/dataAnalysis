@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy import JSON as SAJSON
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -58,6 +58,8 @@ class PlatformAccount(VersionedTenantMixin, Base):
     __tablename__ = "platform_accounts"
     platform: Mapped[str] = mapped_column(Text, nullable=False)
     external_account_id: Mapped[str | None] = mapped_column(Text)
+    logical_id: Mapped[str] = mapped_column(String(36), default=uuid4_str, nullable=False)
+    __table_args__ = (Index("ix_platforms_logical_effective", "enterprise_id", "logical_id", "effective_from"),)
 
 
 class Store(VersionedTenantMixin, Base):
@@ -110,8 +112,13 @@ class SourceDefinition(VersionedTenantMixin, Base):
     validations: Mapped[list[dict[str, Any]]] = mapped_column(SAJSON, default=list, nullable=False)
     activation_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     store_field: Mapped[str | None] = mapped_column(Text)
+    logical_id: Mapped[str] = mapped_column(String(36), default=uuid4_str, nullable=False)
+    import_mode: Mapped[str] = mapped_column(String(32), default="monthly_snapshot", nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(32), default="orders", nullable=False)
+    amount_directions: Mapped[dict[str, str]] = mapped_column(SAJSON, default=dict, nullable=False)
     __table_args__ = (
         Index("ix_sources_enterprise_status", "enterprise_id", "status"),
+        Index("ix_sources_logical_effective", "enterprise_id", "logical_id", "effective_from"),
     )
 
 
@@ -163,6 +170,10 @@ class IngestionRun(Base):
     approved_by: Mapped[str | None] = mapped_column(Text)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    supersedes_run_ids: Mapped[list[str]] = mapped_column(SAJSON, default=list, nullable=False)
+    correction_of_run_id: Mapped[str | None] = mapped_column(String(36))
+    correction_reason: Mapped[str | None] = mapped_column(Text)
+    correction_approved_by: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     __table_args__ = (
@@ -264,6 +275,7 @@ class NormalizedRecord(Base):
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id", ondelete="RESTRICT"), nullable=False)
     ingestion_run_id: Mapped[str] = mapped_column(ForeignKey("ingestion_runs.id", ondelete="RESTRICT"), nullable=False)
     store_id: Mapped[str | None] = mapped_column(ForeignKey("stores.id", ondelete="RESTRICT"))
+    store_logical_id: Mapped[str] = mapped_column(String(36), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     order_id: Mapped[str | None] = mapped_column(Text)
     event_type: Mapped[str] = mapped_column(String(32), default="sale", nullable=False)
@@ -274,10 +286,26 @@ class NormalizedRecord(Base):
     shipping_fee: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
     product_cost: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
     raw_payload: Mapped[dict[str, Any]] = mapped_column(SAJSON, default=dict, nullable=False)
+    source_logical_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    business_key: Mapped[str | None] = mapped_column(String(64))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_by_run_id: Mapped[str | None] = mapped_column(String(36))
     __table_args__ = (
         Index("ix_records_tenant_time", "enterprise_id", "occurred_at"),
         Index("ix_records_run", "ingestion_run_id"),
         Index("ix_records_store_time", "store_id", "occurred_at"),
+        Index("ix_records_business_key", "enterprise_id", "source_logical_id", "store_logical_id", "business_key"),
+        Index(
+            "uq_records_current_business_key",
+            "enterprise_id",
+            "source_logical_id",
+            "store_logical_id",
+            "business_key",
+            unique=True,
+            sqlite_where=text("is_current = 1 AND business_key IS NOT NULL"),
+            postgresql_where=text("is_current AND business_key IS NOT NULL"),
+        ),
     )
 
 
@@ -287,6 +315,7 @@ class CertifiedAggregate(Base):
     enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id", ondelete="RESTRICT"), nullable=False)
     ingestion_run_id: Mapped[str] = mapped_column(ForeignKey("ingestion_runs.id", ondelete="RESTRICT"), nullable=False)
     store_id: Mapped[str | None] = mapped_column(ForeignKey("stores.id", ondelete="RESTRICT"))
+    store_logical_id: Mapped[str] = mapped_column(String(36), nullable=False)
     period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     grain: Mapped[str] = mapped_column(String(16), nullable=False)
     row_count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -299,9 +328,40 @@ class CertifiedAggregate(Base):
     product_cost: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
     fees: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
     profit: Mapped[Decimal] = mapped_column(Numeric(20, 4), default=0, nullable=False)
+    source_definition_id: Mapped[str] = mapped_column(ForeignKey("source_definitions.id", ondelete="RESTRICT"), nullable=False)
+    source_logical_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    model_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_by_run_id: Mapped[str | None] = mapped_column(String(36))
     __table_args__ = (
         UniqueConstraint("enterprise_id", "ingestion_run_id", "store_id", "period_start", "grain", name="uq_certified_period"),
         Index("ix_certified_tenant_period", "enterprise_id", "period_start"),
+        Index("ix_certified_current_scope", "enterprise_id", "source_logical_id", "store_logical_id", "period_start", "is_current"),
+    )
+
+
+class CrossSourceReconciliation(Base):
+    __tablename__ = "cross_source_reconciliations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid4_str)
+    enterprise_id: Mapped[str] = mapped_column(ForeignKey("enterprises.id", ondelete="RESTRICT"), nullable=False, index=True)
+    ingestion_run_id: Mapped[str] = mapped_column(ForeignKey("ingestion_runs.id", ondelete="CASCADE"), nullable=False, index=True)
+    dependency_run_id: Mapped[str | None] = mapped_column(ForeignKey("ingestion_runs.id", ondelete="RESTRICT"), index=True)
+    validation_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    store_logical_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    rule_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_value: Mapped[str | None] = mapped_column(Text)
+    expected_value: Mapped[str | None] = mapped_column(Text)
+    difference: Mapped[str | None] = mapped_column(Text)
+    details: Mapped[dict[str, Any]] = mapped_column(SAJSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    __table_args__ = (
+        UniqueConstraint("ingestion_run_id", "validation_key", "store_logical_id", "period_start", name="uq_cross_source_run_scope"),
+        Index("ix_cross_source_scope", "enterprise_id", "store_logical_id", "period_start", "status"),
     )
 
 

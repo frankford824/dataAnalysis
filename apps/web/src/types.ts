@@ -10,6 +10,7 @@ export type SessionUser = {
   store_ids?: string[]
   must_change_password?: boolean
   permissions?: string[]
+  status?: string
 }
 
 export type Resource = {
@@ -19,15 +20,33 @@ export type Resource = {
   [key: string]: unknown
 }
 
+export type PlatformResource = Resource & {
+  platform?: string
+  external_account_id?: string
+  logical_id?: string
+}
+
 export type StoreResource = Resource & {
-  platform_account_id?: string
+  platform_account_id: string
   activation_at?: string
+  external_store_id?: string
+  logical_id?: string
 }
 
 export type SourceResource = Resource & {
   arrival_frequency?: string
   file_types?: string[]
   required?: boolean
+  activation_at?: string
+  coverage_time_field?: string
+  data_granularity?: string
+  import_mode?: 'monthly_snapshot' | 'incremental'
+  source_kind?: 'orders' | 'fees' | 'mixed'
+  field_aliases?: Record<string, string[]>
+  dedupe_keys?: string[]
+  amount_directions?: Record<string, 'positive' | 'negative'>
+  validations?: Array<Record<string, unknown>>
+  logical_id?: string
 }
 
 export type FilterState = {
@@ -76,11 +95,12 @@ export type Issue = {
 }
 
 export type DashboardSummary = {
+  order_count: number
   revenue: number
   refund: number
   fees: number
   cost: number
   profit: number
   trend: Array<{ month: string; revenue: number; profit: number }>
-  stores: Array<{ id: string; name: string; revenue: number; refund: number; fees: number; cost: number; profit: number; profit_margin: number }>
+  stores: Array<{ id: string; name: string; order_count: number; revenue: number; refund: number; fees: number; cost: number; profit: number; profit_margin: number }>
 }
