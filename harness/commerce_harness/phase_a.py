@@ -5,7 +5,7 @@ import json
 import re
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from dataclasses import replace as dataclass_replace
 from datetime import date, datetime
@@ -45,6 +45,15 @@ from .snapshot.artifacts import (
     ParquetArtifactStore,
 )
 from .snapshot.store import SnapshotStore
+from .spec.evaluate import evaluate as _evaluate_invariants
+from .spec.invariant import InvariantDefinition as _InvariantDefinition
+from .spec.invariant import load_invariants_from_json_path as _load_invariants_json
+from .spec.rule import RouteDecision as _RouteDecision
+from .spec.rule import RuleDefinition as _RuleDefinition
+from .spec.rule import decide_route as _decide_route
+from .spec.rule import parse_rule as _parse_rule
+from .spec.rule import route_rules_only as _route_rules_only
+from .trust_tier import TrustTier, decide_trust_tier
 from .workbench import WorkbenchPaths
 
 
@@ -69,6 +78,7 @@ class ReconcileRunResult:
     unresolved_count: int
     checksum_sha256: str
     certifiable: bool
+    trust_tier: str = "blocked"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1219,6 +1229,90 @@ def _bulk_insert(
         connection.unregister(batch_name)
 
 
+_ROUTED_SIDE_BY_METRIC = {
+    "cost": "cost",
+    "freight": "freight",
+    "advertising": "advertising",
+}
+
+
+def _routed_db_side(row: dict[str, Any]) -> str:
+    """Map a canonical side onto the ``reconciliation_item.side`` vocabulary.
+
+    ``operational`` has no direct counterpart, so the metric decides which
+    P&L carrier the routed row belongs to.
+    """
+    canonical_side = str(row.get("side") or "")
+    if canonical_side == "cash":
+        return "fund"
+    if canonical_side in ("order", "platform"):
+        return canonical_side
+    metric = str(row.get("metric") or "")
+    return _ROUTED_SIDE_BY_METRIC.get(metric, "platform")
+
+
+@dataclass(frozen=True, slots=True)
+class _RoutedItem:
+    """A row deliberately kept out of two-sided matching, still evidence-bound."""
+
+    logical_id: str
+    source_type: str
+    source_record_key: str
+    side: str
+    business_key: str | None
+    settlement_batch_key: str | None
+    cash_bridge_key: str | None
+    event_date: date
+    amount: Decimal
+    evidence: tuple[EvidenceRef, ...]
+    attributes: dict[str, Any]
+    participation: str
+    posting_target: str | None
+    rule_id: str | None
+
+
+def _routed_item_from_row(
+    row: dict[str, Any],
+    *,
+    route: _RouteDecision,
+    source_type: str,
+    occurred_at: datetime,
+    evidence: tuple[EvidenceRef, ...],
+    attributes: dict[str, Any],
+) -> _RoutedItem:
+    source_record_key = str(attributes["source_record_key"])
+    routed_attributes = dict(attributes)
+    routed_attributes["route_participation"] = route.participation
+    if route.posting_target:
+        routed_attributes["route_posting_target"] = route.posting_target
+    if route.rule_id:
+        routed_attributes["route_rule_id"] = route.rule_id
+    return _RoutedItem(
+        logical_id="routed:" + hashlib.sha256(
+            source_record_key.encode("utf-8")
+        ).hexdigest()[:24],
+        source_type=source_type,
+        source_record_key=source_record_key,
+        side=_routed_db_side(row),
+        business_key=str(row.get("business_key") or "") or None,
+        settlement_batch_key=(
+            str(row["settlement_batch_key"])
+            if row.get("settlement_batch_key")
+            else None
+        ),
+        cash_bridge_key=(
+            str(row["cash_bridge_key"]) if row.get("cash_bridge_key") else None
+        ),
+        event_date=occurred_at.date(),
+        amount=Decimal(str(row["amount"])),
+        evidence=evidence,
+        attributes=routed_attributes,
+        participation=route.participation,
+        posting_target=route.posting_target,
+        rule_id=route.rule_id,
+    )
+
+
 def _persist_reconciliation_result(
     database: DuckDBMemory,
     *,
@@ -1226,6 +1320,7 @@ def _persist_reconciliation_result(
     contract_id: str,
     period_id: str,
     result: ReconciliationResult,
+    routed_items: Sequence[_RoutedItem] = (),
 ) -> None:
     balance_keys = [
         (balance.scope.value, balance.business_key) for balance in result.balances
@@ -1283,6 +1378,41 @@ def _persist_reconciliation_result(
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    "two_sided",
+                    None,
+                )
+            )
+        for routed in routed_items:
+            evidence_id, evidence_row, binding_rows = _evidence_record(
+                run_id=run_id,
+                logical_id=routed.logical_id,
+                evidence=routed.evidence,
+                kind="routed_item",
+            )
+            evidence_rows.append(evidence_row)
+            evidence_binding_rows.extend(binding_rows)
+            item_rows.append(
+                (
+                    f"{run_id}:{routed.logical_id}",
+                    run_id,
+                    contract_id,
+                    period_id,
+                    routed.source_type,
+                    routed.source_record_key,
+                    routed.side,
+                    routed.business_key,
+                    routed.settlement_batch_key,
+                    routed.cash_bridge_key,
+                    routed.event_date,
+                    routed.amount,
+                    evidence_id,
+                    json.dumps(
+                        routed.attributes,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    routed.participation,
+                    routed.posting_target,
                 )
             )
         _bulk_insert(
@@ -1339,6 +1469,8 @@ def _persist_reconciliation_result(
                 "amount",
                 "evidence_id",
                 "attributes_json",
+                "participation",
+                "posting_target",
             ),
             rows=item_rows,
         )
@@ -1712,6 +1844,58 @@ def _control_differences(rows: Iterable[dict[str, Any]]) -> dict[str, str]:
     return differences
 
 
+PROFIT_COMPONENTS = (
+    "sales",
+    "refund",
+    "platform_fee",
+    "freight",
+    "cost",
+    "advertising",
+)
+
+# P&L components are derived, not raw: ``net_order_amount`` carries both the
+# gross sales and the refund leg, so coverage must be judged on the source
+# metrics that feed each component rather than on the component names.
+_PROFIT_COMPONENT_SOURCE_METRICS: dict[str, tuple[str, ...]] = {
+    "sales": ("net_order_amount",),
+    "refund": ("net_order_amount",),
+    "platform_fee": ("platform_fee",),
+    "freight": ("freight",),
+    "cost": ("cost",),
+    "advertising": ("advertising",),
+}
+
+
+def _missing_profit_components(rows: Iterable[dict[str, Any]]) -> list[str]:
+    """Components with no source metric present in the period's rows."""
+    present_metrics = {str(row.get("metric") or "") for row in rows}
+    return [
+        component
+        for component in PROFIT_COMPONENTS
+        if not any(
+            metric in present_metrics
+            for metric in _PROFIT_COMPONENT_SOURCE_METRICS[component]
+        )
+    ]
+
+
+def _one_sided_amount_basis(rows: Iterable[dict[str, Any]]) -> Decimal:
+    """Scale of the largest single side.
+
+    Summing every row would count both sides of the same economic event, which
+    halves any ratio computed against it.
+    """
+    per_side: dict[str, Decimal] = defaultdict(lambda: Decimal("0.0000"))
+    for row in rows:
+        raw = row.get("amount")
+        if raw is None:
+            continue
+        per_side[str(row.get("side") or "")] += abs(Decimal(str(raw)))
+    if not per_side:
+        return Decimal("0.0000")
+    return max(per_side.values())
+
+
 def _insert_certified_pnl(
     database: DuckDBMemory,
     *,
@@ -1719,6 +1903,7 @@ def _insert_certified_pnl(
     period_id: str,
     store_id: str,
     rows: Iterable[dict[str, Any]],
+    trust_tier: str,
 ) -> dict[str, object]:
     materialized_rows = list(rows)
     values: dict[str, list[Decimal]] = defaultdict(list)
@@ -1823,14 +2008,7 @@ def _insert_certified_pnl(
         metric: sum(metric_values, Decimal("0.0000"))
         for metric, metric_values in values.items()
     }
-    profit_components = (
-        "sales",
-        "refund",
-        "platform_fee",
-        "freight",
-        "cost",
-        "advertising",
-    )
+    profit_components = PROFIT_COMPONENTS
     missing_profit_components = [
         metric for metric in profit_components if metric not in values
     ]
@@ -1849,10 +2027,10 @@ def _insert_certified_pnl(
             """
             INSERT INTO pnl_cell (
                 pnl_cell_id, run_id, period_id, store_id, sku_key, metric,
-                definition_id, value, evidence_json
+                definition_id, value, evidence_json, trust_tier
             )
             VALUES (?, ?, ?, ?, '__store_total__', ?, 'pnl-store-total-v1',
-                    ?, ?)
+                    ?, ?, ?)
             """,
             [
                 f"{run_id}:pnl:{metric}",
@@ -1866,6 +2044,7 @@ def _insert_certified_pnl(
                     ensure_ascii=False,
                     sort_keys=True,
                 ),
+                trust_tier,
             ],
         )
     product_summaries: dict[str, dict[str, Decimal]] = {}
@@ -1896,10 +2075,10 @@ def _insert_certified_pnl(
                 """
                 INSERT INTO pnl_cell (
                     pnl_cell_id, run_id, period_id, store_id, sku_key, metric,
-                    definition_id, value, evidence_json
+                    definition_id, value, evidence_json, trust_tier
                 )
                 VALUES (?, ?, ?, ?, ?, ?,
-                        'pnl-certified-product-direct-v1', ?, ?)
+                        'pnl-certified-product-direct-v1', ?, ?, ?)
                 """,
                 [
                     f"{run_id}:pnl:sku:{sku_digest}:{metric}",
@@ -1914,6 +2093,7 @@ def _insert_certified_pnl(
                         ensure_ascii=False,
                         sort_keys=True,
                     ),
+                    trust_tier,
                 ],
             )
     product_assigned_totals = {
@@ -1949,6 +2129,185 @@ def _insert_certified_pnl(
         and complete_product_count == len(product_summaries)
         and not unassigned_totals,
     }
+
+
+def _load_active_invariants(
+    database: DuckDBMemory,
+) -> list[_InvariantDefinition]:
+    rows = database.execute(
+        """
+        SELECT d.definition_json
+        FROM invariant_definition d
+        JOIN invariant_version v ON v.invariant_id = d.invariant_id
+        WHERE v.status = 'active'
+        """
+    ).fetchall()
+    if rows:
+        from .spec.invariant import parse_invariant
+        return [parse_invariant(json.loads(str(r[0]))) for r in rows]
+    builtin_path = (
+        Path(__file__).resolve().parents[1]
+        / "packs"
+        / "builtin"
+        / "ecommerce_settlement"
+        / "invariants.json"
+    )
+    if builtin_path.is_file():
+        return _load_invariants_json(builtin_path)
+    return []
+
+
+_DEFAULT_MATERIALITY_FLOOR = Decimal("500.0000")
+
+
+def _materiality_floor(
+    invariant_defs: Sequence[_InvariantDefinition],
+) -> Decimal:
+    """Smallest single-item materiality across active invariants.
+
+    Taking the minimum keeps the strictest declared threshold in force rather
+    than letting a lenient contract raise the bar for everyone.
+    """
+    thresholds = [
+        inv.materiality.single_item
+        for inv in invariant_defs
+        if inv.materiality.single_item > 0
+    ]
+    if not thresholds:
+        return _DEFAULT_MATERIALITY_FLOOR
+    return min(thresholds)
+
+
+def _load_approved_route_rules(
+    database: DuckDBMemory,
+) -> list[_RuleDefinition]:
+    rows = database.execute(
+        """
+        SELECT v.definition_json
+        FROM rule_version v
+        WHERE v.status = 'approved'
+        """
+    ).fetchall()
+    rules: list[_RuleDefinition] = []
+    for row in rows:
+        raw = json.loads(str(row[0]))
+        if raw.get("action") == "route":
+            rules.append(_parse_rule(raw))
+    return rules
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationInputs:
+    """Kernel inputs derived from canonical rows under a given rule set."""
+
+    items: list[Any]
+    routed_items: list[_RoutedItem]
+    bridges: dict[tuple[str, str], SettlementCashBridge]
+
+
+def build_reconciliation_inputs(
+    rows: Sequence[dict[str, Any]],
+    contract: Any,
+    route_rules: Sequence[_RuleDefinition],
+) -> ReconciliationInputs:
+    """Turn canonical rows into kernel items, honouring route decisions.
+
+    Shared by the production run and by counterfactual experiments so that a
+    shadow run exercises the same engine rather than an estimate of it.
+    """
+    items: list[Any] = []
+    routed_items: list[_RoutedItem] = []
+    bridges: dict[tuple[str, str], SettlementCashBridge] = {}
+    contract_source_types = {source.source_type for source in contract.sources}
+
+    for row in rows:
+        source_type = str(row.get("source_type") or "")
+        if source_type not in contract_source_types:
+            continue
+        occurred_at = datetime.fromisoformat(str(row["occurred_at"]))
+        file_id = str(row.get("evidence_file_id") or "")
+        raw_row_no = row.get("evidence_row_no")
+        if raw_row_no is None:
+            raise RuntimeError("标准化记录缺少可定位的原始行，已停止本范围核对")
+        try:
+            row_no = int(raw_row_no)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "标准化记录缺少可定位的原始行，已停止本范围核对"
+            ) from exc
+        if not file_id or row_no <= 0:
+            raise RuntimeError(
+                "标准化记录缺少可定位的原始文件或行，已停止本范围核对"
+            )
+        evidence = (
+            EvidenceRef(
+                file_id=str(row.get("_artifact_source_snapshot_id") or file_id),
+                row_no=row_no,
+                field=str(row.get("metric") or "amount"),
+                rule_version=str(
+                    row.get("_artifact_rule_version") or NORMALIZATION_RULE_VERSION
+                ),
+                source_value=format(Decimal(str(row["amount"])), ".4f"),
+                artifact_id=str(row.get("_artifact_id") or ""),
+                source_member=str(row.get("source_member") or ""),
+                source_sheet=str(row.get("source_sheet") or ""),
+            ),
+        )
+        attributes = json.loads(str(row.get("attributes_json") or "{}"))
+        attributes["source_record_key"] = f"{file_id}:{row_no}"
+        route = _decide_route(row, route_rules)
+        if not route.enters_reconciliation:
+            routed_items.append(
+                _routed_item_from_row(
+                    row,
+                    route=route,
+                    source_type=source_type,
+                    occurred_at=occurred_at,
+                    evidence=evidence,
+                    attributes=attributes,
+                )
+            )
+            continue
+        item = make_item(
+            contract=contract,
+            source_type=source_type,
+            business_key=str(row["business_key"]),
+            value=Decimal(str(row["amount"])),
+            occurred_at=occurred_at,
+            evidence=evidence,
+            settlement_batch_key=(
+                str(row["settlement_batch_key"])
+                if row.get("settlement_batch_key")
+                else None
+            ),
+            cash_bridge_key=(
+                str(row["cash_bridge_key"]) if row.get("cash_bridge_key") else None
+            ),
+            attributes=attributes,
+        )
+        items.append(item)
+        settlement_key = item.settlement_batch_key
+        cash_key = item.cash_bridge_key
+        if settlement_key and cash_key:
+            bridge_key = (settlement_key, cash_key)
+            bridges.setdefault(
+                bridge_key,
+                SettlementCashBridge(
+                    bridge_id=(
+                        "bridge_"
+                        + hashlib.sha256(
+                            f"{settlement_key}|{cash_key}".encode()
+                        ).hexdigest()[:24]
+                    ),
+                    settlement_batch_key=settlement_key,
+                    cash_bridge_key=cash_key,
+                    rule_version="finite-cash-bridge-v1",
+                    evidence=evidence,
+                ),
+            )
+    return ReconciliationInputs(
+        items=items, routed_items=routed_items, bridges=bridges,
+    )
 
 
 def reconcile_period(
@@ -1993,6 +2352,27 @@ def reconcile_period(
             )
             if not artifact_manifest:
                 raise RuntimeError("该账期没有已确认的标准化输入版本")
+
+            invariant_defs = _load_active_invariants(database)
+            evaluations = _evaluate_invariants(rows, invariant_defs) if invariant_defs else ()
+            inv_blocks: dict[str, bool] = {}
+            for inv in invariant_defs:
+                inv_blocks[inv.invariant_id] = inv.blocks_certification
+
+            inv_version_map: dict[str, str] = {}
+            if invariant_defs:
+                iv_rows = database.execute(
+                    """
+                    SELECT invariant_id, invariant_version_id
+                    FROM invariant_version
+                    WHERE status = 'active'
+                    """
+                ).fetchall()
+                for iv_row in iv_rows:
+                    inv_version_map[str(iv_row[0])] = str(iv_row[1])
+
+            route_rules = _route_rules_only(_load_approved_route_rules(database))
+
             input_sha = deterministic_checksum(artifact_manifest)
             rule_sha = _rule_set_sha256(database)
             database.execute(
@@ -2013,94 +2393,10 @@ def reconcile_period(
                 ],
             )
             try:
-                items = []
-                bridges: dict[
-                    tuple[str, str], SettlementCashBridge
-                ] = {}
-                contract_source_types = {
-                    source.source_type for source in contract.sources
-                }
-                for row in rows:
-                    source_type = str(row.get("source_type") or "")
-                    if source_type not in contract_source_types:
-                        continue
-                    occurred_at = datetime.fromisoformat(str(row["occurred_at"]))
-                    file_id = str(row.get("evidence_file_id") or "")
-                    raw_row_no = row.get("evidence_row_no")
-                    if raw_row_no is None:
-                        raise RuntimeError(
-                            "标准化记录缺少可定位的原始行，已停止本范围核对"
-                        )
-                    try:
-                        row_no = int(raw_row_no)
-                    except (TypeError, ValueError) as exc:
-                        raise RuntimeError(
-                            "标准化记录缺少可定位的原始行，已停止本范围核对"
-                        ) from exc
-                    if not file_id or row_no <= 0:
-                        raise RuntimeError(
-                            "标准化记录缺少可定位的原始文件或行，已停止本范围核对"
-                        )
-                    evidence = (
-                        EvidenceRef(
-                            file_id=str(
-                                row.get("_artifact_source_snapshot_id") or file_id
-                            ),
-                            row_no=row_no,
-                            field=str(row.get("metric") or "amount"),
-                            rule_version=str(
-                                row.get("_artifact_rule_version")
-                                or NORMALIZATION_RULE_VERSION
-                            ),
-                            source_value=format(Decimal(str(row["amount"])), ".4f"),
-                            artifact_id=str(row.get("_artifact_id") or ""),
-                            source_member=str(row.get("source_member") or ""),
-                            source_sheet=str(row.get("source_sheet") or ""),
-                        ),
-                    )
-                    attributes = json.loads(
-                        str(row.get("attributes_json") or "{}")
-                    )
-                    attributes["source_record_key"] = f"{file_id}:{row_no}"
-                    item = make_item(
-                        contract=contract,
-                        source_type=source_type,
-                        business_key=str(row["business_key"]),
-                        value=Decimal(str(row["amount"])),
-                        occurred_at=occurred_at,
-                        evidence=evidence,
-                        settlement_batch_key=(
-                            str(row["settlement_batch_key"])
-                            if row.get("settlement_batch_key")
-                            else None
-                        ),
-                        cash_bridge_key=(
-                            str(row["cash_bridge_key"])
-                            if row.get("cash_bridge_key")
-                            else None
-                        ),
-                        attributes=attributes,
-                    )
-                    items.append(item)
-                    settlement_key = item.settlement_batch_key
-                    cash_key = item.cash_bridge_key
-                    if settlement_key and cash_key:
-                        bridge_key = (settlement_key, cash_key)
-                        bridges.setdefault(
-                            bridge_key,
-                            SettlementCashBridge(
-                                bridge_id=(
-                                    "bridge_"
-                                    + hashlib.sha256(
-                                        f"{settlement_key}|{cash_key}".encode()
-                                    ).hexdigest()[:24]
-                                ),
-                                settlement_batch_key=settlement_key,
-                                cash_bridge_key=cash_key,
-                                rule_version="finite-cash-bridge-v1",
-                                evidence=evidence,
-                            ),
-                        )
+                inputs = build_reconciliation_inputs(rows, contract, route_rules)
+                items = inputs.items
+                routed_items = inputs.routed_items
+                bridges = inputs.bridges
                 result = reconcile_items(
                     items,
                     contract,
@@ -2113,6 +2409,7 @@ def reconcile_period(
                     contract_id=contract_id,
                     period_id=period_id,
                     result=result,
+                    routed_items=routed_items,
                 )
 
                 pending_decisions = int(
@@ -2225,9 +2522,66 @@ def reconcile_period(
                     for name, value in control_differences.items()
                     if abs(Decimal(value)) > Decimal("0.0100")
                 }
-                certifiable = not any(
+
+                for ev in evaluations:
+                    version_id = inv_version_map.get(ev.invariant_id)
+                    if not version_id:
+                        continue
+                    database.execute(
+                        """
+                        INSERT INTO invariant_evaluation (
+                            evaluation_id, run_id, invariant_version_id,
+                            period_id, store_id, status,
+                            left_total, right_total, gap_amount,
+                            participating_rows, is_material, evidence_json
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            f"{run_id}:{ev.evaluation_id}",
+                            run_id,
+                            version_id,
+                            period_id,
+                            store_id,
+                            ev.status,
+                            ev.left_total,
+                            ev.right_total,
+                            ev.gap_amount,
+                            ev.participating_rows,
+                            ev.is_material,
+                            ev.evidence_json,
+                        ],
+                    )
+
+                blocking_violations = sum(
+                    1
+                    for e in evaluations
+                    if e.status == "violated"
+                    and inv_blocks.get(e.invariant_id, False)
+                )
+                materiality_floor = _materiality_floor(invariant_defs)
+                material_unresolved = sum(
+                    1
+                    for u in result.unresolved
+                    if u.absolute_exposure >= materiality_floor
+                )
+                amount_basis = _one_sided_amount_basis(rows)
+                unexplained_amount = sum(
+                    (u.absolute_exposure for u in result.unresolved),
+                    Decimal("0.0000"),
+                )
+                unexplained_ratio = (
+                    unexplained_amount / amount_basis
+                    if amount_basis > 0
+                    else Decimal("0")
+                )
+                missing_components = _missing_profit_components(rows)
+
+                # Structural defects stay all-or-nothing: without approved
+                # rules, complete files, a settled revision and balanced
+                # control totals there is nothing to grade.
+                structural_blocks = any(
                     (
-                        result.unresolved,
                         pending_decisions,
                         incomplete_checklist,
                         candidate_revisions,
@@ -2236,26 +2590,30 @@ def reconcile_period(
                         failed_controls,
                     )
                 )
+                if structural_blocks:
+                    tier = TrustTier.BLOCKED
+                else:
+                    tier = decide_trust_tier(
+                        blocking_violations=blocking_violations,
+                        material_unresolved=material_unresolved,
+                        unexplained_ratio=unexplained_ratio,
+                        incomplete_components=len(missing_components),
+                    )
+                certifiable = tier == TrustTier.CERTIFIED
                 profit_completeness: dict[str, object] = {
                     "complete": False,
                     "present_components": [],
-                    "missing_components": [
-                        "sales",
-                        "refund",
-                        "platform_fee",
-                        "freight",
-                        "cost",
-                        "advertising",
-                    ],
+                    "missing_components": list(PROFIT_COMPONENTS),
                     "profit_definition": "pnl-store-total-v1",
                 }
-                if certifiable:
+                if tier != TrustTier.BLOCKED:
                     profit_completeness = _insert_certified_pnl(
                         database,
                         run_id=run_id,
                         period_id=period_id,
                         store_id=store_id,
                         rows=rows,
+                        trust_tier=tier.value,
                     )
                 metrics = {
                     "item_count": len(result.items),
@@ -2273,6 +2631,7 @@ def reconcile_period(
                     ),
                     "checksum_sha256": result.checksum(),
                     "certifiable": certifiable,
+                    "trust_tier": tier.value,
                     "pending_business_decisions": pending_decisions,
                     "incomplete_checklist": incomplete_checklist,
                     "configured_checklist_requirements": checklist_requirements,
@@ -2282,20 +2641,54 @@ def reconcile_period(
                     "control_differences": control_differences,
                     "failed_controls": failed_controls,
                     "profit_completeness": profit_completeness,
+                    "blocking_violations": blocking_violations,
+                    "evaluation_count": len(evaluations),
+                    "material_unresolved_count": material_unresolved,
+                    "materiality_floor": format(materiality_floor, ".4f"),
+                    "unexplained_amount": format(unexplained_amount, ".4f"),
+                    "unexplained_ratio": format(unexplained_ratio, ".6f"),
+                    "amount_basis": format(amount_basis, ".4f"),
+                    "missing_profit_components": missing_components,
+                    "routed_row_count": len(routed_items),
+                    "routed_amount_abs": format(
+                        sum(
+                            (abs(r.amount) for r in routed_items),
+                            Decimal("0.0000"),
+                        ),
+                        ".4f",
+                    ),
+                    "routed_by_target": {
+                        target: count
+                        for target, count in sorted(
+                            Counter(
+                                str(r.posting_target or "unspecified")
+                                for r in routed_items
+                            ).items()
+                        )
+                    },
                 }
+                supports_skipped = database.run_log_supports_skipped()
+                if len(result.items) == 0:
+                    final_status = "skipped" if supports_skipped else "cancelled"
+                    empty_error_code = None if supports_skipped else "skipped_empty"
+                else:
+                    final_status = "succeeded"
+                    empty_error_code = None
                 database.execute(
                     """
                     UPDATE run_log
-                    SET status = 'succeeded', finished_at = current_timestamp,
-                        metrics_json = ?
+                    SET status = ?, finished_at = current_timestamp,
+                        metrics_json = ?, error_code = ?
                     WHERE run_id = ?
                     """,
                     [
+                        final_status,
                         json.dumps(
                             metrics,
                             ensure_ascii=False,
                             sort_keys=True,
                         ),
+                        empty_error_code,
                         run_id,
                     ],
                 )
@@ -2319,6 +2712,7 @@ def reconcile_period(
         unresolved_count=len(result.unresolved),
         checksum_sha256=result.checksum(),
         certifiable=certifiable,
+        trust_tier=tier.value,
     )
 
 
@@ -2351,7 +2745,8 @@ def _baseline_output(
     ).fetchall()
     pnl = database.execute(
         """
-        SELECT pnl_cell_id, store_id, sku_key, metric, definition_id, value
+        SELECT pnl_cell_id, store_id, sku_key, metric, definition_id, value,
+               coalesce(trust_tier, 'certified') AS trust_tier
         FROM pnl_cell
         WHERE run_id = ?
         ORDER BY pnl_cell_id
@@ -2424,6 +2819,28 @@ def _evidence_refs(payload: Any, *, fallback_file_id: str) -> tuple[EvidenceRef,
     return ()
 
 
+def _run_trust_tier(database: DuckDBMemory, *, run_id: str) -> str:
+    """Trust tier recorded on a run, preferring the persisted P&L annotation."""
+    row = database.execute(
+        """
+        SELECT DISTINCT coalesce(trust_tier, 'certified')
+        FROM pnl_cell
+        WHERE run_id = ?
+        ORDER BY 1
+        """,
+        [run_id],
+    ).fetchall()
+    if not row:
+        return "unknown"
+    # Distinct tiers on one run means the annotation is untrustworthy; report
+    # the weakest rather than picking a favourable one.
+    tiers = [str(item[0]) for item in row]
+    for tier in ("blocked", "partial", "certified"):
+        if tier in tiers:
+            return tier
+    return tiers[0]
+
+
 def compare_period(
     workbench: WorkbenchPaths,
     *,
@@ -2465,6 +2882,9 @@ def compare_period(
             """,
             [reconcile_run_id],
         ).fetchall()
+        # Comparing against history is allowed at any tier, but the tier of the
+        # numbers being compared has to travel with the result.
+        compared_trust_tier = _run_trust_tier(database, run_id=reconcile_run_id)
         current_by_metric = {
             str(metric): (value, evidence_json)
             for metric, value, evidence_json in current_rows
@@ -2543,6 +2963,7 @@ def compare_period(
             "finding_count": len(all_findings),
             "true_difference_count": true_difference_count,
             "historical_output_count": history_count,
+            "compared_trust_tier": compared_trust_tier,
         }
         with database.transaction() as connection:
             connection.execute(

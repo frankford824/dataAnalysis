@@ -31,6 +31,15 @@ docker compose up -d --build
 ./scripts/smoke-test.sh
 ```
 
+## Harness 工作台维护
+
+`commerce_harness` 的 DuckDB 工作台在每次连接时执行 `SET TimeZone='UTC'`，因此审计时间戳与机器时区无关。已有工作台里在此之前写入的时间戳仍是当时的本地时区，DuckDB 的 `TIMESTAMPTZ` 保存的是绝对时刻，读取时会按 UTC 呈现，不需要也不允许改写历史行；只有跨越该切换点的时间戳字符串比较需要注意呈现差异。
+
+`commerce-harness hygiene` 有两项动作，都会在 `maintenance_log` 留痕（动作、涉及运行数、涉及行数、明细和 `code_sha`）：
+
+- 回填空运行状态：只处理显式记录了 `item_count = 0` 的 reconcile 运行；缺少该指标的历史运行按未知处理，保持原状。
+- 归档过期对账明细：每个账期保留最近一次成功运行，其余明细先复制进 `archive` schema 再删除，`preclosed` 和 `closed` 账期的明细永不归档。
+
 ## 回滚
 
 数据库迁移向后兼容时，可以重新部署记录过的旧镜像摘要。若迁移不兼容，先停止所有写入服务，恢复升级前备份，再部署旧镜像。禁止让旧代码连接其版本不支持的新 schema。回滚不得重新发布或重算锁定月份；业务数据更正必须走管理员授权和审计流程。

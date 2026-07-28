@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -21,6 +22,8 @@ from commerce_harness.snapshot.store import SnapshotManifest
 
 from .schema import REQUIRED_TABLES, SCHEMA_STATEMENTS, SCHEMA_VERSION
 
+_log = logging.getLogger(__name__)
+
 _INITIALIZED_DATABASES: set[str] = set()
 _INITIALIZATION_LOCK = threading.Lock()
 _CONNECTION_OPEN_LOCK = threading.Lock()
@@ -35,13 +38,17 @@ class DuckDBMemory:
         self.database = str(database)
         if self.database != ":memory:":
             Path(self.database).parent.mkdir(parents=True, exist_ok=True)
+        self._run_log_supports_skipped: bool | None = None
         self.connection = self._connect()
 
     def _connect(self) -> duckdb.DuckDBPyConnection:
         for attempt in range(_CONNECTION_RETRY_COUNT):
             try:
                 with _CONNECTION_OPEN_LOCK:
-                    return duckdb.connect(self.database)
+                    connection = duckdb.connect(self.database)
+                # Audit timestamps must be timezone-stable across hosts.
+                connection.execute("SET TimeZone='UTC'")
+                return connection
             except duckdb.BinderException as exc:
                 if (
                     "Unique file handle conflict" not in str(exc)
@@ -84,6 +91,7 @@ class DuckDBMemory:
 
     def _initialize_database(self) -> None:
         self._migrate_checklist_result_v8()
+        self._migrate_run_log_skipped_v16()
         with self.transaction() as connection:
             for statement in SCHEMA_STATEMENTS:
                 connection.execute(statement)
@@ -150,6 +158,7 @@ class DuckDBMemory:
                 """,
                 [SCHEMA_VERSION],
             )
+        self.seed_builtin_invariants()
         missing = REQUIRED_TABLES - self.table_names()
         if missing:
             raise RuntimeError(f"DuckDB schema is incomplete: {sorted(missing)}")
@@ -253,6 +262,107 @@ class DuckDBMemory:
                 """
             )
             connection.execute("DROP TABLE checklist_result_migration")
+
+    def _migrate_run_log_skipped_v16(self) -> None:
+        """Drop the stale ``__probe_skipped`` audit rows left by earlier builds.
+
+        DuckDB cannot ALTER a CHECK constraint, and rebuilding ``run_log`` is
+        impossible while child tables hold foreign keys into it. New databases
+        get the v16 DDL that already accepts ``skipped``; older databases keep
+        the legacy CHECK and record empty reconcile runs as ``cancelled`` with
+        ``error_code='skipped_empty'`` instead.
+        """
+
+        if "run_log" not in self.table_names():
+            return
+        self.connection.execute(
+            "DELETE FROM run_log WHERE run_id = '__probe_skipped'"
+        )
+
+    def run_log_supports_skipped(self) -> bool:
+        """Whether ``run_log`` accepts ``status='skipped'``.
+
+        Read from catalog metadata rather than probing with a write: probing
+        inside an open transaction aborts it on legacy schemas, and a crash
+        between probe and cleanup would leave a fabricated run in the audit
+        ledger.
+        """
+
+        cached = self._run_log_supports_skipped
+        if cached is not None:
+            return cached
+        supported = False
+        try:
+            rows = self.connection.execute(
+                """
+                SELECT constraint_text
+                FROM duckdb_constraints()
+                WHERE table_name = 'run_log' AND constraint_type = 'CHECK'
+                """
+            ).fetchall()
+        except duckdb.Error:
+            rows = []
+        for (constraint_text,) in rows:
+            text = str(constraint_text)
+            if "status" in text and "'skipped'" in text:
+                supported = True
+                break
+        self._run_log_supports_skipped = supported
+        return supported
+
+    def seed_builtin_invariants(self) -> int:
+        invariants_path = (
+            Path(__file__).resolve().parents[2]
+            / "packs"
+            / "builtin"
+            / "ecommerce_settlement"
+            / "invariants.json"
+        )
+        if not invariants_path.is_file():
+            _log.debug("builtin invariants not found at %s", invariants_path)
+            return 0
+        from commerce_harness.spec.invariant import load_invariants_from_json_path
+
+        definitions = load_invariants_from_json_path(invariants_path)
+        seeded = 0
+        for inv in definitions:
+            canon_dict = inv.canonical_dict()
+            canon_dict["title"] = inv.title
+            canon_dict["domain"] = inv.domain
+            canon_dict["origin"] = inv.origin
+            definition_json = json.dumps(
+                canon_dict, ensure_ascii=False, sort_keys=True
+            )
+            self.connection.execute(
+                """
+                INSERT INTO invariant_definition (
+                    invariant_id, domain, family, title, definition_json, origin
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (invariant_id) DO NOTHING
+                """,
+                [
+                    inv.invariant_id,
+                    inv.domain,
+                    inv.family,
+                    inv.title,
+                    definition_json,
+                    inv.origin,
+                ],
+            )
+            version_id = f"{inv.invariant_id}:1.0.0"
+            self.connection.execute(
+                """
+                INSERT INTO invariant_version (
+                    invariant_version_id, invariant_id, semver, status
+                )
+                VALUES (?, ?, '1.0.0', 'active')
+                ON CONFLICT (invariant_version_id) DO NOTHING
+                """,
+                [version_id, inv.invariant_id],
+            )
+            seeded += 1
+        return seeded
 
     def table_names(self) -> set[str]:
         rows = self.connection.execute(

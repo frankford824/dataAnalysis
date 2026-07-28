@@ -1,0 +1,25 @@
+{
+  "rule_id": "route_alipay_service_fee_single_sided_v1",
+  "action": "route",
+  "select": {
+    "all_of": [
+      {"field": "source_type", "op": "eq", "value": "alipay_ledger"},
+      {"field": "amount", "op": "sign", "value": "negative"},
+      {
+        "field": "attributes.business_description",
+        "op": "in",
+        "value": [
+          "软件服务费",
+          "技术服务费",
+          "佣金",
+          "天猫佣金",
+          "淘宝客佣金",
+          "服务费"
+        ]
+      }
+    ]
+  },
+  "participation": "legal_single_sided",
+  "posting_target": "platform_fee",
+  "rationale": "平台按单扣费为单边成本，订单侧本就不存在对应收款；不参与双边勾稽，直接进入损益 platform_fee。"
+}

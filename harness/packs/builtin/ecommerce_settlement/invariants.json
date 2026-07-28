@@ -1,0 +1,76 @@
+[
+  {
+    "family": "equality",
+    "title": "支付宝账单与控制总额一致",
+    "domain": "ecommerce_settlement",
+    "origin": "builtin",
+    "scope": {
+      "period": "current",
+      "store": "each",
+      "currency": "CNY"
+    },
+    "sides": {
+      "left": {
+        "kinds": ["alipay_ledger"],
+        "select": {"field": "source_type", "op": "eq", "value": "alipay_ledger"},
+        "sign": "as_declared"
+      },
+      "right": {
+        "kinds": ["alipay_control_total"],
+        "select": {"field": "source_type", "op": "eq", "value": "alipay_control_total"},
+        "sign": "as_declared"
+      }
+    },
+    "tolerance": {
+      "absolute": "0.0100",
+      "relative": "0.000000"
+    },
+    "materiality": {
+      "single_item": "500.00",
+      "category_cumulative": "5000.00",
+      "period_revenue_ratio": "0.001"
+    },
+    "on_violation": {
+      "legal_dispositions": ["timing_difference", "platform_fee", "pending_investigation"],
+      "blocks_certification": true
+    },
+    "blocks_certification": true
+  },
+  {
+    "family": "equality",
+    "title": "微信账单与控制总额一致",
+    "domain": "ecommerce_settlement",
+    "origin": "builtin",
+    "scope": {
+      "period": "current",
+      "store": "each",
+      "currency": "CNY"
+    },
+    "sides": {
+      "left": {
+        "kinds": ["wechat_ledger"],
+        "select": {"field": "source_type", "op": "eq", "value": "wechat_ledger"},
+        "sign": "as_declared"
+      },
+      "right": {
+        "kinds": ["wechat_control_total"],
+        "select": {"field": "source_type", "op": "eq", "value": "wechat_control_total"},
+        "sign": "as_declared"
+      }
+    },
+    "tolerance": {
+      "absolute": "0.0100",
+      "relative": "0.000000"
+    },
+    "materiality": {
+      "single_item": "500.00",
+      "category_cumulative": "5000.00",
+      "period_revenue_ratio": "0.001"
+    },
+    "on_violation": {
+      "legal_dispositions": ["timing_difference", "platform_fee", "pending_investigation"],
+      "blocks_certification": true
+    },
+    "blocks_certification": true
+  }
+]

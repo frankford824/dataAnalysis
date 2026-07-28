@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-SCHEMA_VERSION = 15
+from commerce_harness.memory.experiment_tables import MAIN_EXPERIMENT_TABLE_DDL
+
+SCHEMA_VERSION = 16
 
 REQUIRED_TABLES = frozenset(
     {
@@ -51,6 +53,16 @@ REQUIRED_TABLES = frozenset(
         "diff_finding",
         "autonomy_evaluation",
         "unresolved_balance",
+        "invariant_definition",
+        "invariant_version",
+        "invariant_evaluation",
+        "experiment",
+        "experiment_metric",
+        "experiment_delta",
+        "situation_fingerprint",
+        "adjudication_case",
+        "attack_case",
+        "attack_result",
     }
 )
 
@@ -163,7 +175,12 @@ SCHEMA_STATEMENTS = (
         run_kind VARCHAR NOT NULL
             CHECK (run_kind IN ('freeze', 'parse', 'reconcile', 'adjudicate', 'baseline', 'blind')),
         status VARCHAR NOT NULL
-            CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+            CHECK (
+                status IN (
+                    'queued', 'running', 'succeeded', 'failed',
+                    'cancelled', 'skipped'
+                )
+            ),
         code_sha VARCHAR,
         input_manifest_sha256 VARCHAR,
         rule_set_sha256 VARCHAR,
@@ -323,8 +340,7 @@ SCHEMA_STATEMENTS = (
     """,
     """
     CREATE TABLE IF NOT EXISTS reconciliation_item (
-        item_id VARCHAR PRIMARY KEY,
-        run_id VARCHAR NOT NULL REFERENCES run_log(run_id),
+        item_id VARCHAR PRIMARY KEY,        run_id VARCHAR NOT NULL REFERENCES run_log(run_id),
         contract_id VARCHAR NOT NULL REFERENCES reconciliation_contract(contract_id),
         period_id VARCHAR NOT NULL REFERENCES accounting_period(period_id),
         source_kind VARCHAR NOT NULL,
@@ -339,6 +355,11 @@ SCHEMA_STATEMENTS = (
         amount DECIMAL(38,4) NOT NULL,
         evidence_id VARCHAR REFERENCES evidence_record(evidence_id),
         attributes_json JSON,
+        participation VARCHAR NOT NULL DEFAULT 'two_sided'
+            CHECK (
+                participation IN ('two_sided', 'legal_single_sided', 'excluded')
+            ),
+        posting_target VARCHAR,
         created_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp,
         UNIQUE (run_id, source_kind, source_record_key)
     )
@@ -575,6 +596,8 @@ SCHEMA_STATEMENTS = (
         definition_id VARCHAR NOT NULL,
         value DECIMAL(38,4) NOT NULL,
         evidence_json JSON NOT NULL,
+        trust_tier VARCHAR NOT NULL DEFAULT 'certified'
+            CHECK (trust_tier IN ('certified', 'partial', 'blocked')),
         UNIQUE (run_id, store_id, sku_key, metric, definition_id)
     )
     """,
@@ -942,6 +965,140 @@ SCHEMA_STATEMENTS = (
     """
     ALTER TABLE IF EXISTS reconciliation_balance
     ADD COLUMN IF NOT EXISTS platform_to_cash_difference DECIMAL(38,4)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS invariant_definition (
+        invariant_id VARCHAR PRIMARY KEY,
+        domain VARCHAR NOT NULL,
+        family VARCHAR NOT NULL,
+        title VARCHAR NOT NULL,
+        definition_json JSON NOT NULL,
+        origin VARCHAR NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS invariant_version (
+        invariant_version_id VARCHAR PRIMARY KEY,
+        invariant_id VARCHAR NOT NULL REFERENCES invariant_definition(invariant_id),
+        semver VARCHAR NOT NULL,
+        status VARCHAR NOT NULL CHECK (status IN ('draft', 'active', 'retired')),
+        approved_by VARCHAR,
+        approved_at TIMESTAMPTZ,
+        review_due_at DATE,
+        supersedes VARCHAR,
+        UNIQUE (invariant_id, semver)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS invariant_evaluation (
+        evaluation_id VARCHAR PRIMARY KEY,
+        run_id VARCHAR NOT NULL REFERENCES run_log(run_id),
+        invariant_version_id VARCHAR NOT NULL REFERENCES invariant_version(invariant_version_id),
+        period_id VARCHAR,
+        store_id VARCHAR,
+        status VARCHAR NOT NULL
+            CHECK (
+                status IN (
+                    'passed', 'violated', 'not_applicable', 'insufficient_input'
+                )
+            ),
+        left_total DECIMAL(38,4),
+        right_total DECIMAL(38,4),
+        gap_amount DECIMAL(38,4),
+        participating_rows BIGINT,
+        is_material BOOLEAN NOT NULL DEFAULT false,
+        evidence_json JSON NOT NULL,
+        evaluated_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp,
+        UNIQUE (run_id, invariant_version_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS maintenance_log (
+        action_id VARCHAR PRIMARY KEY,
+        action VARCHAR NOT NULL,
+        affected_runs BIGINT NOT NULL DEFAULT 0,
+        affected_rows BIGINT NOT NULL DEFAULT 0,
+        details_json JSON NOT NULL,
+        code_sha VARCHAR,
+        executed_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+    )
+    """,
+    *MAIN_EXPERIMENT_TABLE_DDL,
+    """
+    CREATE TABLE IF NOT EXISTS situation_fingerprint (
+        fingerprint_id VARCHAR PRIMARY KEY,
+        domain VARCHAR NOT NULL,
+        invariant_family VARCHAR,
+        features_json JSON NOT NULL,
+        occurrence_count BIGINT NOT NULL DEFAULT 0,
+        distinct_periods INTEGER NOT NULL DEFAULT 0,
+        distinct_stores INTEGER NOT NULL DEFAULT 0,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp,
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS adjudication_case (
+        case_id VARCHAR PRIMARY KEY,
+        fingerprint_id VARCHAR NOT NULL REFERENCES situation_fingerprint(fingerprint_id),
+        domain VARCHAR NOT NULL,
+        subject_kind VARCHAR NOT NULL,
+        subject_key VARCHAR NOT NULL,
+        period_id VARCHAR,
+        store_id VARCHAR,
+        disposition_kind VARCHAR NOT NULL,
+        posting_target VARCHAR,
+        rationale VARCHAR NOT NULL,
+        decided_by VARCHAR NOT NULL,
+        decided_role VARCHAR NOT NULL,
+        model_suggested_by VARCHAR,
+        decided_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp,
+        evidence_binding_digest VARCHAR NOT NULL,
+        verified_by_experiment VARCHAR,
+        outcome_json JSON,
+        promoted_to_rule_version VARCHAR,
+        review_due_at DATE,
+        export_allowed BOOLEAN NOT NULL DEFAULT false,
+        consent_record_id VARCHAR,
+        redaction_profile_version VARCHAR
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS attack_case (
+        attack_id VARCHAR PRIMARY KEY,
+        target VARCHAR NOT NULL,
+        method_json JSON NOT NULL,
+        expected_detection VARCHAR NOT NULL,
+        severity VARCHAR NOT NULL,
+        discovered_by VARCHAR NOT NULL,
+        origin_pack VARCHAR,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT current_timestamp
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS attack_result (
+        attack_id VARCHAR NOT NULL REFERENCES attack_case(attack_id),
+        run_id VARCHAR NOT NULL REFERENCES run_log(run_id),
+        outcome VARCHAR NOT NULL CHECK (outcome IN ('detected', 'undetected', 'not_applicable')),
+        detail_json JSON NOT NULL,
+        PRIMARY KEY (attack_id, run_id)
+    )
+    """,
+    # Legacy databases predate these columns. DuckDB cannot attach a CHECK to
+    # an added column, so the vocabulary is enforced by the fresh DDL above and
+    # by the writers; readers coalesce the legacy NULL to its historical
+    # meaning ('two_sided' / 'certified').
+    """
+    ALTER TABLE IF EXISTS reconciliation_item
+    ADD COLUMN IF NOT EXISTS participation VARCHAR DEFAULT 'two_sided'
+    """,
+    """
+    ALTER TABLE IF EXISTS reconciliation_item ADD COLUMN IF NOT EXISTS posting_target VARCHAR
+    """,
+    """
+    ALTER TABLE IF EXISTS pnl_cell
+    ADD COLUMN IF NOT EXISTS trust_tier VARCHAR DEFAULT 'certified'
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_item_business_key

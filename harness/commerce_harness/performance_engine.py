@@ -584,6 +584,7 @@ def _product_cells(
         SELECT pnl_cell_id, sku_key, metric, definition_id, value, evidence_json
         FROM pnl_cell
         WHERE run_id = ? AND period_id = ? AND store_id = ?
+          AND coalesce(trust_tier, 'certified') = 'certified'
         ORDER BY sku_key, metric, definition_id, pnl_cell_id
         """,
         [certified_run.run_id, context.period_id, context.store_id],

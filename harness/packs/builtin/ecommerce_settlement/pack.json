@@ -1,0 +1,12 @@
+{
+  "pack_id": "builtin.ecommerce_settlement",
+  "domain": "ecommerce_settlement",
+  "version": "0.1.0",
+  "publisher": "harness-builtin",
+  "engine_compat": {
+    "min": "0.1.0",
+    "max": "1.0.0"
+  },
+  "depends_on": [],
+  "description": "电商结算内置规则包：支付宝/微信控制总额不变量"
+}

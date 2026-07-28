@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from commerce_harness.code_identity import CodeIdentity, resolve_code_identity
 from commerce_harness.kernel.contract import taobao_three_way_contract
 from commerce_harness.kernel.recon import (
     EvidenceRef,
@@ -589,8 +590,9 @@ def test_compare_period_persists_row_attributed_difference(tmp_path: Path) -> No
         assert row[3:] == ("true_difference", "open")
 
 
-def test_candidate_baseline_records_dirty_code_identity_and_output_hash(
+def test_candidate_baseline_records_code_identity_and_output_hash(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     database_path = tmp_path / "ledger.duckdb"
     with DuckDBMemory(database_path) as memory:
@@ -613,16 +615,54 @@ def test_candidate_baseline_records_dirty_code_identity_and_output_hash(
         llm_logs=tmp_path / "llm_logs",
         locks=tmp_path / "locks",
     )
-
+    expected = resolve_code_identity()
     result = create_baseline(workbench, period_token="2602")
 
     assert result.status == "candidate"
     assert len(result.output_sha256) == 64
-    assert "+dirty." in result.code_sha
+    assert result.code_sha == expected.value
     with DuckDBMemory(database_path) as memory:
         assert memory.execute(
             "SELECT status, output_sha256 FROM baseline"
         ).fetchone() == ("candidate", result.output_sha256)
+
+
+def test_candidate_baseline_records_dirty_code_identity_when_worktree_dirty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "ledger.duckdb"
+    with DuckDBMemory(database_path) as memory:
+        _prepare(memory)
+        memory.execute(
+            """
+            UPDATE run_log
+            SET status = 'succeeded', finished_at = current_timestamp,
+                input_manifest_sha256 = 'input-sha',
+                rule_set_sha256 = 'rule-sha', metrics_json = '{}'
+            WHERE run_id = 'run-1'
+            """
+        )
+    workbench = WorkbenchPaths(
+        root=tmp_path,
+        database=database_path,
+        snapshots=tmp_path / "snapshots",
+        normalized=tmp_path / "normalized",
+        reports=tmp_path / "reports",
+        llm_logs=tmp_path / "llm_logs",
+        locks=tmp_path / "locks",
+    )
+    dirty = CodeIdentity(
+        commit_sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        worktree_sha256="b" * 64,
+    )
+    monkeypatch.setattr(
+        "commerce_harness.phase_a.resolve_code_identity",
+        lambda start=None: dirty,
+    )
+    result = create_baseline(workbench, period_token="2602")
+    assert "+dirty." in result.code_sha
+    assert result.code_sha == dirty.value
 
 
 def test_normalize_workspace_writes_current_decimal_parquet(
@@ -878,6 +918,7 @@ def test_certified_profit_is_not_invented_when_components_are_missing() -> None:
             period_id="period-profit",
             store_id="store-profit",
             rows=[order_row],
+            trust_tier="certified",
         )
         assert incomplete["complete"] is False
         assert "cost" in incomplete["missing_components"]
@@ -909,6 +950,7 @@ def test_certified_profit_is_not_invented_when_components_are_missing() -> None:
             period_id="period-profit",
             store_id="store-profit",
             rows=[order_row, *direct_rows],
+            trust_tier="certified",
         )
         assert complete["complete"] is True
         assert complete["missing_components"] == []
@@ -1009,6 +1051,7 @@ def test_certified_pnl_publishes_product_cells_only_from_direct_evidence() -> No
             period_id="period-product-profit",
             store_id="store-product-profit",
             rows=[order_row, *direct_rows],
+            trust_tier="certified",
         )
 
         assert result["product_count"] == 1
@@ -1052,4 +1095,5 @@ def test_certified_pnl_never_invents_first_source_row() -> None:
                         "evidence_row_no": None,
                     }
                 ],
+                trust_tier="certified",
             )

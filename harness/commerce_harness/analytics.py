@@ -735,6 +735,7 @@ def _coverage(database: Any) -> dict[str, object]:
             FROM pnl_cell cell
             JOIN latest ON latest.run_id = cell.run_id
             WHERE cell.metric = 'profit'
+              AND coalesce(cell.trust_tier, 'certified') = 'certified'
             """
         ).fetchone()[0]
     )

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from decimal import Decimal
 from typing import cast
 
@@ -37,6 +38,9 @@ class AutonomyPolicy:
         object.__setattr__(self, "exposure_cap", strict_decimal(self.exposure_cap))
 
 
+_LEVEL_RANK = {"L0": 0, "L1": 1, "L2": 2}
+
+
 @dataclass(frozen=True, slots=True)
 class AutonomyAssessment:
     category: str
@@ -48,8 +52,10 @@ class AutonomyAssessment:
     recommended_level: str
     effective_level: str
     reasons: tuple[str, ...]
-    requires_governance_approval: bool = field(default=True, init=False)
-    may_write_ledger: bool = field(default=False, init=False)
+    requires_governance_approval: bool = True
+    # Structural, not configurable: no autonomy level grants ledger writes, so
+    # this must not be settable by a caller.
+    may_write_ledger: bool = dataclass_field(default=False, init=False)
 
 
 class AutonomyEvaluator:
@@ -92,10 +98,19 @@ class AutonomyEvaluator:
         recommended = "L2" if eligible else ("L1" if items and not major_errors else "L0")
         if eligible:
             reasons.append("eligible for governance review only; no automatic elevation")
-        # This release is deliberately pinned to L0 even if configuration asks for more.
-        effective = "L0"
-        if self.policy.level != "L0":
-            reasons.append("runtime is safety-pinned to L0 in this release")
+
+        # The effective level is the weaker of what the evidence supports and
+        # what the operator configured, so neither side can elevate alone.
+        policy_rank = _LEVEL_RANK.get(self.policy.level, 0)
+        recommended_rank = _LEVEL_RANK.get(recommended, 0)
+        effective = recommended if recommended_rank <= policy_rank else self.policy.level
+        if effective != recommended:
+            reasons.append("effective level capped by configured policy")
+
+        # Governance is needed either because automation is active (anything
+        # above L0) or because an elevation is pending review. Earning a level
+        # on the numbers is a precondition for approval, never a substitute.
+        requires_approval = effective != "L0" or effective != recommended
         return AutonomyAssessment(
             category=category,
             reviewed_count=len(items),
@@ -106,4 +121,5 @@ class AutonomyEvaluator:
             recommended_level=recommended,
             effective_level=effective,
             reasons=tuple(reasons),
+            requires_governance_approval=requires_approval,
         )
