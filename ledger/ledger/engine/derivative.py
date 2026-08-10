@@ -25,8 +25,11 @@ import re
 from dataclasses import dataclass
 
 #: Excel 数据透视表在列名上留的痕迹。中英文版本都有。
-_PIVOT_PREFIXES = ("求和项:", "求和项：", "计数项:", "计数项：", "平均值项:", "最大值项:",
-                   "Sum of ", "Count of ", "Average of ")
+#:
+#: 公开的：接表向导也要用它认单列的加工痕迹（`求和项:花费` 是花费那列汇总出来的，
+#: 映射它等于把同一笔钱记两遍）。判据只该有一份，两处各写一套迟早分叉。
+PIVOT_PREFIXES = ("求和项:", "求和项：", "计数项:", "计数项：", "平均值项:", "最大值项:",
+                  "Sum of ", "Count of ", "Average of ")
 
 #: 透视字段占比达到多少才判定为透视表。明细表挂一两列辅助汇总很常见，
 #: 整张表都是透视字段才说明它本身就是汇总产物。
@@ -63,7 +66,7 @@ def detect(headers: list[str], first_rows: list[list]) -> Derivative:
     只看表头和头几行——加工痕迹都在这里，不用扫全表。
     """
     filled = [h for h in headers if h.strip()]
-    pivot = [h for h in headers if any(h.startswith(p) for p in _PIVOT_PREFIXES)]
+    pivot = [h for h in headers if any(h.startswith(p) for p in PIVOT_PREFIXES)]
     # 只看「有没有透视字段」会误伤：明细表右边常被人多挂一两列汇总辅助列，
     # 实测 1688 收款明细和抖音对账单都是这样，表本身是真数据。
     # 真正的透视表是整张表都由透视字段构成，靠占比区分。

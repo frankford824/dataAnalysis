@@ -14,9 +14,11 @@ from .schema import (
     Model,
     NodeExpr,
     ParseOptions,
+    Platform,
     Predicate,
     SourceContract,
     StatementNode,
+    Store,
     Template,
     ValueExpr,
     normalize_header,
@@ -25,7 +27,7 @@ from .schema import (
 
 __all__ = [
     "Check", "ColumnBinding", "DedupRule", "DictionaryEntry", "LinkRule", "Metric",
-    "Model", "ModelError", "NodeExpr", "ParseOptions", "Predicate", "SourceContract",
-    "StatementNode", "Template", "ValueExpr", "load_model", "normalize_header",
-    "signature_of",
+    "Model", "ModelError", "NodeExpr", "ParseOptions", "Platform", "Predicate",
+    "SourceContract", "StatementNode", "Store", "Template", "ValueExpr", "load_model",
+    "normalize_header", "signature_of",
 ]

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import defaultdict
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -267,6 +268,16 @@ class ColumnBinding(Base):
     #: 迟早会漏。实测漏掉微信这一处，营销费用、销售退款、物流运费三项全部符号翻转。
     negate: bool = False
     required: bool = True
+    #: 这一列是什么类型。留空则按角色名猜（见 normalize._numeric_roles）。
+    #:
+    #: 之所以要能显式声明：猜是按角色名里的英文词猜的（amount、fee、cost、qty…），
+    #: 起个没在词表里的名字就静默留成文本。`buyer_paid` 就是这样——它是金额，
+    #: 但角色名里既没有 amount 也没有 price，于是一直是字符串。今天没人对它求和，
+    #: 所以没出事；哪天有指标要用它，报出来的是「str 不支持 sum」这种和业务无关的错。
+    #:
+    #: 接新平台时这个坑更深：新角色的名字是接表向导按提议起的，不该要求它去猜
+    #: 引擎那份英文词表。向导认出这列是钱就直接写下来。
+    kind: Literal["", "number", "time", "text"] = ""
 
     @field_validator("columns")
     @classmethod
@@ -497,6 +508,13 @@ class Metric(Base):
     #: expect 的人话说法，例如「已发货」。自检层要告诉用户分母是哪一批订单，
     #: 否则「1,060 笔里覆盖了 98%」这句话没法核对。
     expect_label: str = ""
+    #: 这项只发生在部分订单上，覆盖率对它没有意义。
+    #:
+    #: 交易赔付、客服打款、刷单本金这些本来就只出现在少数订单上，拿「多少订单有这项」
+    #: 当完整度指标，结果永远是个位数百分比，界面上一片红。真正的缺数据信号会被这些
+    #: 常态红埋掉——一旦有一列颜色恒定为红，人就不再看这一列了。
+    #: 这类科目该看的是命中率：拿到的行有没有挂上订单。
+    occasional: bool = False
     link: LinkRule | None = None
     sign: SignRule = "as_is"
     #: 时间归属依据。广告费按花费日而非下单日。
@@ -549,6 +567,12 @@ class StatementNode(Base):
     display: Literal["amount", "percent", "count"] = "amount"
     #: 为真时该节点是最终结果行，数据不全时不出数。
     is_total: bool = False
+    #: 总览页上占哪个位置。空表示不上总览。
+    #:
+    #: 总览一家店只放三个数：营收、利润、利润率。哪个节点算营收是各家公司自己的口径
+    #: ——有的按销售收入、有的扣掉退款——所以由模型说，不由界面写死节点 id。
+    #: 换一家公司只要改这个标记，总览页不用动一行代码。
+    headline: Literal["", "revenue", "profit", "margin"] = ""
     note: str = ""
 
     @model_validator(mode="after")
@@ -640,27 +664,26 @@ class Store(Base):
         return any(a and a in filename for a in (self.name, *self.aliases))
 
 
-#: 平台名的常见前缀写法。只用于给未登记店铺提建议，不参与任何计算——
-#: 猜出来的东西不能进账，登记必须由人确认。
-_PLATFORM_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("taobao", ("淘宝", "天猫", "TB", "tmall")),
-    ("alibaba1688", ("1688", "阿里巴巴", "阿里")),
-    ("douyin", ("抖音", "抖店")),
-    ("pdd", ("拼多多", "PDD", "pdd")),
-    ("jd", ("京东", "JD", "jd")),
-)
+class Platform(Base):
+    """一个平台。
 
+    平台必须是模型数据而不是代码常量。它出现在指标的 `by_platform`、科目字典的
+    `platform` 列、店铺的 `platform` 上——也就是说，代码里写死一份平台清单，
+    等于把「这个系统支持哪些平台」焊死在版本里，接第四个平台要发版。
+    平台放在这里，接快手、接视频号就只是加一条 YAML。
 
-#: 引擎认得的平台。登记新店时界面从这里出选项，免得手打出 "taobao " 这种带空格的值。
-KNOWN_PLATFORMS: tuple[str, ...] = tuple(p for p, _ in _PLATFORM_PREFIXES)
+    另一层作用是防错字。店铺的 platform 写成 `taobao ` 带个空格，
+    `Metric.for_platform` 就一条平台规则都匹配不上，结果是这家店少算钱而全绿——
+    没有平台清单可校验的话，这种错要到有人核对总额时才会发现。
+    """
 
-
-def guess_platform(store_name: str) -> str:
-    """从店名前缀猜平台。只用于提示，返回空串表示猜不出来。"""
-    for platform, prefixes in _PLATFORM_PREFIXES:
-        if any(store_name.startswith(p) for p in prefixes):
-            return platform
-    return ""
+    id: str
+    name: str
+    #: 店名或文件名里出现这些词，就猜是这个平台。只用于登记新店时给建议，
+    #: 不参与任何计算——猜出来的东西不能进账，登记必须由人确认。
+    hints: tuple[str, ...] = ()
+    archived: bool = False
+    note: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -676,6 +699,7 @@ class Model(Base):
     version: str = "1"
     #: 统一记账货币。
     currency: str = "CNY"
+    platforms: tuple[Platform, ...] = ()
     stores: tuple[Store, ...] = ()
     sources: tuple[SourceContract, ...] = ()
     templates: tuple[Template, ...] = ()
@@ -685,6 +709,42 @@ class Model(Base):
     checks: tuple[Check, ...] = ()
 
     # -- 索引 ------------------------------------------------------------- #
+
+    def platform(self, pid: str) -> Platform:
+        return _pick(self.platforms, pid, "平台")
+
+    def platform_ids(self) -> tuple[str, ...]:
+        """可选的平台清单。界面从这里出下拉选项，免得手打出错字。"""
+        return tuple(p.id for p in self.platforms if not p.archived)
+
+    def guess_platform(self, store_name: str) -> str:
+        """从店名前缀猜平台。只用于登记时给建议，猜不出来返回空串。
+
+        只认前缀，不认包含：「朗歌1688」这种平台名在后缀的一律不猜。填进下拉框的
+        默认值有人会直接点确认，猜错平台会让整家店按错误的口径算账——这种情况宁可
+        空着让人来配。
+
+        取命中前缀最长的那个：`1688` 和 `阿里巴巴1688` 同时命中时长的更具体。
+        """
+        best, best_len = "", 0
+        for p in self.platforms:
+            for hint in p.hints:
+                if hint and store_name.startswith(hint) and len(hint) > best_len:
+                    best, best_len = p.id, len(hint)
+        return best
+
+    def orphan_dictionary(self) -> tuple[DictionaryEntry, ...]:
+        """平台没登记的字典条目。
+
+        这种条目永远查不中——`lookup` 按 platform 精确匹配，没有哪家店是这个平台。
+        不当作加载错误：字典是从历史资产导入的，几千条里有几条平台名带作用域后缀
+        （`jd_1688`）属于导入工具的产物，为它拒绝启动等于让人没法用系统。
+        但也不能不说：查不中就是那笔钱归到「未分类」，得让人看见并决定怎么归。
+        """
+        known = {p.id for p in self.platforms} | {"*"}
+        if not self.platforms:
+            return ()
+        return tuple(e for e in self.dictionary if e.platform not in known)
 
     def store(self, sid: str) -> Store:
         return _pick(self.stores, sid, "店铺")
@@ -751,16 +811,59 @@ class Model(Base):
         metric_ids = {m.id for m in self.metrics}
         node_ids = {n.id for n in self.statement}
 
-        for dup, label in ((self.sources, "数据源"), (self.metrics, "指标"), (self.statement, "节点")):
+        for dup, label in (
+            (self.platforms, "平台"),
+            (self.stores, "店铺"),
+            (self.sources, "数据源"),
+            (self.templates, "模板"),
+            (self.metrics, "指标"),
+            (self.statement, "节点"),
+        ):
             seen: set[str] = set()
             for obj in dup:
                 if obj.id in seen:
                     errors.append(f"{label} id 重复：{obj.id}")
                 seen.add(obj.id)
 
+        # 平台错字是静默扣钱的：店铺 platform 拼错，这家店的平台专属规则一条都
+        # 不生效，账少算而所有指标全绿。有平台清单就必须照着校验。
+        # 声明性的 platform（数据源、字典）不校验：数据源的 platform 引擎不读，
+        # 字典的孤儿条目由 orphan_dictionary 单独报，不拦启动。
+        if platform_ids := {p.id for p in self.platforms}:
+            allowed = platform_ids | {"*"}
+            for s in self.stores:
+                if s.platform not in platform_ids:
+                    errors.append(
+                        f"店铺 {s.id} 的平台 {s.platform!r} 没登记。"
+                        f"已登记的：{'、'.join(sorted(platform_ids))}"
+                    )
+            for m in self.metrics:
+                if m.platform not in allowed:
+                    errors.append(f"指标 {m.id} 的平台 {m.platform!r} 没登记")
+                for r in m.by_platform:
+                    if r.platform not in platform_ids:
+                        errors.append(f"指标 {m.id} 的平台规则指向没登记的平台 {r.platform!r}")
+
         for t in self.templates:
             if t.source not in source_ids:
                 errors.append(f"模板 {t.id} 指向不存在的数据源 {t.source}")
+
+            # 一个角色只能来自一列。两个绑定抢同一个角色时，归一化按声明顺序覆盖，
+            # 最后取到哪一列取决于 YAML 里谁写在后面——这不是配置，是巧合。
+            # 实测代价：接表向导按列名回传映射，两列同名的「推广主体ID」被同时映成
+            # product_id，取到了几乎全空的那一列，于是 8226 行数据被当成合计行丢掉，
+            # 只剩 397 行进账。全程不报错。
+            bound: dict[str, list[str]] = defaultdict(list)
+            for b in t.bindings:
+                bound[b.role].append(f"{b.columns[0]}[{b.occurrence}]" if b.occurrence
+                                     else b.columns[0])
+            for role, cols in bound.items():
+                if len(cols) > 1:
+                    errors.append(
+                        f"模板 {t.id} 把角色 {role} 绑到了 {len(cols)} 列上："
+                        f"{'、'.join(cols)}。一个角色只能来自一列，"
+                        f"多绑的话取哪一列是不确定的。"
+                    )
 
         # 口径项有两个来源：科目字典，以及模板上的归类规则链。实测「物流运费」
         # 就只由规则链产生（备注含"商家集运物流责任货值赔付"），字典里没有。
@@ -801,6 +904,16 @@ class Model(Base):
         for c in self.checks:
             if c.kind == "link_rate" and c.metric and c.metric not in metric_ids:
                 errors.append(f"校验 {c.id} 指向不存在的指标 {c.metric}")
+
+        # 总览一个位置只能有一个数。两个节点抢同一个位置，界面会随机显示其中一个，
+        # 而且看不出来错了。
+        slots: dict[str, list[str]] = defaultdict(list)
+        for n in self.statement:
+            if n.headline:
+                slots[n.headline].append(n.id)
+        for slot, owners in slots.items():
+            if len(owners) > 1:
+                errors.append(f"总览的「{slot}」位置被多个节点占了：{'、'.join(owners)}")
 
         if cycle := _find_cycle(self):
             errors.append("公式树存在环：" + " → ".join(cycle))

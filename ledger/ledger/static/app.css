@@ -1,0 +1,253 @@
+/* 视图布局。设计 token 在 design.css。 */
+
+/* --------------------------------------------------------------------------
+ * 骨架：左侧导航 + 右侧内容
+ * -------------------------------------------------------------------------- */
+
+#app {
+  display: grid;
+  grid-template-columns: 216px 1fr;
+  min-height: 100vh;
+}
+
+#nav {
+  background: var(--n0);
+  border-right: 1px solid var(--n3);
+  padding: var(--s5) var(--s4);
+  display: flex; flex-direction: column; gap: var(--s5);
+  position: sticky; top: 0; height: 100vh;
+}
+#nav .brand { font-size: var(--t-lg); font-weight: 640; letter-spacing: .01em; }
+#nav .brand small {
+  display: block; font-size: var(--t-xs); font-weight: 400;
+  color: var(--n6); margin-top: 2px; letter-spacing: 0;
+}
+#nav ul { list-style: none; margin: 0; padding: 0; display: flex;
+  flex-direction: column; gap: 2px; }
+#nav a {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 7px 10px; border-radius: var(--r-sm);
+  color: var(--n7); font-size: var(--t-md); text-decoration: none;
+}
+#nav a:hover { background: var(--n1); text-decoration: none; }
+#nav a.on { background: var(--accent-bg); color: var(--accent); font-weight: 560; }
+#nav .count { font-size: var(--t-xs); color: var(--n5); font-family: var(--num); }
+#nav a.on .count { color: var(--accent); }
+#nav .foot { margin-top: auto; font-size: var(--t-xs); color: var(--n5); line-height: 1.7; }
+
+main { padding: var(--s5) var(--s6) var(--s7); max-width: 1180px; }
+main > header { margin-bottom: var(--s5); }
+main > header h1 { font-size: var(--t-xl); }
+main > header .sub { color: var(--n6); font-size: var(--t-sm); margin-top: var(--s1); }
+
+/* --------------------------------------------------------------------------
+ * 交表：整页都是投放区
+ * -------------------------------------------------------------------------- */
+
+#drop {
+  background: var(--n0); border: 1.5px dashed var(--n4);
+  border-radius: var(--r-lg); padding: var(--s6) var(--s5);
+  text-align: center; cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+#drop:hover { border-color: var(--accent); background: var(--accent-bg); }
+#drop p { font-size: var(--t-base); }
+#drop small { display: block; color: var(--n6); margin-top: var(--s2); font-size: var(--t-sm); }
+#file { display: none; }
+
+/* 拖到窗口任何位置都能收。让人先找到那个框再拖，是没必要的一道关。 */
+#veil {
+  position: fixed; inset: 0; z-index: 40; display: none;
+  background: rgba(31, 94, 255, .06);
+  border: 2px dashed var(--accent);
+  align-items: center; justify-content: center;
+  font-size: var(--t-xl); font-weight: 600; color: var(--accent);
+}
+#veil.on { display: flex; }
+
+/* 算账进度。淘宝那张对账表 22 万行，跑下来要半分多钟——一句不动的「正在算」
+   挂在那里，人会以为卡死然后刷新，刷新等于从头再来。 */
+#progress {
+  position: fixed; right: var(--s5); bottom: var(--s5); z-index: 50;
+  background: var(--n9); color: #fff; border-radius: var(--r-md);
+  padding: var(--s3) var(--s4); font-size: var(--t-sm);
+  box-shadow: var(--shadow); max-width: 380px; display: none;
+}
+#progress.on { display: block; }
+#progress .spin { border-color: rgba(255,255,255,.25); border-top-color: #fff; }
+#progress .hint { color: var(--n4); font-size: var(--t-xs); margin-top: var(--s1); }
+
+/* --------------------------------------------------------------------------
+ * 总览：账期 × 店铺矩阵
+ * -------------------------------------------------------------------------- */
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--s3); margin-bottom: var(--s4); }
+.kpi { background: var(--n0); border: 1px solid var(--n3);
+  border-radius: var(--r-md); padding: var(--s4); }
+.kpi .label { font-size: var(--t-xs); color: var(--n6); }
+.kpi .value { font-size: var(--t-2xl); font-weight: 640; font-family: var(--num);
+  font-variant-numeric: tabular-nums; margin-top: 2px; letter-spacing: -.01em; }
+.kpi .note { font-size: var(--t-xs); color: var(--n5); margin-top: var(--s1); }
+
+.matrix { overflow-x: auto; }
+/* 表宽跟着内容走，不铺满卡片：只有一个账期时，width:100% 会把那一列拽到最右边，
+   店名和它的数字隔着半屏空白，对不上行。账期多了由外层横向滚动兜着。 */
+.matrix table { width: auto; }
+.matrix th.period { text-align: right; }
+.matrix td.store { padding-right: var(--s4); min-width: 240px; }
+.matrix td.cell, .matrix th.period { min-width: 132px; }
+.matrix td.store .name { font-size: var(--t-md); }
+.matrix td.store .meta { font-size: var(--t-xs); color: var(--n6); }
+.matrix td.cell { padding: var(--s2) 0 var(--s2) var(--s3); }
+
+/* 一个格子就是一家店一个月。三层信息：能不能结账、利润多少、卡在哪。 */
+.cell-box {
+  display: block; width: 100%; text-align: right; cursor: pointer;
+  border: 1px solid var(--n3); border-radius: var(--r-sm);
+  background: var(--n0); padding: 7px 10px; font: inherit; color: inherit;
+}
+.cell-box:hover { border-color: var(--accent); background: var(--accent-bg); }
+.cell-box .amount { font-family: var(--num); font-variant-numeric: tabular-nums;
+  font-size: var(--t-md); font-weight: 560; display: block; }
+.cell-box .state { font-size: var(--t-xs); color: var(--n6); display: block; margin-top: 1px; }
+.cell-box.closed { border-color: var(--n4); background: var(--n1); }
+.cell-box.blocked .state { color: var(--bad); }
+.cell-box.stale .state { color: var(--warn); }
+.cell-none { color: var(--n4); font-size: var(--t-sm); text-align: right;
+  display: block; padding: 7px 10px; }
+
+/* --------------------------------------------------------------------------
+ * 单店：损益表
+ * -------------------------------------------------------------------------- */
+
+.periodbar { display: flex; gap: var(--s2); flex-wrap: wrap; margin-bottom: var(--s4); }
+.periodbar button.on { border-color: var(--accent); color: var(--accent);
+  background: var(--accent-bg); }
+
+/* 报表不铺满整页：标签贴左、数字贴到一千二百像素外，眼睛要横扫一整行才对得上。
+   收窄到 560 让名目和金额挨着，一眼能读。 */
+.statement { max-width: 560px; }
+.statement table { border-collapse: collapse; }
+.statement td { padding: 5px 0; border: 0; font-size: var(--t-md); }
+.statement tbody tr + tr td { border-top: 0; }
+.statement td.amt { text-align: right; white-space: nowrap;
+  font-family: var(--num); font-variant-numeric: tabular-nums; }
+.statement tr.lv1 td { font-weight: 600; }
+.statement tr.lv2 td.name { padding-left: 18px; color: var(--n7); font-weight: 400; }
+/* 明细之后的小计要看得出是另一层，否则整张表像一串平铺的数字。 */
+.statement tr.lv1 + tr.lv2 td { padding-top: 10px; }
+.statement tr.lv2 + tr.lv1 td { padding-top: 10px; }
+.statement tr.total td { border-top: 1px solid var(--n3) !important;
+  font-weight: 640; padding-top: 8px; }
+.statement tr.drillable td.name { cursor: pointer; }
+.statement tr.drillable:hover td.name { color: var(--accent); }
+.statement tr.drillable td.name::after {
+  content: '›'; margin-left: 6px; color: var(--n4); font-weight: 400;
+}
+.statement tr.drillable:hover td.name::after { color: var(--accent); }
+.statement tr.why td { font-size: var(--t-xs); color: var(--n6); padding-left: 18px; }
+
+.qbar { display: inline-block; width: 54px; height: 5px; border-radius: 3px;
+  background: var(--n2); overflow: hidden; vertical-align: 1px; margin-right: 6px; }
+.qbar i { display: block; height: 100%; background: var(--ok); }
+.qbar.low i { background: var(--bad); }
+.qbar.mid i { background: var(--warn); }
+
+/* --------------------------------------------------------------------------
+ * 下钻抽屉
+ * -------------------------------------------------------------------------- */
+
+#drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: min(720px, 92vw);
+  background: var(--n0); border-left: 1px solid var(--n3);
+  box-shadow: var(--shadow); z-index: 60;
+  transform: translateX(100%); transition: transform .18s ease-out;
+  display: flex; flex-direction: column;
+}
+#drawer.on { transform: none; }
+#drawer > header {
+  padding: var(--s4) var(--s5); border-bottom: 1px solid var(--n3);
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3);
+}
+#drawer .body { padding: var(--s5); overflow: auto; flex: 1; }
+#drawer .body table { font-size: var(--t-sm); }
+#drawer .body td { font-size: var(--t-sm); padding: 5px var(--s3) 5px 0; }
+#scrim { position: fixed; inset: 0; background: rgba(20,23,28,.28); z-index: 55; display: none; }
+#scrim.on { display: block; }
+
+/* 原始明细一行就是一条证据：文件、工作表、行号。少了行号，对不上账时没人查得动。 */
+.evidence { font-family: var(--num); font-size: var(--t-mono); color: var(--n6); }
+
+/* --------------------------------------------------------------------------
+ * 交付看板与设置
+ * -------------------------------------------------------------------------- */
+
+.deliver td.file { font-size: var(--t-sm); }
+.deliver td.file small { display: block; color: var(--n6); font-size: var(--t-xs); }
+
+.storerow {
+  display: grid; grid-template-columns: 190px 1fr 190px auto 90px;
+  gap: var(--s3); align-items: center;
+  padding: var(--s3) 0; border-top: 1px solid var(--n2);
+}
+.storerow .who .name { font-size: var(--t-md); }
+.storerow .who small { display: block; color: var(--n6); font-size: var(--t-xs); }
+.storerow .said { font-size: var(--t-xs); color: var(--n6); }
+
+/* --------------------------------------------------------------------------
+ * 接表向导
+ * -------------------------------------------------------------------------- */
+
+/* 带说明的输入项。接表这一屏每个输入都得说清它是什么，光一个空框没人知道填什么。 */
+.fld { display: flex; flex-direction: column; gap: 4px;
+  font-size: var(--t-xs); color: var(--n6); }
+
+/* 逐列确认的表。列名和取样值用等宽，中文说明用正文字体——
+   混排时列名对不齐，人扫一遍找不到自己要看的那列。 */
+table.cols { table-layout: fixed; }
+table.cols th:nth-child(1) { width: 20%; }
+table.cols th:nth-child(2) { width: 16%; }
+table.cols th:nth-child(3) { width: 26%; }
+table.cols td { vertical-align: top; padding-top: var(--s3); }
+table.cols select { width: 100%; }
+.mono { font-family: var(--num); }
+
+/* 逐列确认那一屏全靠这几个类分层级：列名是主体，依据是辅助，可信度是判断。
+   缺了它们所有文字一样大一样黑，78 列扫下来找不到该看哪一行。 */
+.xs { font-size: var(--t-xs); line-height: 1.6; }
+.muted { color: var(--n6); }
+
+/* 可信度标签。三档必须一眼分得开：「有把握」可以放过，「按字面猜」必须逐条核。
+   同色的话人会一路点下去，而猜错不报错，只是静默少算钱。 */
+.pill { display: inline-block; padding: 1px 7px; border-radius: 999px;
+  font-size: var(--t-xs); border: 1px solid var(--n3); color: var(--n6); }
+.pill.ok { border-color: var(--ok); color: var(--ok); }
+.pill.warn { border-color: var(--warn); color: var(--warn); }
+.pill.bad { border-color: var(--bad); color: var(--bad); }
+
+/* 加工过的列（透视字段、店长自己算的结果列）压暗。它们不该被映射，
+   但也不能藏起来——藏起来人会以为系统没读到这一列。 */
+table.cols tr.quiet { opacity: .55; }
+table.cols tr.quiet:hover { opacity: 1; }
+
+.neg { color: var(--bad); }
+.warn-text { color: var(--warn); }
+
+#toast {
+  position: fixed; left: 50%; bottom: var(--s5); transform: translateX(-50%);
+  background: var(--n9); color: #fff; padding: var(--s3) var(--s4);
+  border-radius: var(--r-md); font-size: var(--t-sm); z-index: 70;
+  box-shadow: var(--shadow); display: none; max-width: 560px;
+}
+#toast.on { display: block; }
+#toast.bad { background: var(--bad); }
+
+@media (max-width: 900px) {
+  #app { grid-template-columns: 1fr; }
+  #nav { position: static; height: auto; flex-direction: row; align-items: center;
+    gap: var(--s4); overflow-x: auto; }
+  #nav ul { flex-direction: row; }
+  #nav .foot { display: none; }
+  main { padding: var(--s4); }
+}

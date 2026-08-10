@@ -7,6 +7,12 @@
 # 这样利润就是全部指标相加，不需要在损益表里再记哪一项该加哪一项该减。
 # 这一点是从数据里反解出来的：同一张淘宝订单明细表里，退款/服务费/赔付/营销费用
 # 存的是负数要加，物流运费存的是正数要减，两种约定并存。符号只能绑模板，不能猜。
+#
+# occasional 标记哪些科目不报覆盖率。只有三项报：销售收入、商品成本、发货运费——
+# 每个（在 expect 范围内的）订单都该有它们，少了就是真缺数据。其余科目本来就只落在
+# 少数订单上：交易赔付一个月十几笔、客服打款几十笔，拿「多少订单有这项」当完整度
+# 指标，结果永远是个位数百分比，界面上一整列恒定为红。一旦某一列颜色不再变化，
+# 人就不看它了，真正的缺数据信号也跟着一起没人看见。
 
 # ---------------------------------------------------------------- 收入 --- #
 - id: trade_receipt
@@ -33,6 +39,7 @@
 
 - id: trade_refund
   name: 销售退款
+  occasional: true
   source: settlement
   platform: taobao
   major: trade_refund
@@ -46,6 +53,7 @@
 # ------------------------------------------------------------ 平台费用 --- #
 - id: software_fee
   name: 平台服务费
+  occasional: true
   source: settlement
   platform: taobao
   major: software_fee
@@ -58,6 +66,7 @@
 
 - id: logistics_fee
   name: 平台物流费
+  occasional: true
   source: settlement
   platform: taobao
   major: logistics_fee
@@ -73,6 +82,7 @@
 
 - id: trade_compensation
   name: 交易赔付
+  occasional: true
   source: settlement
   platform: taobao
   major: trade_compensation
@@ -84,6 +94,7 @@
 
 - id: marketing_fee
   name: 平台营销费用
+  occasional: true
   source: settlement
   platform: taobao
   major: marketing_fee
@@ -131,6 +142,7 @@
 
 - id: dropship_cost
   name: 代发成本
+  occasional: true
   source: dropship
   value: {op: sum, of: [total_cost]}
   sign: negate
@@ -146,6 +158,7 @@
 
 - id: reshipment_cost
   name: 补发成本
+  occasional: true
   source: order_cost
   value: {op: sum, of: [total_cost]}
   where:
@@ -177,12 +190,18 @@
   time_basis: ship_date
   link: {to: order.order_id, key: tracking_no, grain: order, min_hit_rate: 0.0}
   allocate: {mode: ratio, by: alloc_ratio}
+  expect:
+    - {field: tracking_no, op: notnull}
+  expect_label: 已发货
   note: >
     订单号靠运单号两级回查得到，见模板里的取键规则链。
     命中率门槛设为 0：这张表是全公司所有店铺的运单，单店只能认领一部分，
     挂不上的绝大多数属于别的店铺，不是数据质量问题。
 
-# ------------------------------------------------------------ 营销投入 --- #
+    覆盖率只对已发货的订单要求，理由同商品成本：没发货就没有运单，运费表里根本
+    没有这一行。按全部订单算的话，淘宝这个月是 12,677/15,219=83.3%，看着像漏了
+    两千多单的运费，实际那两千多单压根没发出去。
+
   by_platform:
     # 1688: 发货运费=sumifs(运费表总金额, 运单号)/countifs(订单明细运单号) → 组内均分
     - {platform: alibaba1688, allocate: {mode: even}}
@@ -191,8 +210,10 @@
       link: {key: sub_order_id, to: order.sub_order_id, grain: order, min_hit_rate: 0.0}
       direct: true
 
+# ------------------------------------------------------------ 营销投入 --- #
 - id: ad_cost
   name: 推广费用
+  occasional: true
   source: promotion
   value: {op: sum, of: [spend]}
   sign: negate
@@ -207,6 +228,7 @@
 
 - id: small_payment_cost
   name: 客服打款
+  occasional: true
   source: small_payment
   value: {op: sum, of: [total_cost]}
   sign: negate
@@ -221,6 +243,7 @@
 
 - id: brushing_cost
   name: 本金佣金
+  occasional: true
   source: brushing
   value: {op: sum, of: [total_cost]}
   sign: negate
@@ -250,6 +273,7 @@
   allocate: {mode: even}
 - id: trade_expense_1688
   name: 销售支出
+  occasional: true
   source: settlement
   platform: alibaba1688
   major: trade_expense_1688

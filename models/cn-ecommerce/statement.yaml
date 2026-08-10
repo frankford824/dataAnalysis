@@ -12,7 +12,10 @@
 # 1688 只有收支两条、抖音只有一条净额——但对外呈现必须是同一张表，
 # 不能让看报表的人先搞清楚这是哪个平台才知道该看哪几行。
 # 指标带平台限定，同一时刻只有一个平台的指标在出数，加起来不会串账。
-- {id: n_receipt, name: 销售收入, level: 2,
+# headline 标记这一项上总览页的哪个位置。营收按销售收入算（不扣退款），
+# 和下面利润率的分母保持同一个口径——两处不一致的话，同一张页面上会出现
+# 「营收 100 万、利润率按 80 万算」这种没法解释的组合。
+- {id: n_receipt, name: 销售收入, level: 2, headline: revenue,
    formula: {op: add, of: [trade_receipt, trade_receipt_1688, trade_net_douyin]}}
 - {id: n_refund, name: 销售退款, level: 2, formula: {op: add, of: [trade_refund]}}
 - {id: n_expense, name: 平台综合支出, level: 2, formula: {op: add, of: [trade_expense_1688]}}
@@ -73,10 +76,12 @@
   name: 利润
   level: 1
   is_total: true
+  headline: profit
   formula: {op: add, of: [g_revenue, g_platform, g_goods, g_fulfillment, g_promotion]}
 
 - id: net_margin
   name: 利润率
   level: 1
   display: percent
+  headline: margin
   formula: {op: ratio, of: [net_profit, n_receipt]}

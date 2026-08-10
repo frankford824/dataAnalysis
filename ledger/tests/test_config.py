@@ -16,9 +16,21 @@ from __future__ import annotations
 
 import pytest
 
-from ledger.model.config import EDITABLE, add_store, update_store
+from ledger.model.config import (
+    EDITABLE,
+    add_store,
+    add_template,
+    drop_template,
+    update_store,
+)
 from ledger.model.loader import ModelError, load_model
-from ledger.model.schema import Store
+from ledger.model.schema import (
+    ColumnBinding,
+    ParseOptions,
+    SourceContract,
+    Store,
+    Template,
+)
 
 HEAD = """\
 # 店铺注册表。
@@ -158,3 +170,196 @@ class TestAdd:
         tail = text[text.index("pdd_c"):]
         assert "entity:" not in tail
         assert "aliases:" not in tail
+
+
+TEMPLATES = """\
+# 模板：把某一种表头长相绑定到字段角色上。
+#
+# 全部照实测的表头写，列名一个字都不能改——实测过一次别人把「线上子订单编号」
+# 写成「线上子订单号」，少一个「编」字，结果订单级成本覆盖率直接掉到 0。
+
+# ======================================================================== #
+# 脊柱
+# ======================================================================== #
+- id: order_v1
+  source: order_detail
+  name: 订单明细
+  match_columns: [子订单编号, 主订单编号]
+  parse: {header_row: 1}
+  bindings:
+    - {role: sub_order_id, columns: [子订单编号]}
+    - {role: order_id, columns: [主订单编号]}
+"""
+
+SOURCES = """\
+# 数据源：一份数据的契约。谁交、多久交一次、供给哪些指标。
+
+- id: order_detail
+  name: 订单明细
+  owner_role: shop_owner
+  cadence: daily
+  is_spine: true
+"""
+
+
+@pytest.fixture
+def template_dir(tmp_path):
+    """一个带模板和数据源的模型。注释和缩进都照真实文件的样子写。"""
+    root = tmp_path / "m"
+    root.mkdir()
+    (root / "model.yaml").write_text("id: t\nname: 测试模型\n", encoding="utf-8")
+    (root / "stores.yaml").write_text(HEAD + BODY, encoding="utf-8")
+    (root / "templates.yaml").write_text(TEMPLATES, encoding="utf-8")
+    (root / "sources.yaml").write_text(SOURCES, encoding="utf-8")
+    return root
+
+
+def _promo() -> Template:
+    return Template(
+        id="promo_v1",
+        source="order_detail",
+        name="推广花费",
+        match_columns=("日期", "花费"),
+        bindings=(
+            ColumnBinding(role="spend_time", columns=("日期",), kind="time"),
+            ColumnBinding(role="spend", columns=("花费",), kind="number"),
+        ),
+    )
+
+
+class TestAddTemplate:
+    """接表向导靠这个写模型。它写的是人手写的文件，所以只许追加，不许重排。
+
+    这里的失败模式跟店铺不一样，也更隐蔽：模板文件回写一遍，语义一个字节没变，
+    但嵌套序列的缩进从 4 格变成 2 格，git 上是 600 行改动。改了什么审不出来，
+    于是这种写回没人敢用，向导也就白做了。
+    """
+
+    def test_adds_the_template(self, template_dir):
+        saved = add_template(template_dir, _promo(), by="张三")
+        assert saved.id == "promo_v1"
+        model = load_model(template_dir)
+        assert len(model.templates) == 2
+        assert {b.role for b in model.template("promo_v1").bindings} == {"spend_time", "spend"}
+
+    def test_writes_back_everything_it_was_given(self, template_dir):
+        """读回来的必须和确认的那份一模一样。
+
+        逐字段列举写了什么是靠不住的：漏掉一个字段不会报错，只会静默算错。实测漏过
+        `total_row_marker`——试跑时拿它验过「合计行会被丢掉」，落库却没写进去，于是
+        表底那行合计混进数据，每一列金额刚好翻倍。所以这里整个对象比。
+        """
+        tpl = Template(
+            id="promo_v1",
+            source="order_detail",
+            name="推广花费",
+            match_columns=("日期", "花费"),
+            parse=ParseOptions(header_row=1),
+            bindings=(
+                ColumnBinding(role="spend_time", columns=("日期",), kind="time"),
+                ColumnBinding(role="spend", columns=("花费",), kind="number"),
+                ColumnBinding(role="order_id", columns=("订单号",), occurrence=1, required=False),
+            ),
+            time_slots={"spend_date": "spend_time"},
+            total_row_marker="spend_time",
+            note="接表向导登记的测试模板",
+        )
+        add_template(template_dir, tpl)
+        assert load_model(template_dir).template("promo_v1") == tpl
+
+    def test_touches_nothing_that_was_already_there(self, template_dir):
+        """已有内容必须一个字节都不动。"""
+        before = (template_dir / "templates.yaml").read_text(encoding="utf-8")
+        add_template(template_dir, _promo(), by="张三")
+        after = (template_dir / "templates.yaml").read_text(encoding="utf-8")
+        assert after.startswith(before), (
+            "新记录只该追加在末尾。前面的部分变了，说明整个文档被重写了一遍"
+        )
+
+    def test_keeps_the_file_header_and_section_comments(self, template_dir):
+        add_template(template_dir, _promo(), by="张三")
+        text = (template_dir / "templates.yaml").read_text(encoding="utf-8")
+        assert text.startswith("# 模板：")
+        assert "少一个「编」字" in text, "那段取证比字段本身值钱"
+        assert "# 脊柱" in text
+
+    def test_keeps_the_existing_indent_style(self, template_dir):
+        """新记录的缩进要跟文件里现有的一致，否则同一个文件两种风格。"""
+        add_template(template_dir, _promo(), by="张三")
+        text = (template_dir / "templates.yaml").read_text(encoding="utf-8")
+        tail = text[text.index("promo_v1"):]
+        assert "\n    - {role: spend_time" in tail, (
+            f"嵌套序列的横杠该在第 4 列，跟 order_v1 一样。实际写成了：\n{tail}"
+        )
+
+    def test_records_who_did_it(self, template_dir):
+        add_template(template_dir, _promo(), by="张三")
+        text = (template_dir / "templates.yaml").read_text(encoding="utf-8")
+        assert "张三" in text, "模板是人确认的，得记下是谁——出错时要找得到人问"
+
+    def test_registers_a_new_source_together(self, template_dir):
+        """新数据源和模板要一起写，不能留悬空引用。"""
+        tpl = _promo().model_copy(update={"source": "promotion"})
+        add_template(template_dir, tpl, source=SourceContract(
+            id="promotion", name="推广", owner_role="operations", cadence="monthly",
+        ))
+        model = load_model(template_dir)
+        assert model.template("promo_v1").source == "promotion"
+        assert any(s.id == "promotion" for s in model.sources)
+        assert (template_dir / "sources.yaml").read_text(encoding="utf-8").startswith("# 数据源：")
+
+    def test_refuses_a_dangling_source(self, template_dir):
+        tpl = _promo().model_copy(update={"source": "没这个数据源"})
+        with pytest.raises(ModelError, match="没这个数据源"):
+            add_template(template_dir, tpl)
+
+    def test_rolls_back_both_files_when_the_result_would_not_load(self, template_dir):
+        """一半写成了比全没写更坏：数据源进去了模板没进去，模型照样加载不了。"""
+        before = {
+            name: (template_dir / name).read_text(encoding="utf-8")
+            for name in ("templates.yaml", "sources.yaml")
+        }
+        # 角色绑到两列上，模型校验会拒绝——用它来触发写完之后的校验失败。
+        bad = _promo().model_copy(update={"bindings": (
+            ColumnBinding(role="spend", columns=("花费",)),
+            ColumnBinding(role="spend", columns=("花费",), occurrence=1),
+        )})
+        with pytest.raises(Exception):
+            add_template(template_dir, bad, source=SourceContract(
+                id="promotion", name="推广", owner_role="operations", cadence="monthly",
+            ))
+        for name, text in before.items():
+            assert (template_dir / name).read_text(encoding="utf-8") == text, (
+                f"{name} 没还原干净"
+            )
+        assert len(load_model(template_dir).templates) == 1
+
+    def test_survives_repeated_adds(self, template_dir):
+        """接一张又一张，文件不能慢慢烂掉。"""
+        for i in range(4):
+            add_template(template_dir, _promo().model_copy(update={
+                "id": f"promo_v{i}",
+                "match_columns": (f"日期{i}", "花费"),
+            }))
+        text = (template_dir / "templates.yaml").read_text(encoding="utf-8")
+        assert text.startswith("# 模板：")
+        assert "# 脊柱" in text
+        assert len(load_model(template_dir).templates) == 5
+
+
+class TestDropTemplate:
+    """人主动撤模板。撤掉一条不能赔掉整份文档的注释。"""
+
+    def test_drops_it(self, template_dir):
+        add_template(template_dir, _promo())
+        drop_template(template_dir, "promo_v1")
+        assert [t.id for t in load_model(template_dir).templates] == ["order_v1"]
+
+    def test_keeps_the_file_header(self, template_dir):
+        """曾经用列表推导重建文档，一撤模板就把文件头和分节注释全删了。"""
+        add_template(template_dir, _promo())
+        drop_template(template_dir, "promo_v1")
+        text = (template_dir / "templates.yaml").read_text(encoding="utf-8")
+        assert text.startswith("# 模板：")
+        assert "少一个「编」字" in text
+        assert "# 脊柱" in text

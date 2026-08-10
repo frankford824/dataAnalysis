@@ -190,7 +190,19 @@ def to_number(value: object) -> float | None:
 
 
 def _numeric_roles(template: Template) -> list[str]:
-    return [b.role for b in template.bindings if _NUMERIC_HINT.search(b.role)]
+    """哪些角色要转成数值。
+
+    模板显式声明了就听它的，没声明才按角色名猜。猜是有代价的：漏判的列静默留成
+    文本，等到有指标对它求和才炸，而且炸出来的错和业务无关。所以新模板应该写 kind。
+    """
+    out = []
+    for b in template.bindings:
+        if b.kind:
+            if b.kind == "number":
+                out.append(b.role)
+        elif _NUMERIC_HINT.search(b.role):
+            out.append(b.role)
+    return out
 
 
 def _normalize_amounts(frame: pl.DataFrame, template: Template, notes: list[str]) -> pl.DataFrame:

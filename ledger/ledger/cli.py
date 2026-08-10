@@ -25,10 +25,16 @@ from .engine.audit import (
     BUCKET_OTHER_PERIOD,
     BUCKET_OTHER_STORES,
 )
+from . import service
 from .engine.runtime import Slice, ingest, run
 from .model.config import add_store, update_store
 from .model.loader import ModelError, load_model
-from .model.schema import KNOWN_PLATFORMS, Model, Store, guess_platform
+from .model.schema import Model, Store
+from .view import oneline as _oneline
+from .view import slice_dict as _as_dict
+from .view import source_name as _source_name
+from .view import statement_order
+from .workspace import default_root
 
 #: 仓库自带的模型。
 DEFAULT_MODEL = Path(__file__).resolve().parents[2] / "models" / "cn-ecommerce"
@@ -65,15 +71,6 @@ def _amount(value: float | None, *, available: bool = True, display: str = "amou
     if display == "count":
         return f"{value:,.0f}"
     return f"{value:,.2f}"
-
-
-def _oneline(text: str) -> str:
-    """压成一行。
-
-    模型里的提示语用 YAML 折叠写法，换行会变成空格。中文标点后面本来不该有空格，
-    直接压会留下「还没同步， 或者」这种夹缝。
-    """
-    return re.sub(r"(?<=[，。；：、！？）】」“”])\s+", "", " ".join(text.split()))
 
 
 # --------------------------------------------------------------------------- #
@@ -126,7 +123,7 @@ def report_orphans(orphans: list[Path], model: Model) -> None:
             if sep in stem:
                 candidate = stem.rsplit(sep, 1)[-1].strip()
                 if candidate and not model.store_of(candidate):
-                    guesses[candidate] = guess_platform(candidate)
+                    guesses[candidate] = model.guess_platform(candidate)
                 break
     if guesses:
         print("\n  看着像这些店，登记到 stores.yaml 就能算：")
@@ -155,11 +152,6 @@ def render_slice(sl: Slice, store: Store, model: Model) -> None:
     _render_unlinked(sl)
 
 
-def _source_name(model: Model, source_id: str) -> str:
-    """数据源的中文名。催人补数据时说 order_detail 没人知道那是什么。"""
-    return next((s.name for s in model.sources if s.id == source_id), source_id)
-
-
 def _render_audit(sl: Slice, model: Model) -> None:
     findings = sl.audit.findings
     blocked = [f for f in findings if not f.passed and f.blocking]
@@ -184,7 +176,7 @@ def _render_audit(sl: Slice, model: Model) -> None:
 def _render_statement(sl: Slice, model: Model) -> None:
     print("\n损益")
     print("─" * 64)
-    for node in model.statement:
+    for node in statement_order(model):
         nv = sl.nodes.get(node.id)
         if nv is None or not nv.applicable:
             continue
@@ -277,45 +269,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _as_dict(sl: Slice, store: Store, model: Model) -> dict:
-    """给 API 和界面用的结构。和终端输出同源，不会两边说法不一致。
-
-    数据源一律转成中文名再出去：催人补数据时说 order_detail 没人知道那是什么。
-    """
-    return {
-        "store": store.name,
-        "store_id": store.id,
-        "platform": store.platform,
-        "entity": store.entity,
-        "period": sl.period,
-        "can_close": sl.can_close,
-        # 按公式树声明的顺序和范围出，和终端输出走同一条路。
-        # 直接倒 sl.nodes 会把指标级节点也带出来，界面上「商品成本」会重复三行，
-        # 而且顺序是求值顺序不是报表顺序。
-        "statement": [
-            {
-                "id": nv.id, "name": nv.name, "level": nv.level,
-                "value": nv.value, "available": nv.available, "display": nv.display,
-                "missing_sources": [_source_name(model, s) for s in nv.missing_sources],
-                "is_total": nv.is_total,
-            }
-            for nv in (sl.nodes.get(node.id) for node in model.statement)
-            if nv is not None and nv.applicable
-        ],
-        "findings": [
-            {"id": f.check_id, "name": f.name, "passed": f.passed,
-             "blocking": f.blocking, "message": _oneline(f.message)}
-            for f in sl.audit.findings
-        ],
-        "missing_sources": [_source_name(model, s) for s in sl.completeness.missing],
-        "unlinked_total": sl.audit.unlinked_total,
-        "unlinked_buckets": [
-            {"label": b[0], "count": b[1], "amount": b[2]}
-            for b in sl.audit.unlinked_buckets
-        ],
-    }
-
-
 def cmd_stores(args: argparse.Namespace) -> int:
     model = load_model(args.model)
     if not model.stores:
@@ -384,10 +337,11 @@ def cmd_store_set(args: argparse.Namespace) -> int:
 
 def cmd_store_add(args: argparse.Namespace) -> int:
     """登记一家新店。开新店、接新平台都走这里，不改代码也不手编文件。"""
-    platform = args.platform or guess_platform(args.name)
+    model = load_model(args.model)
+    platform = args.platform or model.guess_platform(args.name)
     if not platform:
         print(f"猜不出 {args.name} 是哪个平台，用 --platform 指定。"
-              f"可选：{'、'.join(KNOWN_PLATFORMS)}")
+              f"可选：{'、'.join(model.platform_ids())}")
         return 1
     store = add_store(args.model, Store(
         id=args.id, name=args.name, platform=platform,
@@ -397,6 +351,65 @@ def cmd_store_add(args: argparse.Namespace) -> int:
     print(f"已登记 {store.name}（{store.platform}）")
     if not store.entity:
         print(f"  主体还没配：ledger store set {store.id} --entity 主体全名")
+    return 0
+
+
+def cmd_submit(args: argparse.Namespace) -> int:
+    """把文件交进工作区，留档后自动算账。
+
+    和 `run` 的区别是留不留档。`run` 是一次性核对，算完什么都不留；`submit` 存进
+    工作区，往后每次算账都会带上以前交的表——店长这周只补一张运费表，也能出完整损益，
+    不用把整个月的表重传一遍。
+    """
+    from .workspace import Workspace  # 只有留档路径才需要，别拖慢纯核对
+
+    model = load_model(args.model)
+    files = collect(args.paths)
+    if not files:
+        print("没找到可解析的文件。", file=sys.stderr)
+        return 1
+
+    ws = Workspace(args.home or default_root())
+    print(f"工作区：{ws.root}")
+    result = service.intake(ws, model, [(f.name, f) for f in files], by=args.by or "")
+    print(result.summary())
+
+    for r in result.rejected:
+        print(f"\n没进账：{r.file}")
+        print(f"  {r.why}")
+        if r.suggest.get("store"):
+            hint = f" --platform {r.suggest['platform']}" if r.suggest.get("platform") else ""
+            print(f"  登记：ledger store add <id> {r.suggest['store']}{hint}")
+
+    for f in result.failures:
+        print(f"\n{f['store']}：{f['why']}")
+        for reason in f.get("reasons", []):
+            print(f"  {reason}")
+
+    if not result.periods:
+        return 1
+    print()
+    for p in sorted(result.periods, key=lambda d: (d["store"], d["period"])):
+        mark = "可结账" if p["can_close"] else "结不了"
+        missing = f"，缺 {'、'.join(p['missing_sources'])}" if p["missing_sources"] else ""
+        print(f"  {p['store']} · {p['period']}  {mark}{missing}")
+    print(f"\n打开界面看明细：ledger web")
+    return 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """起界面。"""
+    import uvicorn
+
+    from . import api
+
+    api.DEFAULT_MODEL = args.model
+    api.WORKSPACE_ROOT = args.home or default_root()
+    api._ws = None
+    print(f"模型：{api.DEFAULT_MODEL}")
+    print(f"工作区：{api.WORKSPACE_ROOT}")
+    print(f"界面：http://{args.host}:{args.port}")
+    uvicorn.run(api.app, host=args.host, port=args.port, log_level="warning")
     return 0
 
 
@@ -412,6 +425,18 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--store", help="只算这家店")
     r.add_argument("--json", action="store_true", help="输出 JSON，给界面和接口用")
     r.set_defaults(func=cmd_run)
+
+    sb = sub.add_parser("submit", help="交表：留档进工作区，然后自动算账")
+    sb.add_argument("paths", nargs="+", help="文件或文件夹")
+    sb.add_argument("--home", type=Path, help=f"工作区目录，默认 {default_root()}")
+    sb.add_argument("--by", help="交表人，记进留痕")
+    sb.set_defaults(func=cmd_submit)
+
+    w = sub.add_parser("web", help="起界面")
+    w.add_argument("--host", default="127.0.0.1")
+    w.add_argument("--port", type=int, default=8000)
+    w.add_argument("--home", type=Path, help=f"工作区目录，默认 {default_root()}")
+    w.set_defaults(func=cmd_web)
 
     s = sub.add_parser("stores", help="看店铺注册表")
     s.set_defaults(func=cmd_stores)
@@ -434,7 +459,7 @@ def build_parser() -> argparse.ArgumentParser:
     sa = ssub.add_parser("add", help="登记一家新店")
     sa.add_argument("id", help="店铺 id，英文，以后不能改（它是关联键）")
     sa.add_argument("name", help="店铺全名，交上来的文件名里带的就是这个")
-    sa.add_argument("--platform", help=f"平台，不给就从店名猜。可选：{'、'.join(KNOWN_PLATFORMS)}")
+    sa.add_argument("--platform", help="平台 id，不给就从店名猜。可选值见 platforms.yaml")
     sa.add_argument("--entity", help="法人主体全名")
     sa.add_argument("--tax-id", dest="tax_id", help="主体税号")
     sa.add_argument("--alias", action="append", help="别名，可重复")

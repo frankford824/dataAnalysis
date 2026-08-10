@@ -1,24 +1,43 @@
-"""上传接口。
+"""HTTP 接口。
 
 最要紧的一条是文件名必须原样保留。店铺归属和数据源识别全靠文件名——交上来的
 文件叫「聚水潭成本-淘宝喜必顺.xlsx」，破折号前是类别、后面是店铺。换成随机名存盘，
 这两件事立刻全瞎，而且不会报错，只会算出一张空账。
+
+所有测试都跑在临时工作区里。接口现在真的会留档，冲默认目录等于让测试往用户的
+账本里写垃圾。
 """
 
 from __future__ import annotations
 
 import io
+import shutil
 
 import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 
-from ledger.api import app
+import ledger.api as api
 
 
 @pytest.fixture
-def client():
-    return TestClient(app)
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(api, "WORKSPACE_ROOT", tmp_path / "space")
+    monkeypatch.setattr(api, "_ws", None)
+    with TestClient(api.app) as c:
+        yield c
+
+
+@pytest.fixture
+def sandbox(tmp_path, monkeypatch):
+    """把模型复制到临时目录再改。
+
+    改配置的接口是真的写文件，直接冲仓库里那份等于让测试改坏项目自己的模型。
+    """
+    target = tmp_path / "cn-ecommerce"
+    shutil.copytree(api.DEFAULT_MODEL, target)
+    monkeypatch.setattr(api, "DEFAULT_MODEL", target)
+    return target
 
 
 def _xlsx_bytes(rows: list[list]) -> bytes:
@@ -35,18 +54,168 @@ def _upload(client, *named: tuple[str, bytes]):
     files = [("files", (name, io.BytesIO(data),
               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
              for name, data in named]
-    return client.post("/api/run", files=files)
+    return client.post("/api/upload", files=files)
+
+
+# --------------------------------------------------------------------------- #
+# 启动信息
+# --------------------------------------------------------------------------- #
+
+
+class TestBootstrap:
+    def test_gives_the_ui_everything_it_needs_at_once(self, client):
+        """分开取的话，中间有人改了配置，界面会拿半新半旧的结构去渲染。"""
+        body = client.get("/api/bootstrap").json()
+        assert {"stores", "platforms", "editable", "statement", "sources", "accepts"} <= set(body)
+        assert any(s["name"] == "淘宝喜必顺" for s in body["stores"])
+        assert any(n["headline"] == "profit" for n in body["statement"]), \
+            "总览上放哪个数由模型说，界面不该写死节点 id"
+
+    def test_says_what_files_it_accepts(self, client):
+        """界面上的「支持哪些格式」不该由前端写死。"""
+        assert ".xlsx" in client.get("/api/bootstrap").json()["accepts"]
+
+
+# --------------------------------------------------------------------------- #
+# 交表
+# --------------------------------------------------------------------------- #
+
+
+class TestUpload:
+    def test_filename_decides_the_store(self, client):
+        data = _xlsx_bytes([["订单号", "金额"], ["A001", 1]])
+        body = _upload(client, ("运费-淘宝喜必顺.xlsx", data)).json()
+        assert body["rejected"] == [], "文件名带着店名，不该认不出"
+        assert body["kept"][0]["store_id"] == "taobao_xibishun"
+
+    def test_unknown_store_is_refused_with_a_suggestion(self, client):
+        """绝不塞进某家店凑数——那会把一家店的钱记到另一家头上，而且没人会发现。"""
+        data = _xlsx_bytes([["订单号", "金额"], ["A001", 1]])
+        body = _upload(client, ("运费-拼多多某个新店.xlsx", data)).json()
+        assert len(body["rejected"]) == 1
+        bad = body["rejected"][0]
+        assert bad["file"] == "运费-拼多多某个新店.xlsx"
+        assert bad["suggest"]["store"] == "拼多多某个新店"
+        assert bad["suggest"]["platform"] == "pdd", "平台前缀认得出来就该提示"
+
+    def test_unsupported_format_is_refused_not_ignored(self, client):
+        """不认识的格式要明说，不能悄悄丢掉让人以为已经算进去了。"""
+        files = [("files", ("说明.docx", io.BytesIO(b"x"), "application/octet-stream"))]
+        body = client.post("/api/upload", files=files).json()
+        assert body["rejected"][0]["file"] == "说明.docx"
+        assert "解析" in body["rejected"][0]["why"]
+        assert body["kept"] == []
+
+    def test_path_in_filename_cannot_escape(self, client):
+        data = _xlsx_bytes([["订单号"], ["A001"]])
+        body = _upload(client, ("../../etc/运费-淘宝喜必顺.xlsx", data)).json()
+        assert body["rejected"] == []
+        assert body["kept"][0]["file"] == "运费-淘宝喜必顺.xlsx"
+
+    def test_no_files_at_all_is_an_error(self, client):
+        assert client.post("/api/upload", files=[]).status_code == 422
+
+    def test_reupload_says_nothing_changed(self, client):
+        """重复交同一份表是常事。说「和上次一样」比说「已上传」有用。"""
+        data = _xlsx_bytes([["订单号"], ["A001"]])
+        _upload(client, ("运费-淘宝喜必顺.xlsx", data))
+        body = _upload(client, ("运费-淘宝喜必顺.xlsx", data)).json()
+        assert body["kept"][0]["unchanged"] is True
+
+    def test_same_name_new_content_replaces(self, client):
+        """店长改数重导出，文件名不变。两版都算就是双份成本。"""
+        _upload(client, ("运费-淘宝喜必顺.xlsx", _xlsx_bytes([["订单号"], ["A001"]])))
+        body = _upload(client, ("运费-淘宝喜必顺.xlsx", _xlsx_bytes([["订单号"], ["A002"]]))).json()
+        assert body["kept"][0]["replaced"] is True
+        files = client.get("/api/stores/taobao_xibishun").json()["files"]
+        assert len(files) == 1 and files[0]["versions"] == 2
+
+    def test_summary_is_a_human_sentence(self, client):
+        data = _xlsx_bytes([["订单号"], ["A001"]])
+        body = _upload(client, ("运费-淘宝喜必顺.xlsx", data)).json()
+        assert "收下" in body["summary"]
+
+
+class TestDropFile:
+    def test_撤表_after_upload(self, client):
+        data = _xlsx_bytes([["订单号"], ["A001"]])
+        _upload(client, ("运费-淘宝喜必顺.xlsx", data))
+        res = client.delete("/api/stores/taobao_xibishun/files",
+                            params={"name": "运费-淘宝喜必顺.xlsx"})
+        assert res.status_code == 200
+        assert client.get("/api/stores/taobao_xibishun").json()["files"] == []
+
+    def test_unknown_store_is_404(self, client):
+        res = client.delete("/api/stores/没这家店/files", params={"name": "x.xlsx"})
+        assert res.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
+# 看账
+# --------------------------------------------------------------------------- #
+
+
+class TestOverview:
+    def test_empty_workspace_is_not_an_error(self, client):
+        """一家店都还没交表时，首页要能正常打开并告诉人下一步做什么。"""
+        body = client.get("/api/overview").json()
+        assert body["cells"] == []
+        assert body["stores"], "还没数据也要把已登记的店列出来"
+
+    def test_lists_stores_and_periods(self, client):
+        data = _xlsx_bytes([["订单号"], ["A001"]])
+        _upload(client, ("运费-淘宝喜必顺.xlsx", data))
+        body = client.get("/api/overview").json()
+        # 这份表算不出账期也没关系，重点是矩阵结构成立。
+        assert isinstance(body["periods"], list)
+        assert isinstance(body["totals"], list)
+
+
+class TestStoreDetail:
+    def test_unknown_store_is_404(self, client):
+        assert client.get("/api/stores/没这家店").status_code == 404
+
+    def test_lists_files_and_periods(self, client):
+        data = _xlsx_bytes([["订单号"], ["A001"]])
+        _upload(client, ("运费-淘宝喜必顺.xlsx", data))
+        body = client.get("/api/stores/taobao_xibishun").json()
+        assert body["store"]["name"] == "淘宝喜必顺"
+        assert [f["name"] for f in body["files"]] == ["运费-淘宝喜必顺.xlsx"]
+
+    def test_period_never_computed_is_404(self, client):
+        assert client.get("/api/stores/taobao_xibishun/periods/2099-01").status_code == 404
+
+
+class TestPeriodActions:
+    def test_cannot_close_a_period_that_was_never_computed(self, client):
+        res = client.post("/api/stores/taobao_xibishun/periods/2099-01/close", json={})
+        assert res.status_code == 409
+        assert "还没算过账" in res.json()["detail"]
+
+    def test_reopen_needs_a_reason(self, client):
+        res = client.post("/api/stores/taobao_xibishun/periods/2099-01/reopen", json={})
+        assert res.status_code == 409
+
+
+class TestDrill:
+    def test_missing_facts_says_recompute(self, client):
+        res = client.get("/api/runs/9999/drill/profit")
+        assert res.status_code == 404
+        assert "重算" in res.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# 配置
+# --------------------------------------------------------------------------- #
 
 
 class TestStoresEndpoint:
     def test_lists_registered_stores(self, client):
         res = client.get("/api/stores")
         assert res.status_code == 200
-        names = {s["name"] for s in res.json()["stores"]}
-        assert "淘宝喜必顺" in names
+        assert "淘宝喜必顺" in {s["name"] for s in res.json()["stores"]}
 
     def test_exposes_entity_so_ui_can_flag_missing(self, client):
-        """主体是否配了要能看出来，界面才好提示补配。"""
         stores = client.get("/api/stores").json()["stores"]
         assert all("entity" in s for s in stores)
 
@@ -55,23 +224,9 @@ class TestStoresEndpoint:
         body = client.get("/api/stores").json()
         assert "entity" in body["editable"]
         assert "id" not in body["editable"] and "name" not in body["editable"]
-        assert "taobao" in body["platforms"]
-
-
-@pytest.fixture
-def sandbox(tmp_path, monkeypatch):
-    """把模型复制到临时目录再改。
-
-    改配置的接口是真的写文件，直接冲仓库里那份等于让测试改坏项目自己的模型。
-    """
-    import shutil
-
-    import ledger.api as api
-
-    target = tmp_path / "cn-ecommerce"
-    shutil.copytree(api.DEFAULT_MODEL, target)
-    monkeypatch.setattr(api, "DEFAULT_MODEL", target)
-    return target
+        # 平台带上中文名：下拉框里显示 `alibaba1688` 没人认得那是哪个平台。
+        options = {p["id"]: p["name"] for p in body["platforms"]}
+        assert options["taobao"] == "淘宝天猫"
 
 
 class TestEditStore:
@@ -133,48 +288,9 @@ class TestPage:
     def test_serves_the_page(self, client):
         res = client.get("/")
         assert res.status_code == 200
-        assert "把文件拖到这里" in res.text
+        assert 'id="app"' in res.text
 
-
-class TestUpload:
-    def test_filename_decides_the_store(self, client):
-        """认哪家店只看文件名。这里的表内容是空的，重点是它被归给了对的店。"""
-        data = _xlsx_bytes([["订单号", "金额"], ["A001", 1]])
-        res = _upload(client, ("运费-淘宝喜必顺.xlsx", data))
-        assert res.status_code == 200
-        body = res.json()
-        assert body["orphans"] == [], "文件名带着店名，不该认不出"
-
-    def test_unknown_store_becomes_orphan_with_a_suggestion(self, client):
-        """认不出的文件要列出来，还要给个能直接照着登记的建议。
-
-        绝不塞进某家店凑数——那会把一家店的钱记到另一家头上，而且没人会发现。
-        """
-        data = _xlsx_bytes([["订单号", "金额"], ["A001", 1]])
-        res = _upload(client, ("运费-拼多多某个新店.xlsx", data))
-        body = res.json()
-        assert len(body["orphans"]) == 1
-        orphan = body["orphans"][0]
-        assert orphan["file"] == "运费-拼多多某个新店.xlsx"
-        assert orphan["suggest"]["store"] == "拼多多某个新店"
-        assert orphan["suggest"]["platform"] == "pdd", "平台前缀认得出来就该提示"
-
-    def test_unsupported_format_is_skipped_not_ignored(self, client):
-        """不认识的格式要明说跳过了，不能悄悄丢掉让人以为已经算进去了。"""
-        files = [("files", ("说明.docx", io.BytesIO(b"x"), "application/octet-stream"))]
-        body = client.post("/api/run", files=files).json()
-        assert body["skipped"] == ["说明.docx"]
-        assert body["slices"] == []
-
-    def test_path_in_filename_cannot_escape(self, client):
-        """上传名里带路径的一律只取文件名，不许写到别处去。"""
-        data = _xlsx_bytes([["订单号"], ["A001"]])
-        res = _upload(client, ("../../etc/运费-淘宝喜必顺.xlsx", data))
-        assert res.status_code == 200
-        assert res.json()["orphans"] == []
-
-    def test_nothing_uploaded_says_so(self, client):
-        files = [("files", ("a.txt", io.BytesIO(b"x"), "text/plain"))]
-        body = client.post("/api/run", files=files).json()
-        assert body["slices"] == []
-        assert "没有能解析的文件" in body["message"]
+    def test_serves_the_assets(self, client):
+        """样式和脚本是独立文件，不再拼在 Python 字符串里。"""
+        assert client.get("/static/app.js").status_code == 200
+        assert client.get("/static/design.css").status_code == 200

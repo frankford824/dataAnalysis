@@ -8,15 +8,23 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from conftest import MODELS
 
 from ledger.cli import group_by_store
 from ledger.model.loader import load_model
-from ledger.model.schema import Model, Store, guess_platform
+from ledger.model.schema import Model, Platform, Store
+
+#: 猜平台的测试要有平台清单才成立——平台是模型数据，不是代码常量。
+PLATFORMS = (
+    Platform(id="taobao", name="淘宝天猫", hints=("淘宝", "天猫", "tmall", "TB")),
+    Platform(id="alibaba1688", name="阿里巴巴 1688", hints=("1688", "阿里巴巴", "阿里")),
+    Platform(id="douyin", name="抖音", hints=("抖音", "抖店")),
+)
 
 
 def _model(*stores: Store) -> Model:
-    return Model(id="t", name="t", stores=stores)
+    return Model(id="t", name="t", platforms=PLATFORMS, stores=stores)
 
 
 class TestFileOwnership:
@@ -81,10 +89,11 @@ class TestArchiving:
 
 class TestPlatformGuess:
     def test_guesses_from_prefix(self):
-        assert guess_platform("淘宝喜必顺") == "taobao"
-        assert guess_platform("1688星泽气球派对") == "alibaba1688"
-        assert guess_platform("抖音浅花涧节日装饰") == "douyin"
-        assert guess_platform("抖店喜品") == "douyin"
+        m = _model()
+        assert m.guess_platform("淘宝喜必顺") == "taobao"
+        assert m.guess_platform("1688星泽气球派对") == "alibaba1688"
+        assert m.guess_platform("抖音浅花涧节日装饰") == "douyin"
+        assert m.guess_platform("抖店喜品") == "douyin"
 
     def test_returns_empty_when_unsure(self):
         """猜不出就返回空。猜测只用于给登记提建议，绝不参与计算。
@@ -92,8 +101,45 @@ class TestPlatformGuess:
         「朗歌1688」这种平台名在后缀的就猜不出来——猜错平台会让整家店按错误的
         利润口径算账，宁可让人来配。
         """
-        assert guess_platform("朗歌1688") == ""
-        assert guess_platform("某个新店") == ""
+        m = _model()
+        assert m.guess_platform("朗歌1688") == ""
+        assert m.guess_platform("某个新店") == ""
+
+    def test_longest_prefix_wins(self):
+        """两个平台的线索词都命中时，长的更具体。"""
+        m = Model(id="t", name="t", platforms=(
+            Platform(id="ali", name="阿里", hints=("阿里",)),
+            Platform(id="alibaba1688", name="1688", hints=("阿里巴巴",)),
+        ))
+        assert m.guess_platform("阿里巴巴星泽") == "alibaba1688"
+        assert m.guess_platform("阿里妈妈某店") == "ali"
+
+    def test_no_platforms_declared_means_no_guess(self):
+        """没登记平台就别猜。空模型下不该凭空造出一个平台 id。"""
+        assert Model(id="t", name="t").guess_platform("淘宝喜必顺") == ""
+
+
+class TestPlatformRegistry:
+    """平台错字是静默扣钱的，加载时必须拦下来。"""
+
+    def test_unknown_store_platform_is_rejected(self):
+        with pytest.raises(ValueError, match="没登记"):
+            Model(
+                id="t", name="t", platforms=PLATFORMS,
+                stores=(Store(id="a", name="某店", platform="taobao "),),
+            )
+
+    def test_platform_ids_skips_archived(self):
+        m = Model(id="t", name="t", platforms=(
+            *PLATFORMS, Platform(id="paipai", name="拍拍", archived=True),
+        ))
+        assert "paipai" not in m.platform_ids()
+        assert "taobao" in m.platform_ids()
+
+    def test_no_registry_means_no_check(self):
+        """没有 platforms.yaml 的模型照样能加载：这份清单是可选的。"""
+        m = Model(id="t", name="t", stores=(Store(id="a", name="某店", platform="随便"),))
+        assert m.store("a").platform == "随便"
 
 
 class TestShippedRegistry:

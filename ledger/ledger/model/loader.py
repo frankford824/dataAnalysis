@@ -3,6 +3,7 @@
 一个模型是一个目录：
 
     model.yaml       元信息
+    platforms.yaml   平台清单
     stores.yaml      店铺注册表（店铺、平台、法人主体）
     sources.yaml     数据源契约
     templates.yaml   模板（表头签名到字段角色）
@@ -28,6 +29,7 @@ from .schema import (
     DictionaryEntry,
     Metric,
     Model,
+    Platform,
     SourceContract,
     StatementNode,
     Store,
@@ -35,6 +37,7 @@ from .schema import (
 )
 
 _FILES = {
+    "platforms": ("platforms.yaml", Platform),
     "stores": ("stores.yaml", Store),
     "sources": ("sources.yaml", SourceContract),
     "templates": ("templates.yaml", Template),
