@@ -1,0 +1,44 @@
+# 模板：表头签名到字段角色的映射，以及这个版本固定的格式与符号约定。
+# 一个表头签名一个模板版本。未登记的签名会被识别原语报出来，不会静默丢列。
+
+- id: teahouse_orders_v1
+  source: teahouse_orders
+  name: 点单流水 v1
+  match_columns: [会员单号, 门店, 下单时间, 应收金额, 会员优惠]
+  parse:
+    encoding: utf-8-sig
+  sign: as_is
+  bindings:
+    - {role: order_id, columns: [会员单号]}
+    - {role: store_name, columns: [门店]}
+    - {role: booked_at, columns: [下单时间]}
+    - {role: gross_amount, columns: [应收金额]}
+    - {role: discount_amount, columns: [会员优惠]}
+  time_slots:
+    order_date: booked_at
+
+- id: teahouse_leaf_cost_v1
+  source: teahouse_leaf_cost
+  name: 用料成本 v1
+  match_columns: [会员单号, 茶品编码, 用量克, 每克成本]
+  # 用量与单价都是量值，本身没有会计方向，方向由指标声明。
+  sign: as_is
+  bindings:
+    - {role: order_id, columns: [会员单号]}
+    - {role: sku, columns: [茶品编码]}
+    - {role: quantity, columns: [用量克]}
+    - {role: unit_cost_price, columns: [每克成本]}
+
+- id: teahouse_rent_v1
+  source: teahouse_rent
+  name: 场地月租 v1
+  match_columns: [门店, 月份, 科目, 金额]
+  # 这份表里金额永远写正数，实际是支出。符号绑模板版本，不靠猜。
+  sign: abs_negate
+  bindings:
+    - {role: store_name, columns: [门店]}
+    - {role: happened_on, columns: [月份]}
+    - {role: subject, columns: [科目]}
+    - {role: paid_amount, columns: [金额]}
+  time_slots:
+    settle_date: happened_on

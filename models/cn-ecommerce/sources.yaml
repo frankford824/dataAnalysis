@@ -1,0 +1,116 @@
+# 国内电商的数据源清单。
+#
+# 每一条对应店铺负责人或某个岗位要交的一份表。cadence 决定催办节奏，
+# required_for_close 决定它缺了能不能结账，owner_role 决定催谁。
+#
+# 这份清单是照着实际在用的 9 类文件写的，不是设想出来的。三个平台的差异
+# 也在这里体现：1688 没有推广数据（他们的订单明细表里推广费用一列直接补 0），
+# 补发成本已经含在聚水潭成本里所以不单独报。
+
+- id: order_detail
+  name: 订单明细
+  platform: any
+  owner_role: shop_owner
+  cadence: daily
+  is_spine: true
+  required_for_close: true
+  provides: []
+  note: >
+    脊柱。一行一个子订单。淘宝从千牛导出宝贝明细，抖音从订单管理导出，
+    1688 从已卖出货品导出。所有成本项最终都要挂到这张表的行上。
+
+- id: settlement
+  name: 对账（资金流水）
+  platform: any
+  owner_role: shop_owner
+  cadence: daily
+  required_for_close: true
+  provides: [trade_receipt, trade_refund, software_fee, logistics_fee, trade_compensation, marketing_fee]
+  note: >
+    平台资金账户的逐笔流水，销售收入与各项平台费用都出自这里。
+    淘宝有支付宝和微信两个资金渠道，是两张表头不同的表，都要交。
+
+- id: order_cost
+  name: 聚水潭成本
+  filename_hints: [聚水潭]
+  platform: any
+  owner_role: warehouse
+  cadence: daily
+  required_for_close: true
+  provides: [goods_cost]
+  note: 商品成本的唯一来源。同时是运费表回查订单号的中间表。
+
+- id: freight
+  name: 运费
+  platform: any
+  owner_role: logistics
+  cadence: weekly
+  required_for_close: true
+  provides: [freight_cost]
+  dedupe_key: [tracking_no]
+  note: >
+    这张表只有运单号，没有订单号。要先拿运单号去订单明细查物流单号得到主订单编号，
+    查不到再去聚水潭查快递单号得到原始线上订单号。实测九成五的行两级都回查不到，
+    因为这张表是全公司所有店铺的运单混在一起。
+
+    全公司一张主表，三个店长各交一份，内容完全相同：实测 299,554 个运单号
+    在三份文件里 100% 重合，金额都是 550,944.03。不按运单号去重就会算成三倍。
+    各店那份只是额外带了自己的关联列（淘宝带订单号、抖音带子订单、1688 没带），
+    去重时保留先到的那份即可，关联靠后面的回查链，不依赖这几列。
+
+- id: promotion
+  name: 推广
+  platform: any
+  owner_role: operations
+  cadence: daily
+  required_for_close: false
+  provides: [ad_cost]
+  note: >
+    商品级，没有订单号，要按商品ID 均分到该商品的订单行上。
+    1688 目前没有这份数据。
+
+- id: brushing
+  name: 刷单（本金佣金）
+  platform: any
+  owner_role: operations
+  cadence: weekly
+  required_for_close: false
+  provides: [brushing_cost]
+  note: 从微盘获取，全公司一张表，要按店铺筛。
+
+- id: dropship
+  name: 代发
+  platform: any
+  owner_role: operations
+  cadence: weekly
+  required_for_close: false
+  provides: [dropship_cost]
+  note: 从微盘获取，全公司一张表，要按店铺筛。
+
+- id: reshipment
+  name: 补发
+  filename_hints: [补发]
+  platform: any
+  owner_role: warehouse
+  cadence: weekly
+  required_for_close: false
+  provides: [reshipment_cost]
+  note: >
+    结构与聚水潭成本表相同，是从那张表按订单类型筛出补发订单另存的。
+    1688 不单独报，补发成本已含在聚水潭成本里。
+
+- id: small_payment
+  name: 小额打款
+  platform: any
+  owner_role: operations
+  cadence: weekly
+  required_for_close: false
+  provides: [small_payment_cost]
+  dedupe_key: [serial_no]
+  note: >
+    客服给客户的小额补偿。全集团一张表，要按网店名称筛。
+    表里的网店（美食专家、淘宝嘻嘻哈哈、京东皇莉诗…）大多不属于我们核算的这三家店，
+    说明它覆盖的范围比本模型大，必须先筛店铺再入账。
+
+    三个店长各交一份，内容完全相同：2,659 个序号全部重合，金额都是 94,065.08。
+    按序号去重，重复交多少份都是同一个结果。

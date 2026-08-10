@@ -1,0 +1,336 @@
+"""原语七：自检。在结账前拦截。
+
+这道关卡是产品最重要的设计。它把"我不知道这数对不对"变成"系统不让我在数不对的
+时候结账"。
+
+告警最大的失败模式是推送太多，用户学会忽略全部告警。所以这里的输出必须是人话，
+并且必须把"用户不需要管的"和"需要管的"分开——天然无订单号的科目（提现、广告充值、
+保证金、往来款）挂不上订单是正常的，不该占用用户注意力。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+import polars as pl
+
+from ..model.schema import Check, Model
+from .calculate import NodeValue, _apply
+from .types import ClassifyReport, Completeness, Finding, LinkReport
+
+
+@dataclass
+class AuditResult:
+    findings: list[Finding] = field(default_factory=list)
+    #: 没进利润的钱。绝不静默丢弃。
+    unlinked_buckets: list[tuple[str, int, float]] = field(default_factory=list)
+    unlinked_total: float = 0.0
+
+    @property
+    def can_close(self) -> bool:
+        return not any(f.blocking and not f.passed for f in self.findings)
+
+    @property
+    def blockers(self) -> list[Finding]:
+        return [f for f in self.findings if f.blocking and not f.passed]
+
+    @property
+    def warnings(self) -> list[Finding]:
+        return [f for f in self.findings if not f.blocking and not f.passed]
+
+
+def audit(
+    model: Model,
+    facts: pl.DataFrame,
+    link_reports: dict[str, LinkReport],
+    classify_report: ClassifyReport,
+    completeness: Completeness,
+    nodes: dict[str, NodeValue],
+) -> AuditResult:
+    result = AuditResult()
+    result.unlinked_buckets, result.unlinked_total = _bucket_unlinked(facts, model)
+
+    for check in model.checks:
+        handler = _HANDLERS.get(check.kind)
+        if handler is None:  # pragma: no cover
+            continue
+        result.findings.append(
+            handler(check, model, facts, link_reports, classify_report, completeness, nodes, result)
+        )
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# 各类校验
+# --------------------------------------------------------------------------- #
+
+
+def _check_link_rate(check, model, facts, links, classify, completeness, nodes, result) -> Finding:
+    report = links.get(check.metric or "")
+    if report is None:
+        return Finding(
+            check.id, check.name, passed=True, blocking=False,
+            message=f"{check.name}：这个月没有相关数据，跳过",
+        )
+    threshold = check.threshold if check.threshold is not None else report_threshold(model, check)
+    passed = report.hit_rate >= threshold
+    metric_name = _metric_name(model, check.metric)
+    if passed:
+        message = f"{metric_name} 挂订单 {report.hit_rate:.1%}，正常"
+    else:
+        gap = report.eligible - report.linked_rows
+        message = (
+            f"{metric_name} 有 {gap:,} 行没对上订单（挂上 {report.hit_rate:.1%}，"
+            f"要求 {threshold:.0%}）。这部分金额不会计入利润，建议先看一下。"
+        )
+    return Finding(
+        check.id, check.name, passed=passed, blocking=check.blocking and not passed,
+        message=check.message or message,
+        detail={
+            "metric": check.metric,
+            "hit_rate": report.hit_rate,
+            "threshold": threshold,
+            "unlinked_rows": report.eligible - report.linked_rows,
+            "naturally_unlinked_rows": report.naturally_unlinked_rows,
+            "extract_failed_rows": report.extract_failed_rows,
+        },
+    )
+
+
+def _check_coverage(check, model, facts, links, classify, completeness, nodes, result) -> Finding:
+    """覆盖率：订单里有多少笔拿到了这项数据。
+
+    这是命中率查不出来的失败模式。只传了半个月成本的文件，命中率是漂亮的 100%，
+    但利润虚高一倍。
+    """
+    report = links.get(check.metric or "")
+    metric_name = _metric_name(model, check.metric)
+    if report is None or not report.spine_keys:
+        return Finding(
+            check.id, check.name, passed=True, blocking=False,
+            message=f"{check.name}：没有可比对的订单，跳过",
+        )
+    threshold = check.threshold if check.threshold is not None else 0.95
+    passed = report.coverage >= threshold
+    gap = report.spine_keys - report.spine_keys_covered
+    if passed:
+        message = f"{metric_name} 覆盖了 {report.coverage:.1%} 的订单，正常"
+    else:
+        message = (
+            f"有 {gap:,} 笔订单没有{metric_name}（覆盖 {report.coverage:.1%}，"
+            f"要求 {threshold:.0%}）。这些订单的利润会偏高，数据可能只传了一部分。"
+        )
+    return Finding(
+        check.id, check.name, passed=passed, blocking=check.blocking and not passed,
+        message=check.message or message,
+        detail={
+            "metric": check.metric,
+            "coverage": report.coverage,
+            "threshold": threshold,
+            "spine_keys": report.spine_keys,
+            "uncovered": gap,
+        },
+    )
+
+
+def _check_unclassified(check, model, facts, links, classify, completeness, nodes, result) -> Finding:
+    limit = int(check.threshold or 0)
+    unmatched = classify.unmatched
+    count = sum(c for c, _ in unmatched.values())
+    passed = count <= limit
+    if passed:
+        return Finding(check.id, check.name, passed=True, blocking=False, message="所有科目都认识")
+    top = sorted(unmatched.items(), key=lambda kv: -abs(kv[1][1]))[:5]
+    lines = [f"  · {name}：{c} 笔，{amount:,.2f} 元" for name, (c, amount) in top]
+    total = sum(abs(a) for _, a in unmatched.values())
+    message = (
+        f"有 {len(unmatched)} 个科目字典里没有，共 {count:,} 笔、{total:,.2f} 元：\n"
+        + "\n".join(lines)
+        + ("\n  · …" if len(unmatched) > 5 else "")
+        + "\n确认这些科目归到哪一类，之后就不用再管了。"
+    )
+    return Finding(
+        check.id, check.name, passed=False, blocking=check.blocking,
+        message=check.message or message,
+        detail={"subjects": [
+            {"raw": name, "rows": c, "amount": a} for name, (c, a) in
+            sorted(unmatched.items(), key=lambda kv: -abs(kv[1][1]))
+        ]},
+    )
+
+
+def _check_completeness(check, model, facts, links, classify, completeness, nodes, result) -> Finding:
+    if completeness.ok:
+        return Finding(
+            check.id, check.name, passed=True, blocking=False,
+            message=f"该到的数据都到了（{completeness.label()}）",
+        )
+    owed: list[str] = []
+    for sid in completeness.missing:
+        source = model.source(sid)
+        owed.append(f"  · {source.name} —— {_ROLE_LABEL.get(source.owner_role, source.owner_role)}")
+    message = (
+        f"还差 {len(completeness.missing)} 份数据（已到 {completeness.label()}）：\n"
+        + "\n".join(owed)
+        + "\n数据到齐前不出利润数字。"
+    )
+    return Finding(
+        check.id, check.name, passed=False, blocking=check.blocking,
+        message=check.message or message,
+        detail={"missing": [
+            {"source": sid, "name": model.source(sid).name,
+             "owner_role": model.source(sid).owner_role,
+             "owner_label": _ROLE_LABEL.get(model.source(sid).owner_role, "")}
+            for sid in completeness.missing
+        ]},
+    )
+
+
+def _check_tie_out(check, model, facts, links, classify, completeness, nodes, result) -> Finding:
+    if not check.left or not check.right:
+        return Finding(check.id, check.name, True, False, "勾稽等式没有定义两边，跳过")
+    left = _eval_side(check.left, nodes)
+    right = _eval_side(check.right, nodes)
+    if left is None or right is None:
+        return Finding(
+            check.id, check.name, passed=True, blocking=False,
+            message=f"{check.name}：等式有一边数据不全，等数据齐了再对",
+        )
+    diff = round(left - right, 2)
+    passed = abs(diff) <= check.tolerance
+    message = (
+        f"{check.name} 对得上"
+        if passed
+        else f"{check.name} 差 {diff:,.2f} 元（{left:,.2f} 对 {right:,.2f}）。这笔差额必须能解释清楚。"
+    )
+    return Finding(
+        check.id, check.name, passed=passed, blocking=check.blocking and not passed,
+        message=check.message or message,
+        detail={"left": left, "right": right, "diff": diff, "tolerance": check.tolerance},
+    )
+
+
+def _check_unlinked_disclosed(check, model, facts, links, classify, completeness, nodes, result) -> Finding:
+    """未归属金额必须显式呈现。
+
+    现有 BI 就是悄悄丢了这部分，导致店铺利润和支付宝净收支对不上，谁也说不清差在哪。
+    """
+    if not result.unlinked_buckets:
+        return Finding(check.id, check.name, True, False, "没有挂不上订单的钱")
+
+    natural = [b for b in result.unlinked_buckets if b[0] != "看起来是订单的钱"]
+    suspicious = [b for b in result.unlinked_buckets if b[0] == "看起来是订单的钱"]
+    rows = sum(n for _, n, _ in result.unlinked_buckets)
+    lines = [
+        f"  · {name} {n:,} 笔，{amount:,.2f} 元 —— 这类本来就没有订单号，不影响利润"
+        for name, n, amount in natural
+    ]
+    lines += [
+        f"  · {name} {n:,} 笔，{amount:,.2f} 元 —— 建议看一下"
+        for name, n, amount in suspicious
+    ]
+    message = (
+        f"这个月有 {rows:,} 笔钱没对上订单，共 {result.unlinked_total:,.2f} 元。\n"
+        + "\n".join(lines)
+    )
+    passed = not suspicious
+    return Finding(
+        check.id, check.name, passed=passed, blocking=check.blocking and not passed,
+        message=check.message or message,
+        detail={"buckets": [
+            {"name": n, "rows": r, "amount": a} for n, r, a in result.unlinked_buckets
+        ]},
+    )
+
+
+_HANDLERS = {
+    "link_rate": _check_link_rate,
+    "spine_coverage": _check_coverage,
+    "no_unclassified": _check_unclassified,
+    "completeness": _check_completeness,
+    "tie_out": _check_tie_out,
+    "unlinked_disclosed": _check_unlinked_disclosed,
+}
+
+_ROLE_LABEL = {
+    "shop_owner": "店铺负责人",
+    "warehouse": "仓储",
+    "logistics": "物流",
+    "operations": "运营",
+    "finance": "财务",
+}
+
+
+# --------------------------------------------------------------------------- #
+# 未归属金额的分类降噪
+# --------------------------------------------------------------------------- #
+
+
+def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str, int, float]], float]:
+    """把挂不上订单的钱分成"不用管的"和"需要看的"。
+
+    AI 在这里的价值是分类和降噪。字典里已标注"天然无订单号"的科目自动归入前者，
+    其余归入后者由人判断。
+    """
+    if facts.is_empty():
+        return [], 0.0
+    unlinked = facts.filter(~pl.col("linked"))
+    if unlinked.is_empty():
+        return [], 0.0
+
+    natural = {
+        e.raw for e in model.dictionary if e.naturally_unlinked
+    }
+    naturally_unlinked_metrics = {m.id for m in model.metrics if m.naturally_unlinked}
+
+    tagged = unlinked.with_columns(
+        pl.when(pl.col("metric_id").is_in(list(naturally_unlinked_metrics)))
+        .then(pl.coalesce(pl.col("minor"), pl.col("subject"), pl.lit("其他")))
+        .when(pl.col("subject").is_in(list(natural)))
+        .then(pl.coalesce(pl.col("minor"), pl.col("subject")))
+        .otherwise(pl.lit("看起来是订单的钱"))
+        .alias("bucket")
+    )
+    grouped = (
+        tagged.group_by("bucket")
+        .agg(pl.len().alias("rows"), pl.col("amount").sum().round(2).alias("amount"))
+        .sort("amount")
+    )
+    buckets = [
+        (row["bucket"], int(row["rows"]), float(row["amount"]))
+        for row in grouped.iter_rows(named=True)
+    ]
+    total = round(sum(a for _, _, a in buckets), 2)
+    return buckets, total
+
+
+def _eval_side(expr, nodes: dict[str, NodeValue]) -> float | None:
+    values = []
+    for ref in expr.of:
+        node = nodes.get(ref)
+        if node is None or node.value is None:
+            return None
+        values.append(node.value)
+    if expr.op == "constant":
+        return float(expr.value or 0.0)
+    return _apply(expr.op, values)
+
+
+def _metric_name(model: Model, mid: str | None) -> str:
+    if not mid:
+        return "数据"
+    try:
+        return model.metric(mid).name
+    except KeyError:
+        return mid
+
+
+def report_threshold(model: Model, check: Check) -> float:
+    if check.metric:
+        try:
+            metric = model.metric(check.metric)
+        except KeyError:
+            return 0.95
+        if metric.link:
+            return metric.link.min_hit_rate
+    return 0.95

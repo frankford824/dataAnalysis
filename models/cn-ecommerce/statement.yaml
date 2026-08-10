@@ -1,0 +1,82 @@
+# 损益表结构。
+#
+# 主界面只出 level 1 的 5 组，点开才是 level 2 的 13 项。复杂度藏在引擎里，
+# 界面上只让人看见他能做决定的那几个数。
+#
+# 因为所有指标产出的都是「对利润的贡献」（负数即减利润），这里全部是加法，
+# 不需要在损益表上再声明哪一项该加哪一项该减。
+
+# ------------------------------------------------------------- level 2 --- #
+#
+# 一个科目行可以由多个平台的指标喂。各平台口径不同——淘宝把对账表拆成七个费项、
+# 1688 只有收支两条、抖音只有一条净额——但对外呈现必须是同一张表，
+# 不能让看报表的人先搞清楚这是哪个平台才知道该看哪几行。
+# 指标带平台限定，同一时刻只有一个平台的指标在出数，加起来不会串账。
+- {id: n_receipt, name: 销售收入, level: 2,
+   formula: {op: add, of: [trade_receipt, trade_receipt_1688, trade_net_douyin]}}
+- {id: n_refund, name: 销售退款, level: 2, formula: {op: add, of: [trade_refund]}}
+- {id: n_expense, name: 平台综合支出, level: 2, formula: {op: add, of: [trade_expense_1688]}}
+- {id: n_software, name: 平台服务费, level: 2, formula: {op: add, of: [software_fee]}}
+- {id: n_logistics, name: 平台物流费, level: 2, formula: {op: add, of: [logistics_fee]}}
+- {id: n_compensation, name: 交易赔付, level: 2, formula: {op: add, of: [trade_compensation]}}
+- {id: n_marketing, name: 平台营销费用, level: 2, formula: {op: add, of: [marketing_fee]}}
+- {id: n_goods, name: 商品成本, level: 2, formula: {op: add, of: [goods_cost]}}
+- {id: n_dropship, name: 代发成本, level: 2, formula: {op: add, of: [dropship_cost]}}
+- {id: n_reshipment, name: 补发成本, level: 2, formula: {op: add, of: [reshipment_cost]}}
+- {id: n_freight, name: 发货运费, level: 2, formula: {op: add, of: [freight_cost]}}
+- {id: n_ad, name: 推广费用, level: 2, formula: {op: add, of: [ad_cost]}}
+- {id: n_small_payment, name: 客服打款, level: 2, formula: {op: add, of: [small_payment_cost]}}
+- {id: n_brushing, name: 本金佣金, level: 2, formula: {op: add, of: [brushing_cost]}}
+
+# ------------------------------------------------------------- level 1 --- #
+- id: g_revenue
+  name: 收入
+  level: 1
+  children: [n_receipt, n_refund]
+
+- id: g_platform
+  name: 平台费用
+  level: 1
+  children: [n_software, n_logistics, n_compensation, n_marketing, n_expense]
+  note: >
+    平台从货款里扣走的钱。这一组全是负数。
+    淘宝拆成四项，1688 不拆、全部落在「平台综合支出」——它自己的订单明细表就只有
+    「销售支出」一列。抖音一项都没有：它的动账金额本身就是扣完各项费用后的净额。
+
+- id: g_goods
+  name: 商品成本
+  level: 1
+  children: [n_goods, n_dropship, n_reshipment]
+
+- id: g_fulfillment
+  name: 履约成本
+  level: 1
+  children: [n_freight]
+
+- id: g_promotion
+  name: 营销投入
+  level: 1
+  children: [n_ad, n_small_payment, n_brushing]
+  note: 店铺自己花出去的钱，与平台扣的营销费用分开看。
+
+# --------------------------------------------------------------- 结果 --- #
+- id: gross_profit
+  name: 毛利
+  level: 1
+  is_total: true
+  formula: {op: add, of: [n_receipt, g_goods]}
+  note: >
+    照现行口径：销售收入减商品成本，不含销售退款。
+    三个平台这条公式一致，21,989 / 3,086 / 255 行逐行验证残差为 0。
+
+- id: net_profit
+  name: 利润
+  level: 1
+  is_total: true
+  formula: {op: add, of: [g_revenue, g_platform, g_goods, g_fulfillment, g_promotion]}
+
+- id: net_margin
+  name: 利润率
+  level: 1
+  display: percent
+  formula: {op: ratio, of: [net_profit, n_receipt]}

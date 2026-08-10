@@ -18,6 +18,11 @@ backend/test-objects/
 backups/
 artifacts/
 *.log
+
+# 探查阶段的中间产物，37M 且可再生。真正要长期保留的东西已经落在别处：
+# 各平台的字段陷阱和符号约定写进了 models/ 里的模板注释，
+# BI 逆向结论精简后放在 assets/pbix-reverse。
+analysis/
 *.duckdb
 *.db
 *.sqlite

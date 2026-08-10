@@ -1,0 +1,65 @@
+# 结账前的自检。
+#
+# 拦截线的作用不是显得严格，是保证「敢签字」这件事有依据。blocking 为真的项
+# 不通过就出不了数；为假的项只提示，因为它们不通过是业务常态而不是错误。
+
+- id: chk_goods_coverage
+  name: 订单拿到商品成本
+  kind: spine_coverage
+  metric: goods_cost
+  threshold: 0.98
+  blocking: true
+  message: >
+    有订单没有商品成本，毛利会偏高。多半是聚水潭那边订单还没同步，
+    或者「线上子订单编号」这一列的名字变了。
+
+- id: chk_receipt_coverage
+  name: 订单拿到销售收入
+  kind: spine_coverage
+  metric: trade_receipt
+  threshold: 0.95
+  blocking: true
+  message: 有订单在对账表里找不到收款记录，可能是账期未到，也可能是对账表没交全。
+
+- id: chk_settlement_link
+  name: 对账流水挂上订单
+  kind: link_rate
+  metric: trade_receipt
+  threshold: 0.90
+  blocking: false
+  message: >
+    有对账流水挂不上订单。取订单号的规则链有 7 条，逐条看命中情况就知道
+    是哪一环失效了——通常是平台改了备注格式。
+
+- id: chk_no_unclassified
+  name: 没有未归类科目
+  kind: no_unclassified
+  threshold: 0.995
+  blocking: true
+  message: >
+    有科目字典里没有的费用名目。平台新增费项是常事，认领一次以后就一直认得。
+
+- id: chk_sources_ready
+  name: 数据源到齐
+  kind: completeness
+  blocking: true
+  message: 标了必交的数据源还没交齐，结账会漏项。
+
+- id: chk_unlinked_disclosed
+  name: 未归属金额已呈现
+  kind: unlinked_disclosed
+  blocking: false
+  message: >
+    有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，
+    要在店铺利润之外单独列出来让人看见。
+
+- id: chk_logistics_sign
+  name: 平台物流费方向复核
+  kind: tie_out
+  left: {op: add, of: [logistics_fee]}
+  right: {op: constant, value: 0.0}
+  tolerance: 999999999.0
+  blocking: false
+  message: >
+    平台物流费在源数据里是正数（平台赔付给商家），但现行口径把它当费用扣减。
+    经济含义上说不通，需要业务确认是口径故意如此还是历史遗留。

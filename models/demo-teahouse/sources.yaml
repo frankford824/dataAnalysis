@@ -1,0 +1,27 @@
+# 数据源契约：需要哪些数据、归谁维护、缺了影响哪些指标。
+# 完整度机制完全靠这份声明，不需要另外维护责任人表。
+
+- id: teahouse_orders
+  name: 茶室点单流水
+  platform: teahouse
+  owner_role: shop_owner
+  cadence: daily
+  is_spine: true          # 脊柱：其他数据挂钩的目标
+  required_for_close: true
+  provides: [gross_sales, member_discount]
+
+- id: teahouse_leaf_cost
+  name: 茶叶用料成本
+  platform: teahouse
+  owner_role: warehouse
+  cadence: monthly
+  required_for_close: true
+  provides: [leaf_cost]
+
+- id: teahouse_rent
+  name: 场地月租
+  platform: teahouse
+  owner_role: finance
+  cadence: monthly
+  required_for_close: true
+  provides: [rent]

@@ -1,0 +1,31 @@
+# 校验规则：自检层在结账前执行的拦截条件，全部是模型数据。
+
+- id: completeness
+  name: 数据到齐
+  kind: completeness
+  blocking: true
+
+- id: leaf_cost_linked
+  name: 茶叶成本挂上点单
+  kind: link_rate
+  metric: leaf_cost
+  blocking: true
+
+# 命中率查不出"只传了一部分成本"。覆盖率专门查这个。
+- id: leaf_cost_covered
+  name: 每单都有茶叶成本
+  kind: spine_coverage
+  metric: leaf_cost
+  threshold: 0.99
+  blocking: true
+
+- id: subjects_known
+  name: 科目都认识
+  kind: no_unclassified
+  threshold: 0
+  blocking: true
+
+- id: unlinked_shown
+  name: 没进利润的钱已列出
+  kind: unlinked_disclosed
+  blocking: false

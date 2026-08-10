@@ -1,0 +1,38 @@
+# 指标定义：五元组（数据源、取值、关联键与层级、符号方向、责任来源）。
+# 加一个新指标不需要改代码，只需新增一条。
+
+- id: gross_sales
+  name: 茶饮销售额
+  source: teahouse_orders
+  value: {op: sum, of: [gross_amount]}
+  link: {key: order_id, to: order.order_id, grain: order, min_hit_rate: 1.0}
+  sign: as_is
+  time_basis: order_date
+
+- id: member_discount
+  name: 会员优惠
+  source: teahouse_orders
+  value: {op: sum, of: [discount_amount]}
+  link: {key: order_id, to: order.order_id, grain: order, min_hit_rate: 1.0}
+  # 优惠表里写的是正数，作为收入的减项需要声明取负。
+  sign: negate
+  time_basis: order_date
+
+- id: leaf_cost
+  name: 茶叶成本
+  source: teahouse_leaf_cost
+  # 用量 × 每克成本。对应 DAX 里的 SUMX(表, 列A * 列B)。
+  value: {op: sum_product, of: [quantity, unit_cost_price]}
+  link: {key: order_id, to: order.order_id, grain: order, min_hit_rate: 0.9}
+  sign: negate
+  time_basis: order_date
+
+- id: rent
+  name: 场地月租
+  source: teahouse_rent
+  value: {op: sum, of: [paid_amount]}
+  # 期间级：月租没有订单号，挂不上订单是正常的，不该占用用户注意力。
+  link: {key: store_name, grain: period}
+  sign: as_is
+  time_basis: settle_date
+  naturally_unlinked: true

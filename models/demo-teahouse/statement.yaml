@@ -1,0 +1,29 @@
+# 公式树：损益表的结构完全由模型定义，层数不限。
+# 这家虚构公司只有 3 项口径、2 层结构，和真实电商模型的 11 项 4 层完全不同。
+
+- id: net_sales
+  name: 茶饮净收入
+  level: 1
+  children: [gross_sales, member_discount]
+
+- id: material_cost
+  name: 用料成本
+  level: 1
+  children: [leaf_cost]
+
+- id: venue_cost
+  name: 场地成本
+  level: 1
+  children: [rent]
+
+- id: profit
+  name: 茶室利润
+  level: 1
+  is_total: true          # 数据不全就不出数，而不是显示一个偏低的数
+  formula: {op: add, of: [net_sales, material_cost, venue_cost]}
+
+- id: profit_rate
+  name: 利润率
+  level: 1
+  display: percent
+  formula: {op: ratio, of: [profit, net_sales]}

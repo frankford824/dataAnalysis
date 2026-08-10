@@ -1,0 +1,91 @@
+# 资产导入规则。历史资产是人手维护的表格，导进来之前要做一次归一。
+# 这份文件记录归一决策本身，导入器只是执行它——决策可追溯，不藏在代码里。
+
+# 运营链接.xlsx 里四张字典表的位置与列语义。
+dictionary_sheets:
+  - sheet: 阿里业务描述
+    platform: taobao
+    raw: 业务描述
+    # 阿里这张表额外给出千牛明细里的叫法。同一科目在资金流水里是
+    # `0030003|软件服务费-类目软件`，在千牛明细里是 `类目软件服务费`，
+    # 两个都要能查到同一归类。
+    alias: 千牛明细
+    minor: 业务小类
+    major: 业务大类
+
+  - sheet: PDD业务描述
+    platform: pdd
+    raw: 业务描述
+    minor: 业务小类
+    major: 业务大类
+    # 备注列写 `无订单号` 的科目天然挂不上订单，这类挂不上不是异常。
+    unlinked_flag: 备注
+    unlinked_values: [无订单号]
+
+  - sheet: 抖店业务描述
+    platform: douyin
+    raw: 业务描述
+    minor: 业务小类     # 这张表业务小类整列为空，导入时回退到业务描述
+    major: 业务大类
+
+  - sheet: 京东1688
+    platform: jd_1688
+    raw: 业务描述
+    minor: 业务小类
+    major: 业务大类
+    # 店铺列区分这条是京东的还是 1688 的。
+    scope: 店铺
+
+# 业务大类归一。七套口径统一为一套靠的就是这张表。
+#
+# 左边是历史表格里的原始写法，右边是统一后的口径项。京东那套只是把
+# "软件服务费"叫成"平台技术服务费"，归一下名字即可，不需要用户做任何配置。
+major_canonical:
+  交易收款: trade_receipt
+  交易退款: trade_refund
+  交易赔付: trade_compensation
+  软件服务费: software_fee
+  平台技术服务费: software_fee      # 京东的叫法
+  营销费用: marketing_fee
+  代购代发: dropship_cost
+  # 实测淘宝对账表里「物流运费」是独立费项（集运货值赔付走这一档），
+  # 之前的归一映射漏了它，模型校验器在指标引用时把这个缺口顶了出来。
+  物流运费: logistics_fee
+  物流服务费: logistics_fee
+
+  # 以下几项不进利润，但绝不静默丢弃——它们进"没进利润的钱"那一块。
+  提现: withdrawal
+  保证金: deposit
+  万相台: ad_topup               # 广告充值，不是广告花费本身。广告花费来自广告报表，
+                                 # 两边都算会重复计算，这是现有 BI 的既有错误之一。
+  消费付款: misc_payment
+  交易付款-服务消费: misc_payment
+  交易退回-服务消费退款: misc_payment
+
+  # 原始名泄漏进大类列的数据录入痕迹。京东那张表里 `9490退款` 既是科目名
+  # 也被填进了大类列，按语义归到交易退款。
+  9490退款: trade_refund
+
+# 归一后不进利润的口径项。这些科目挂不上订单是正常的。
+non_profit_majors: [withdrawal, deposit, ad_topup, misc_payment]
+
+# 口径项的中文显示名。
+major_labels:
+  trade_receipt: 交易收款
+  trade_refund: 交易退款
+  trade_compensation: 交易赔付
+  software_fee: 软件服务费
+  marketing_fee: 营销费用
+  dropship_cost: 代购代发
+  logistics_fee: 物流运费
+  withdrawal: 提现
+  deposit: 保证金
+  ad_topup: 广告充值
+  misc_payment: 往来款
+
+# 运营归属：`运营链接.xlsx` 里按月宽表（2411姓名 到 2612姓名），
+# 转成 (商品编码, 年月, 负责人) 长表。
+responsibility_sheets: [商品ID, "24-25"]
+responsibility_key: 宝贝编码
+responsibility_store: 修改
+responsibility_column_pattern: '^(\d{4})姓名$'

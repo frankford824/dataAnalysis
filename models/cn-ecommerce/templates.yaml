@@ -1,0 +1,476 @@
+# 模板：把某一种表头长相绑定到字段角色上。
+#
+# 全部照实测的表头写，列名一个字都不能改——实测过一次别人把「线上子订单编号」
+# 写成「线上子订单号」，少一个「编」字，结果订单级成本覆盖率直接掉到 0。
+#
+# 这批文件的表头在第 2 行，第 1 行是人手写的公式说明，所以 header_row 都是 1。
+
+# ======================================================================== #
+# 脊柱
+# ======================================================================== #
+- id: taobao_order_detail_v1
+  source: order_detail
+  name: 淘宝订单明细（千牛宝贝明细）
+  match_columns: [子订单编号, 主订单编号, 买家实付金额, 退款金额, 商品ID, 物流单号]
+  parse: {header_row: 1}
+  total_row_marker: sub_order_id
+  time_slots: {order_date: order_time, pay_date: pay_time}
+  bindings:
+    - {role: sub_order_id, columns: [子订单编号]}
+    - {role: order_id, columns: [主订单编号]}
+    - {role: buyer_paid, columns: [买家实付金额]}
+    - {role: refund_amount, columns: [退款金额]}
+    - {role: refund_status, columns: [退款状态], required: false}
+    - {role: order_time, columns: [订单创建时间]}
+    - {role: pay_time, columns: [订单付款时间], required: false}
+    - {role: product_id, columns: [商品ID]}
+    - {role: tracking_no, columns: [物流单号], required: false}
+    # 收入分配率是他们表里算好的一列。引擎自己也能算（子订单收入/主订单收入），
+    # 这里先读现成的，好处是能逐行对齐验证分摊逻辑有没有做对。
+    - {role: alloc_ratio, columns: [收入分配率], required: false}
+  note: >
+    一行一个子订单，子订单编号行级唯一。一个主订单可能有多个子订单，
+    所以主订单级的钱（对账、运费、代发、补发）必须分摊，不能直接挂。
+
+- id: douyin_order_detail_v1
+  source: order_detail
+  name: 抖音订单明细（订单管理导出）
+  match_columns: [主订单编号, 子订单编号, 商品ID, 选购商品, 订单应付金额]
+  parse: {header_row: 1}
+  total_row_marker: sub_order_id
+  time_slots: {order_date: order_time}
+  bindings:
+    - {role: sub_order_id, columns: [子订单编号]}
+    - {role: order_id, columns: [主订单编号]}
+    - {role: order_time, columns: [订单提交时间]}
+    - {role: product_id, columns: [商品ID]}
+    - {role: buyer_paid, columns: [订单应付金额]}
+    - {role: quantity, columns: [商品数量], required: false}
+    - {role: tracking_no, columns: [快递单号], required: false}
+  note: >
+    抖店的对账表本身就是子订单级，所以抖音这条链路不需要收入分配率——
+    这也解释了分配率为什么存在：它是淘宝对账表只到主订单级才需要的补丁。
+
+- id: alibaba1688_order_detail_v1
+  source: order_detail
+  name: 1688 订单明细（已卖出货品导出）
+  match_columns: [订单号, 买家公司名称, 货品总价, 实付款（元）, 运单号]
+  parse: {header_row: 1}
+  total_row_marker: order_id
+  time_slots: {order_date: order_time, pay_date: pay_time}
+  bindings:
+    # 表里有两列都叫「订单号」：第 1 列是平台导出的，一个订单占若干行、订单号是
+    # 合并单元格；第 2 列是人工把它展开填充后贴过来的副本，表头里写着
+    # 「注：商品订单号和结算价把合并单元格展开并填充」。
+    # 取第 1 列——引擎读 xlsx 时已经按合并区域把值还原到每一行了，不需要那份副本。
+    - {role: order_id, columns: [订单号], occurrence: 0}
+    - {role: order_time, columns: [订单创建时间]}
+    - {role: pay_time, columns: [订单付款时间], required: false}
+    - {role: buyer_paid, columns: [实付款（元）]}
+    - {role: quantity, columns: [数量], required: false}
+    - {role: sku, columns: [货号], required: false}
+    - {role: product_id, columns: [Offer_ID], required: false}
+    - {role: tracking_no, columns: [运单号], required: false}
+  note: >
+    1688 没有主子订单结构，订单号一列出现两次（合并单元格展开留下的），
+    取第一次出现。同一个订单号会有多行（多个货品），所以订单级的钱要按行数均分。
+
+# ======================================================================== #
+# 对账：两个资金渠道，两条规则链
+# ======================================================================== #
+- id: taobao_settlement_alipay_v1
+  source: settlement
+  name: 淘宝对账-支付宝账务明细
+  match_columns: [账务流水号, 业务流水号, 业务描述, 业务基础订单号, 商户订单号]
+  parse: {header_row: 1}
+  sign: as_is
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: txn_id, columns: [账务流水号]}
+    - {role: subject, columns: [业务描述]}
+    - {role: income, columns: ["收入金额（+元）"]}
+    - {role: outgo, columns: ["支出金额（-元）"]}
+    - {role: base_order_id, columns: [业务基础订单号], required: false}
+    - {role: merchant_order_id, columns: [商户订单号], required: false}
+    - {role: remark, columns: [备注], required: false}
+    - {role: biz_type, columns: [业务类型], required: false}
+    - {role: settle_time, columns: [发生时间]}
+  # 取订单号的 7 条规则，照他们表里写的条件 1-7 逐条落下来。
+  key_rules:
+    - when:
+        field: remark
+        contains:
+          - 余利宝-基金申购
+          - 支付宝转入
+          - 万相台无界版自动充值
+          - 超过消费券封顶金额的平台出资合作费用
+          - 保险理赔-本地退赔款
+          - 转出到网商银行
+          - 太保产险苏州本地退赔款
+      exclude: true
+      note: >
+        这些不是经营流水，显式排除而不是让它挂不上订单混在异常里。
+        必须排在链条最前面：排在后面的话，前面那条「括号里的数字」规则会先给它们
+        抓个订单号出来，排除就永远轮不到。实测消费券封顶那 25 行就是这么混进
+        软件服务费的，多算 3,998.27 元。
+    - when: {field: base_order_id}
+      note: 业务基础订单号有值就用它
+    - when: {field: merchant_order_id, extract: 'T\d{3}P(\d{10,25})'}
+      note: 商户订单号形如 T200P****** 时取后半段
+    - when: {field: remark, extract: '订单号[：:]\s*(\d{10,25})'}
+      note: 备注里「交易单号：***，订单号：***」取订单号
+    - when: {field: remark, extract: '订单编号[：:]\s*(\d{10,25})'}
+      note: 备注里「订单编号：***」
+    - when: {field: remark, extract: '关联订单号[：:]\s*(\d{10,25})'}
+      note: 支付宝转账小额打款写的是「关联订单号：***」
+    - when: {field: remark, extract: '交易单号[：:]\s*(\d{10,25})'}
+      note: >
+        集运费的备注是「代扣款（扣款用途：商家集运物流服务费，运单号：***，
+        交易单号：***，付款方：***）」，订单号藏在「交易单号」这个说法下面。
+        规则链原先只认「订单号」「订单编号」，4,398 行集运费全挂不上订单。
+        它必须排在运单号回查前面：这些行运单号和交易单号都有，
+        直接取交易单号一步到位，回查聚水潭那条只有九成五挂不上。
+    - when: {field: remark, extract: '[{(（]\s*(\d{15,25})\s*[})）]'}
+      note: 备注里用括号或花括号括起来的订单号
+    - when: {field: remark, extract: '运单号[：:]\s*([A-Za-z0-9]{6,30})'}
+      via: {source: order_cost, match: tracking_no, take: original_order_id}
+      note: 只给运单号不给交易单号的行，去聚水潭回查原始线上订单号
+  # 归类规则链。第一条命中的生效。
+  #
+  # 对齐的是对账表里的「费项2」列，不是「费项」列。这两列是同一张表上的两套归类，
+  # 而且互相打架：11,407 行费项说「服务费」费项2说「营销费用」，
+  # 4,442 行费项说「营销支出」费项2说「软件服务费」，
+  # 4,370 行集运费费项说「物流运费」费项2说「软件服务费」。
+  #
+  # 为什么跟旧的那套：损益表的 SUMIFS 公式引用的是「对账表内软件服务费」「交易收款」
+  # 「交易赔付」这些名字，全是费项2 的取值——费项那一列里对应的叫「服务费」「销售收入」。
+  # 也就是说公司现在出的账走的是费项2。引擎要能对上现有账，就得先复现它。
+  #
+  # 但费项那一套在业务上更站得住：「营销支出-消费券代付资金扣回」平台自己写明是营销支出、
+  # 「商家集运物流服务费」是物流费被「服务费」三个字带偏。看着像是有人已经发现并订正了，
+  # 只是损益表公式还指着旧列。两套口径差 20,219 行、约 39,574 元，
+  # 归到哪个大类会变，毛利不变。这件事记在自检里让人决定，不由引擎替业务改口径。
+  classify_rules:
+    # 保证金划转排在字典前面。这些行的业务描述（保证金-天猫-出账缴存之类）在字典里
+    # 能查到归类，字典一命中就轮不到排除规则了。
+    - when: {field: remark, contains: [天猫保证金-解冻]}
+      exclude: true
+      note: 保证金解冻是资产负债项不是损益。原先写的关键词是「保证金解冻」，
+            实际备注是「天猫保证金-解冻-null」，中间有横杠，255 行一直没排掉。
+    - when: {field: remark, equals: ["天猫保证金-充值（代扣）"]}
+      exclude: true
+      note: >
+        必须精确等值，不能用包含。同样是「天猫保证金-充值（代扣）」，
+        后面不带事由的是纯划转要排除（107 行），带「-延迟发货」「-物流轨迹超时」
+        这类事由的是平台扣的罚款要计费用（28 行）。用包含会把罚款一起排掉。
+    - dictionary: true
+      note: 查科目字典（业务描述 → 口径项）
+    - when:
+        field: remark
+        contains: [先用后付技术服务费, 消费者体验提升计划服财务费, 消费者体验提升计划服务费,
+                   淘宝天猫跨境服务增值费, 超过消费券封顶金额的平台出资合作费用]
+      major: software_fee
+      note: >
+        注意「服财务费」这个写法：支付宝导出的业务描述里「服务费」被污染成
+        「服财务费」，微信同一科目拼写正常。两种写法都要认。
+    - when:
+        field: remark
+        contains: [品牌新享新品孵化软件服务费, 品牌新享-首单拉新计划, 限时红包代商家垫付扣回]
+      major: marketing_fee
+      note: 费项2 归营销费用。费项那一列归服务费，见上面的口径分歧说明。
+    - when: {field: remark, contains: [商家集运中转操作费, 商家集运物流服务费]}
+      major: software_fee
+      note: 费项2 归软件服务费。费项那一列归物流运费，业务上后者更合理。
+    - when: {field: remark, contains: [万相台无界版自动充值]}
+      major: ad_topup
+      note: 万相台充值是预付，不是当期费用
+    - when: {field: remark, contains: [商家集运物流责任货值赔付]}
+      major: logistics_fee
+    - when: {field: remark, contains: [基金代发任务, 保险理赔-本地退赔款, 太保产险苏州本地退赔款]}
+      major: trade_compensation
+    - when: {field: remark, contains: [保证金解冻, 天猫保证金-充值（代扣）]}
+      exclude: true
+      note: 保证金进出不是损益
+    # 业务描述为空的行靠业务类型兜底。实测支付宝有 28,615 行业务描述为空，
+    # 其中「交易分账」11,462 行是营销费用的主要来源，只查字典会整块丢掉。
+    - when: {field: biz_type, equals: [交易分账]}
+      major: marketing_fee
+      note: 业务描述为空的交易分账，按营销费用处理
+
+- id: taobao_settlement_wechat_v1
+  source: settlement
+  name: 淘宝对账-微信账单
+  match_columns: [商家昵称, 支付流水号, 主订单id, 子订单id, 入帐类型]
+  parse: {header_row: 1}
+  sign: as_is
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: txn_id, columns: [支付流水号]}
+    - {role: subject, columns: [业务描述], required: false}
+    - {role: income, columns: ["收入金额(元)"]}
+    # 列名把符号约定写在括号里了：支付宝叫「支出金额（-元）」带减号、值是负数，
+    # 微信叫「支出金额(元)」不带减号、值是正数。不取反的话支出会被当成收入加进去，
+    # 实测营销费用、销售退款、物流运费三项全部符号翻转。
+    - {role: outgo, columns: ["支出金额(元)"], negate: true}
+    - {role: base_order_id, columns: [主订单id], required: false}
+    - {role: sub_order_id, columns: [子订单id], required: false}
+    - {role: remark, columns: [备注], required: false}
+    - {role: biz_type, columns: [入帐类型], required: false}
+    - {role: store_name, columns: [商家昵称], required: false}
+    - {role: settle_time, columns: [入帐时间, 发生时间]}
+  key_rules:
+    - when: {field: base_order_id}
+      note: 微信账单直接给主订单id
+    - when: {field: remark, extract: '[{(（]\s*(\d{15,25})\s*[})）]'}
+      note: 备注里「订单{***}打款」或「基础软件服务费(***)扣款」
+  classify_rules:
+    - when: {field: remark, contains: [基础软件服务费, 淘宝天猫跨境服务增值费, 消费券代付资金扣回]}
+      major: software_fee
+    - when: {field: remark, extract: '^订单.*打款$'}
+      major: trade_receipt
+    - when:
+        field: remark
+        contains: [品牌新享-首单拉新计划, 品牌新享新品孵化软件服务费, 限时红包代商家垫付扣回]
+      major: marketing_fee
+    - when: {field: remark, extract: '^订单.*退款$'}
+      major: trade_refund
+    - dictionary: true
+      note: 前面四条都没命中再查字典
+    - when: {field: biz_type, equals: [交易收款]}
+      major: trade_receipt
+      note: 实测 3,642 行业务描述和备注都为空，只能靠入帐类型
+    - when: {field: biz_type, equals: [交易退款(售后)]}
+      major: trade_refund
+    - when: {field: biz_type, equals: [扣款, 扣款退回]}
+      major: marketing_fee
+    - when: {field: biz_type, equals: [提现]}
+      exclude: true
+      note: 提现是资金搬运，不是损益
+
+# ======================================================================== #
+# 成本各源
+# ======================================================================== #
+- id: jushuitan_cost_v1
+  source: order_cost
+  name: 聚水潭订单成本
+  match_columns: [内部订单号, 线上订单号, 线上子订单编号, 原始线上订单号, 成本价, 总成本]
+  parse: {header_row: 1}
+  time_slots: {order_date: order_time}
+  bindings:
+    - {role: internal_order_id, columns: [内部订单号]}
+    - {role: order_id, columns: [线上订单号]}
+    - {role: sub_order_id, columns: [线上子订单编号]}
+    - {role: original_order_id, columns: [原始线上订单号]}
+    - {role: tracking_no, columns: [快递单号], required: false}
+    - {role: order_type, columns: [订单类型], required: false}
+    - {role: store_name, columns: [店铺名称], required: false}
+    - {role: sku, columns: [商品编码]}
+    - {role: quantity, columns: [数量]}
+    - {role: unit_cost, columns: [成本价]}
+    - {role: total_cost, columns: [总成本]}
+    - {role: order_time, columns: [下单时间]}
+  note: 列名必须是「线上子订单编号」，写成「线上子订单号」会让覆盖率归零。
+
+- id: promotion_taobao_v1
+  source: promotion
+  name: 淘宝推广商品报表
+  match_columns: [日期, 主体ID, 主体类型, 花费, 展现量, 点击量]
+  parse: {header_row: 1}
+  time_slots: {spend_date: spend_time}
+  bindings:
+    - {role: product_id, columns: [主体ID]}
+    - {role: subject_type, columns: [主体类型], required: false}
+    - {role: product_name, columns: [主体名称], required: false}
+    - {role: spend, columns: [花费]}
+    - {role: spend_time, columns: [日期]}
+  note: 商品级，没有订单号。按商品ID 均分到该商品的订单行。
+
+- id: promotion_douyin_v1
+  source: promotion
+  name: 抖音推广报表
+  match_columns: [商品ID, 整体消耗]
+  parse: {header_row: 1}
+  bindings:
+    - {role: product_id, columns: [商品ID]}
+    - {role: spend, columns: [整体消耗]}
+    - {role: spend_time, columns: [日期], required: false}
+  time_slots: {spend_date: spend_time}
+
+- id: brushing_v1
+  source: brushing
+  name: 刷单本金佣金
+  match_columns: [下单日期, 店铺, 订单号, 本金, 佣金, 总金额]
+  parse: {header_row: 1}
+  time_slots: {order_date: order_time}
+  bindings:
+    - {role: order_id, columns: [订单号]}
+    - {role: store_name, columns: [店铺]}
+    - {role: principal, columns: [本金]}
+    - {role: commission, columns: [佣金]}
+    - {role: platform_fee, columns: [平台费], required: false}
+    - {role: total_cost, columns: [总金额]}
+    - {role: order_time, columns: [下单日期]}
+  note: 全公司一张表，必须按店铺筛，否则会把别的店的刷单算进来。
+
+- id: dropship_v1
+  source: dropship
+  name: 代发采购成本
+  match_columns: [下单日期, 店铺, 订单号, 订单金额, 代购成本]
+  parse: {header_row: 1}
+  time_slots: {order_date: order_time}
+  bindings:
+    - {role: order_id, columns: [订单号]}
+    - {role: store_name, columns: [店铺]}
+    - {role: total_cost, columns: [代购成本]}
+    - {role: order_time, columns: [下单日期]}
+    - {role: owner, columns: [负责人], required: false}
+
+- id: reshipment_v1
+  source: reshipment
+  name: 补发订单成本
+  match_columns: [内部订单号, 原始线上订单号, 订单类型, 成本价, 商品编码]
+  parse: {header_row: 1}
+  time_slots: {order_date: order_time}
+  bindings:
+    - {role: original_order_id, columns: [原始线上订单号]}
+    - {role: sub_order_id, columns: [线上子订单编号], required: false}
+    - {role: sku, columns: [商品编码]}
+    - {role: quantity, columns: [数量]}
+    - {role: unit_cost, columns: [成本价]}
+    - {role: order_time, columns: [下单时间]}
+    - {role: store_name, columns: [店铺名称], required: false}
+  note: >
+    这张表是聚水潭成本表按「订单类型=补发订单」筛出来粘贴的副本，结构完全相同，
+    没有任何一列能把两者区分开——原先靠「没有总成本列」来区分是错的，它有这一列，
+    这条排除规则反而把正确模板自己踢掉了，导致补发成本长期算成 0。
+
+    现在靠数据源上的文件名线索（补发）路由。认出来只是为了不报「无法识别」，
+    没有任何口径消费这个来源：补发成本从聚水潭表按订单类型直接拆，
+    见 metrics.yaml 的 reshipment_cost。摄了这张表也不会重复计算。
+
+- id: freight_v1
+  source: freight
+  name: 运费结算
+  # 只认三个店都有的列。物料结算名称只有淘宝那份叫这个名字，
+  # 1688 和抖音叫「账单结算对象名称」，写进必需列会让那两份认不出来。
+  match_columns: [扫描时间, 运单号码, 总金额]
+  parse: {header_row: 1}
+  time_slots: {ship_date: scan_time}
+  bindings:
+    - {role: tracking_no, columns: [运单号码]}
+    # 同一个东西的两种叫法：都是承运方结算主体。
+    - {role: material_name, columns: [物料结算名称, 账单结算对象名称], required: false}
+    - {role: total_cost, columns: [总金额]}
+    - {role: scan_time, columns: [扫描时间]}
+    # 只有抖音那份运费表带这一列，淘宝和 1688 那两份没有。
+    - {role: sub_order_id, columns: [子订单], required: false}
+  key_rules:
+    - when: {field: sub_order_id}
+      note: >
+        运费表自带子订单号时直接用，不必回查。只有抖音那份有这一列，
+        而抖音的口径正是按它匹配：发货运费=sumifs(运费表总金额, 运费表子订单, 子订单编号)。
+        必须排在回查前面：回查拿到的是主订单号，用它去匹配子订单会挂错。
+    - when: {field: tracking_no}
+      via: {source: order_detail, match: tracking_no, take: order_id}
+      note: 没有子订单号就拿运单号去订单明细查物流单号，得到主订单编号
+    - when: {field: tracking_no}
+      via: {source: order_cost, match: tracking_no, take: original_order_id}
+      note: 查不到再去聚水潭查快递单号，得到原始线上订单号
+  note: >
+    实测这张表 29.9 万行里九成五两级都回查不到，因为它是全公司所有店铺的运单
+    混在一起，单店只能认领属于自己的那部分。回查不到的不是错误，但要计量。
+
+- id: small_payment_v1
+  source: small_payment
+  name: 小额打款
+  match_columns: [网店名称, 收款人姓名, 付款金额, 报销人, 摘要, 订单号]
+  parse: {header_row: 1}
+  time_slots: {order_date: order_time}
+  bindings:
+    - {role: serial_no, columns: [序号]}
+    - {role: order_id, columns: [订单号]}
+    - {role: store_name, columns: [网店名称]}
+    - {role: total_cost, columns: [付款金额]}
+    - {role: remark, columns: [摘要], required: false}
+    - {role: order_time, columns: [下单日期]}
+    - {role: owner, columns: [报销人], required: false}
+  note: 全公司一张表，跨越多年多店，必须按网店名称筛。
+
+# --------------------------------------------------------------------------- #
+# 1688 与抖音的对账表。三家店的对账表结构完全不同，各建各的模板。
+# --------------------------------------------------------------------------- #
+
+- id: alibaba1688_settlement_in_v1
+  source: settlement
+  name: 1688 收款明细
+  match_columns: [账单编号, 应收金额(元), 已收金额(元), 账单类型, 场景类型, 关联订单号]
+  parse: {header_row: 1}
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: txn_id, columns: [账单编号]}
+    - {role: base_order_id, columns: [关联订单号], occurrence: 0}
+    - {role: income, columns: ["已收金额(元)"]}
+    - {role: subject, columns: [场景类型]}
+    - {role: minor_subject, columns: [场景明细], required: false}
+    - {role: biz_type, columns: [账单类型], required: false}
+    - {role: bill_status, columns: [账单状态], required: false}
+    - {role: settle_time, columns: [账单创建时间]}
+  classify_rules:
+    # 订单收入和订单售后退款都归销售收入。退款行的已收金额本身是负数，
+    # 落在同一个科目上就是净额，正是 1688 现行口径里「销售收入」那一列的含义。
+    - when: {field: subject, contains: [订单收入, 订单售后退款]}
+      major: trade_receipt_1688
+  note: >
+    收款侧只有一个金额列「已收金额(元)」，正数是收进来的钱。
+    场景类型只有两个取值：订单收入 2,290 行、订单售后退款 14 行，退款是负数。
+    右边第 17、18 列是人工加的关联订单号和求和项，不参与解析。
+
+- id: alibaba1688_settlement_out_v1
+  source: settlement
+  name: 1688 付款明细
+  match_columns: [账单编号, 应付金额(元), 已付金额(元), 账单类型, 场景类型, 关联订单号]
+  parse: {header_row: 1}
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: txn_id, columns: [账单编号]}
+    - {role: base_order_id, columns: [关联订单号]}
+    # 已付金额是正数（2,729 行正、3 行负），和微信支出列同一个坑：
+    # 平台把「付出去多少」写成正数，不取反就会被当成收入。
+    - {role: outgo, columns: ["已付金额(元)"], negate: true}
+    - {role: subject, columns: [场景明细]}
+    - {role: biz_type, columns: [账单类型], required: false}
+    - {role: settle_time, columns: [账单创建时间]}
+  classify_rules:
+    - when: {field: subject, notnull: true}
+      major: trade_expense_1688
+  note: >
+    付款侧全部归一条「销售支出」，不拆费项——1688 那张订单明细表的公式就是这么写的：
+    销售支出=sumifs(对账表已付金额,关联订单号,订单号)/countifs(订单号)。
+    场景明细有服务费、技术服务费缴纳、大分销抽佣、跨境供应链服务、仅退款补贴几种，
+    合计只有 667.50 元，拆开对利润没有意义，保持和人工口径一致。
+
+- id: douyin_settlement_v1
+  source: settlement
+  name: 抖音对账单
+  match_columns: [动账时间, 动帐流水号, 动账方向, 动账金额, 动账场景, 子订单号]
+  parse: {header_row: 1}
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: txn_id, columns: [动帐流水号]}
+    - {role: sub_order_id, columns: [子订单号], occurrence: 0}
+    - {role: base_order_id, columns: [订单号], required: false}
+    # 动账金额自带符号：入账 379 行为正、出账 1,403 行为负，不需要取反。
+    - {role: income, columns: [动账金额]}
+    - {role: subject, columns: [动账场景]}
+    - {role: direction, columns: [动账方向], required: false}
+    - {role: charge_type, columns: [计费类型], required: false}
+    - {role: settle_time, columns: [动账时间]}
+    - {role: store_name, columns: [商户主体名称], required: false}
+  classify_rules:
+    - when: {field: subject, notnull: true}
+      major: trade_net_douyin
+  note: >
+    抖音不拆费项：订单明细表的公式是 销售收入=sumifs(对账表动账金额,子订单号,子订单编号)，
+    一条净额直接挂子订单，不分摊。货款直投千川那 1,399 行出账是把货款直接投了广告，
+    已经含在净额里，再单独算一遍推广费就重复了。
+    右边第 42、43 列是人工加的子订单号和求和项，不参与解析。

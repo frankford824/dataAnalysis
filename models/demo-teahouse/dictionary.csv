@@ -1,0 +1,4 @@
+platform,raw,minor,major,naturally_unlinked
+teahouse,场地租金,房租,场地成本,1
+teahouse,物业费,物业,场地成本,1
+teahouse,水电,水电,场地成本,1

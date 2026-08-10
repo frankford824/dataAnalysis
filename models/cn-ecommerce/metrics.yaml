@@ -1,0 +1,261 @@
+# 指标：一笔钱从哪张表来、怎么取值、挂到哪个订单、怎么分摊、算不算收入。
+#
+# 全部照实测口径写。三个平台原来各有一套算法（淘宝 13 项、1688 9 项、抖音 8 项），
+# 这里统一成一套 13 项，平台差异靠"某项没有数据源"体现，而不是靠不同的公式。
+#
+# 符号约定：所有指标产出的金额都是「对利润的贡献」，负数就是减利润。
+# 这样利润就是全部指标相加，不需要在损益表里再记哪一项该加哪一项该减。
+# 这一点是从数据里反解出来的：同一张淘宝订单明细表里，退款/服务费/赔付/营销费用
+# 存的是负数要加，物流运费存的是正数要减，两种约定并存。符号只能绑模板，不能猜。
+
+# ---------------------------------------------------------------- 收入 --- #
+- id: trade_receipt
+  name: 销售收入
+  source: settlement
+  platform: taobao
+  major: trade_receipt
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: ratio, by: alloc_ratio}
+  note: >
+    对账表是主订单级，脊柱是子订单级，所以按收入分配率拆到子订单。
+    取值是收入+支出而不是单取收入，因为同一笔业务可能两栏都有数。
+
+- id: trade_refund
+  name: 销售退款
+  source: settlement
+  platform: taobao
+  major: trade_refund
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: ratio, by: alloc_ratio}
+  note: 源数据本身是负数，直接用，不取反。
+
+# ------------------------------------------------------------ 平台费用 --- #
+- id: software_fee
+  name: 平台服务费
+  source: settlement
+  platform: taobao
+  major: software_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: ratio, by: alloc_ratio}
+  note: 含类目软件服务费（原天猫佣金）、基础软件服务费、跨境服务增值费等。源数据为负。
+
+- id: logistics_fee
+  name: 平台物流费
+  source: settlement
+  platform: taobao
+  major: logistics_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: negate
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: ratio, by: alloc_ratio}
+  note: >
+    这一项要留意：源数据是正数（平台赔给商家的集运货值），但人工表的利润公式里
+    是减号。照口径复现为取反，同时挂了一条校验提醒复核——正数收入被当成费用扣，
+    经济含义上说不通，需要业务确认。
+
+- id: trade_compensation
+  name: 交易赔付
+  source: settlement
+  platform: taobao
+  major: trade_compensation
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: ratio, by: alloc_ratio}
+
+- id: marketing_fee
+  name: 平台营销费用
+  source: settlement
+  platform: taobao
+  major: marketing_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: ratio, by: alloc_ratio}
+  note: >
+    主要来自业务描述为空的「交易分账」行，实测 11,462 行。
+    只按业务描述查字典会把这一整块丢掉，必须靠归类规则链的业务类型兜底。
+
+# ------------------------------------------------------------ 商品成本 --- #
+- id: goods_cost
+  name: 商品成本
+  source: order_cost
+  value: {op: sum, of: [total_cost]}
+  where:
+    - {field: order_type, op: not_in, value: [补发订单]}
+  sign: negate
+  time_basis: order_date
+  link: {key: sub_order_id, to: order.sub_order_id, grain: order}
+  note: >
+    子订单级直接挂，不分摊。聚水潭的线上子订单编号与脊柱的子订单编号一一对应。
+    必须排除补发订单：它们在同一张表里，由补发成本单独归集，两边都算会重复记账。
+
+  by_platform:
+    - platform: alibaba1688
+      # 1688 的聚水潭表挂的是主订单号，不是子订单号，而且公式里除了 countifs：
+      #   聚水潭成本=sumifs(聚水潭总成本, 原始线上订单号, 订单号)/countifs(订单明细订单号, 订单号)
+      link: {key: original_order_id, to: order.order_id, grain: order}
+      allocate: {mode: even}
+      # 不排除补发订单：1688 的订单明细表在补发成本那一列写着「无需计算，已包含在
+      # 聚水潭成本里」，也就是它的商品成本口径本来就含补发。淘宝把补发单独列一行，
+      # 所以缺省要排除，否则两边都算会重复。这个店的 132 行补发订单成本 501.59 元，
+      # 沿用淘宝的排除就会全部漏掉。
+      where: []
+
+- id: dropship_cost
+  name: 代发成本
+  source: dropship
+  value: {op: sum, of: [total_cost]}
+  sign: negate
+  time_basis: order_date
+  link: {key: order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: 主订单级，按该主订单下的子订单数均分。实测与人工表逐行完全一致。
+
+  by_platform:
+    # 抖音按主订单号均分到子订单，和淘宝一样；1688 除以 countifs(订单号)，
+    # 也是同一个语义。三家其实一致，列在这里是为了让「都一样」这件事也有据可查。
+    - {platform: alibaba1688, allocate: {mode: even}}
+
+- id: reshipment_cost
+  name: 补发成本
+  source: order_cost
+  value: {op: sum, of: [total_cost]}
+  where:
+    - {field: order_type, op: in, value: [补发订单]}
+  sign: negate
+  time_basis: order_date
+  link: {key: original_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: >
+    补发成本不来自单独的补发表，而是从聚水潭成本表按订单类型拆出来的。
+    人工流程是「在聚水潭表里筛出补发订单粘贴成另一张表」，那张表是副本不是新数据：
+    实测淘宝店 708 行补发订单在两张表里逐行相同，各摄各的就会重复记 4,071.43 元。
+    从同一份来源按订单类型拆，重复计算在结构上就不可能发生，店长也少传一张表。
+
+    分摊方式：人工表说明写的是「不分摊」，但数据反解出来是按子订单数均分——
+    不分摊会多算 1,904.87 元，均分能逐行对上。以数据为准。
+
+# ------------------------------------------------------------ 履约成本 --- #
+  by_platform:
+    # 1688 的订单明细表在补发成本那一列写着「无需计算，已包含在聚水潭成本里」。
+    # 它的聚水潭成本没有按订单类型排除补发，所以这里再算一遍就是重复。
+    - {platform: alibaba1688, disabled: true}
+
+- id: freight_cost
+  name: 发货运费
+  source: freight
+  value: {op: sum, of: [total_cost]}
+  sign: negate
+  time_basis: ship_date
+  link: {to: order.order_id, key: tracking_no, grain: order, min_hit_rate: 0.0}
+  allocate: {mode: ratio, by: alloc_ratio}
+  note: >
+    订单号靠运单号两级回查得到，见模板里的取键规则链。
+    命中率门槛设为 0：这张表是全公司所有店铺的运单，单店只能认领一部分，
+    挂不上的绝大多数属于别的店铺，不是数据质量问题。
+
+# ------------------------------------------------------------ 营销投入 --- #
+  by_platform:
+    # 1688: 发货运费=sumifs(运费表总金额, 运单号)/countifs(订单明细运单号) → 组内均分
+    - {platform: alibaba1688, allocate: {mode: even}}
+    # 抖音: 发货运费=sumifs(运费表总金额, 运费表子订单, 子订单编号)，按子订单直接挂、不摊
+    - platform: douyin
+      link: {key: sub_order_id, to: order.sub_order_id, grain: order, min_hit_rate: 0.0}
+      direct: true
+
+- id: ad_cost
+  name: 推广费用
+  source: promotion
+  value: {op: sum, of: [spend]}
+  sign: negate
+  time_basis: spend_date
+  link: {key: product_id, to: order.product_id, grain: product}
+  allocate: {mode: even}
+  note: 商品级，按该商品的订单行数均分。实测与人工表逐行完全一致。
+
+  by_platform:
+    # 1688 那张订单明细表的推广费用列写着「无公式，数值全补成 0」——这个店没有投放数据。
+    - {platform: alibaba1688, disabled: true}
+
+- id: small_payment_cost
+  name: 客服打款
+  source: small_payment
+  value: {op: sum, of: [total_cost]}
+  sign: negate
+  time_basis: order_date
+  link: {key: order_id, to: order.order_id, grain: order}
+  allocate: {mode: ratio, by: alloc_ratio}
+
+  by_platform:
+    # 淘宝按收入分配率比例摊，1688 和抖音都是除以 countifs，即组内均分。
+    - {platform: alibaba1688, allocate: {mode: even}}
+    - {platform: douyin, allocate: {mode: even}}
+
+- id: brushing_cost
+  name: 本金佣金
+  source: brushing
+  value: {op: sum, of: [total_cost]}
+  sign: negate
+  time_basis: order_date
+  link: {key: order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: >
+    人工表的说明同样写「不分摊」。本批数据里没有出现"一个刷单订单对应多个子订单"
+    的情况，两种算法结果相同，按与代发、补发一致的口径统一为均分。
+
+# --------------------------------------------------------------- 1688 收支 --- #
+# 1688 的口径来自它自己那张订单明细表的公式，和淘宝不是一回事：
+#   销售收入=sumifs(对账表已收金额,关联订单号,订单号)/countifs(订单明细订单号,订单号)
+#   销售支出=sumifs(对账表已付金额,关联订单号,订单号)/countifs(订单明细订单号,订单号)
+# 除以 countifs 就是在同一订单的多行之间均摊，对应 allocate.mode=even。
+  by_platform:
+    - {platform: douyin, allocate: {mode: even}}
+
+- id: trade_receipt_1688
+  name: 销售收入
+  source: settlement
+  platform: alibaba1688
+  major: trade_receipt_1688
+  value: {op: sum, of: [income]}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+- id: trade_expense_1688
+  name: 销售支出
+  source: settlement
+  platform: alibaba1688
+  major: trade_expense_1688
+  value: {op: sum, of: [outgo]}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: >
+    保障服务、先采后付、交易技术服务费、赔付补贴全归这一条，不拆费项。
+    人工口径就是不拆——1688 的订单明细表里只有「销售支出」一列。
+
+# --------------------------------------------------------------- 抖音净额 --- #
+- id: trade_net_douyin
+  name: 销售收入
+  source: settlement
+  platform: douyin
+  major: trade_net_douyin
+  value: {op: sum, of: [income]}
+  time_basis: settle_date
+  link: {key: sub_order_id, to: order.sub_order_id, grain: order}
+  note: >
+    抖音的销售收入是动账金额的净额，按子订单号直接挂，不分摊也不拆费项——
+    订单明细表的公式就是一句 sumifs(对账表动账金额,子订单号,子订单编号)。
+    入账（货款结算）为正、出账（货款直投千川、退款）为负，净额已经是这单赚到的钱。
