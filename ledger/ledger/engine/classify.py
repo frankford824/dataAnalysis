@@ -13,7 +13,7 @@ import polars as pl
 
 from ..model.schema import Model, Template, normalize_header
 from .rules import ChainStats, compile_classify_rules, resolve_class
-from .types import ClassifyReport
+from .types import ANCHOR_ROW, ANCHOR_SHA, ANCHOR_SHEET, ClassifyReport
 
 #: 引擎的角色词汇表里，承载平台原始科目名的角色叫这个名字。
 ROLE_SUBJECT = "subject"
@@ -57,12 +57,13 @@ def classify(
         else [0.0] * frame.height
     )
 
+    anchors = _row_anchors(frame)
     majors: list[str | None] = []
     minors: list[str | None] = []
     hits: list[bool] = []
     naturals: list[bool] = []
     classified = 0
-    for subject, amount in zip(subjects, amounts):
+    for i, (subject, amount) in enumerate(zip(subjects, amounts)):
         entry = table.get(normalize_header(subject))
         if entry is None:
             majors.append(None)
@@ -70,8 +71,7 @@ def classify(
             hits.append(False)
             naturals.append(False)
             label = (str(subject) if subject not in (None, "") else "(空科目)")
-            count, total = report.unmatched.get(label, (0, 0.0))
-            report.unmatched[label] = (count + 1, total + (float(amount or 0.0)))
+            report.note_unmatched(label, anchors[i], float(amount or 0.0))
             continue
         majors.append(entry[0])
         minors.append(entry[1])
@@ -119,11 +119,12 @@ def _classify_by_chain(
     )
     rows = frame.select(fields).to_dicts() if fields else [{} for _ in range(frame.height)]
 
+    anchors = _row_anchors(frame)
     majors: list[str | None] = []
     minors: list[str | None] = []
     hits: list[bool] = []
     excluded: list[bool] = []
-    for row, amount in zip(rows, amounts):
+    for i, (row, amount) in enumerate(zip(rows, amounts)):
         major, minor, drop = resolve_class(row, compiled, lookup, stats)
         majors.append(major)
         minors.append(minor)
@@ -133,8 +134,7 @@ def _classify_by_chain(
             report.classified_rows += 1
         elif not drop:
             label = str(row.get(ROLE_SUBJECT) or "").strip() or _fallback_label(row)
-            c, a = report.unmatched.get(label, (0, 0.0))
-            report.unmatched[label] = (c + 1, a + float(_num(amount)))
+            report.note_unmatched(label, anchors[i], float(_num(amount)))
 
     report.chain = stats
     report.excluded_rows = sum(excluded)
@@ -162,6 +162,18 @@ def _fallback_label(row: dict) -> str:
     """业务描述为空时，用其他字段拼一个能让人认出来的标签。"""
     bits = [f"{k}={v}" for k, v in row.items() if k != ROLE_SUBJECT and v not in (None, "")]
     return "（业务描述为空）" + (" ".join(bits[:2]) if bits else "")
+
+
+def _row_anchors(frame: pl.DataFrame) -> list[tuple[str, str, str]]:
+    """每行的物理位置。用来跨指标认出同一行，别把一行数成七行。
+
+    锚点列缺失时退回行序号：同一张表被多个指标各归类一遍，行顺序是一样的，
+    所以按序号照样能认出是同一行。
+    """
+    if all(c in frame.columns for c in (ANCHOR_SHA, ANCHOR_SHEET, ANCHOR_ROW)):
+        cols = frame.select(ANCHOR_SHA, ANCHOR_SHEET, ANCHOR_ROW)
+        return [(str(a or ""), str(b or ""), str(c or "")) for a, b, c in cols.iter_rows()]
+    return [("", "", str(i)) for i in range(frame.height)]
 
 
 def _num(value: object) -> float:
@@ -198,7 +210,6 @@ def merge_reports(reports: list[ClassifyReport]) -> ClassifyReport:
     for r in reports:
         merged.total_rows += r.total_rows
         merged.classified_rows += r.classified_rows
-        for label, (count, amount) in r.unmatched.items():
-            c, a = merged.unmatched.get(label, (0, 0.0))
-            merged.unmatched[label] = (c + count, a + amount)
+        for label, rows in r.unmatched_rows.items():
+            merged.unmatched_rows.setdefault(label, {}).update(rows)
     return merged

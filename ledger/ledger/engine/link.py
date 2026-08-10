@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 
 import polars as pl
 
-from ..model.schema import LinkRule, Metric, Template
+from ..model.schema import LinkRule, Metric, Predicate, Template
+from .predicate import compile_where, missing_fields
 from .rules import EXCLUDED, ChainStats, compile_key_rules, resolve_key
 from .types import LinkReport
 
@@ -73,6 +74,21 @@ class Spine:
     def keys(self, role: str) -> set[str]:
         self.build(role)
         return set(self.indexes[role])
+
+    def keys_where(self, role: str, where: tuple[Predicate, ...]) -> set[str]:
+        """脊柱上满足条件的那些键。
+
+        用来收窄覆盖率的分母：没发货的订单不该被要求有出库成本。
+        条件引用了脊柱上没有的列时退回全部键——`expect` 是一句预期声明，
+        写不准不该让整个店算不出账，自检层会把退化情况讲出来。
+        """
+        keys = self.keys(role)
+        if not where or self.frame.is_empty():
+            return keys
+        if missing_fields(where, self.frame) or role not in self.frame.columns:
+            return keys
+        picked = self.frame.filter(compile_where(where, self.frame)).get_column(role)
+        return {k for k in (normalize_key(v) for v in picked) if k} & keys
 
     def index(self, role: str) -> dict[str, tuple[str, str, str]]:
         self.build(role)
@@ -173,9 +189,13 @@ def link(
     report.linked_rows = int(frame.select(pl.col(LINKED).sum()).item())
 
     # 覆盖率：脊柱里有多少笔订单拿到了这项数据。命中率高而覆盖率低是最危险的组合。
-    report.spine_keys = len(known)
+    # 分母只算预期有这项数据的订单，分子同样收窄，否则覆盖率会超过 100%。
+    expected = spine.keys_where(role, metric.expect)
+    report.spine_keys_total = len(known)
+    report.spine_keys = len(expected)
+    report.expect_label = metric.expect_label if len(expected) != len(known) else ""
     hit_keys = set(frame.filter(pl.col(LINKED)).get_column(LINK_KEY).unique().to_list())
-    report.covered_keys = hit_keys & known
+    report.covered_keys = hit_keys & expected
 
     frame = _inherit_context(frame, spine, role)
     return frame, report

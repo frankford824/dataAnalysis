@@ -53,9 +53,76 @@ def test_all_three_stores_covered() -> None:
     assert platforms == {"taobao", "alibaba1688", "douyin"}
 
 
+#: 三家店的全部数据都交齐了，账就该结得出来。
+ALL_STORES = ["taobao_xibishun", "alibaba1688_xingze", "douyin_qianhuajian"]
+
+
+def _run_store(store_id: str):
+    from conftest import MODELS, PLATFORM_DATA
+
+    from ledger.engine.runtime import ingest, run
+    from ledger.model.loader import load_model
+
+    model = load_model(MODELS / "cn-ecommerce")
+    store = model.store(store_id)
+    files = [p for p in PLATFORM_DATA.rglob("*.xlsx") if store.owns(p.name)]
+    assert files, f"{store.name} 一个文件都没找到"
+    result = run(ingest(files, model, [store.name]), store.platform)
+    assert result.slices, f"{store.name} 没算出结果"
+    return model, store, result
+
+
 @needs_real_data
 @pytest.mark.slow
-@pytest.mark.parametrize("store_id", ["taobao_xibishun", "alibaba1688_xingze", "douyin_qianhuajian"])
+@pytest.mark.parametrize("store_id", ALL_STORES)
+def test_store_can_close(store_id: str) -> None:
+    """数据交齐就能结账。这是产品有没有闭环的唯一判据。
+
+    三家店曾经全部结不出账，拦在两个地方，都不是数据的问题：
+
+      覆盖率的分母算错了  把没发货的订单也要求有出库成本、把全额退款的订单也
+                          要求有收款记录。修正分母后三家的商品成本覆盖率是
+                          98.1%/98.5%/98.5%，刚好都在 98% 阈值之上——阈值是对的。
+      未归类科目没认领    余利宝申购、转出网商银行这类理财与调拨被当成待认领费项，
+                          拦着结账。它们是资产间划转，不是损益。
+
+    这条测试盯的是"能结账"这个结论。任何一处改动让某家店重新结不出账，
+    这里立刻红——包括那种"把阈值调松让它过去"的改法，因为那会同时让
+    test_store_reconciles_exactly 的差异露出来。
+    """
+    _, store, result = _run_store(store_id)
+    for (_, period), sl in result.slices.items():
+        blockers = [f for f in sl.audit.findings if f.blocking]
+        assert not blockers, (
+            f"{store.name} {period} 结不出账，拦截项："
+            + "；".join(f"{f.name}（{f.message}）" for f in blockers)
+        )
+        assert sl.can_close
+
+
+@needs_real_data
+@pytest.mark.slow
+@pytest.mark.parametrize("store_id", ALL_STORES)
+def test_coverage_denominator_is_scoped(store_id: str) -> None:
+    """商品成本的覆盖率只对已发货订单算，而且分母确实比全部订单小。
+
+    要是哪天运单号这一列的绑定失效了，分母会悄悄退回全部订单，覆盖率跟着掉，
+    结账被拦——但拦截理由会指向"聚水潭没同步"这个错方向。这里钉住分母被收窄
+    这件事本身。
+    """
+    _, store, result = _run_store(store_id)
+    for sl in result.slices.values():
+        report = sl.link_reports.get("goods_cost")
+        if report is None or not report.spine_keys:
+            continue
+        assert report.expect_label == "已发货"
+        assert report.spine_keys < report.spine_keys_total
+        assert report.coverage >= 0.98
+
+
+@needs_real_data
+@pytest.mark.slow
+@pytest.mark.parametrize("store_id", ALL_STORES)
 def test_spine_source_not_reported_missing(store_id: str) -> None:
     """订单明细交了就不能报它缺。
 
@@ -63,17 +130,7 @@ def test_spine_source_not_reported_missing(store_id: str) -> None:
     早先据此判断完整度，结果三家店都被报「订单明细没有本月数据」——而正是它撑起了
     整张损益表。催人补一份已经交了的文件，是最快让人不信这套提示的办法。
     """
-    from ledger.engine.runtime import ingest, run
-    from ledger.model.loader import load_model
-    from conftest import MODELS, PLATFORM_DATA
-
-    model = load_model(MODELS / "cn-ecommerce")
-    store = model.store(store_id)
-    files = [p for p in PLATFORM_DATA.rglob("*.xlsx") if store.owns(p.name)]
-    assert files, f"{store.name} 一个文件都没找到"
-
-    result = run(ingest(files, model, [store.name]), store.platform)
-    assert result.slices, f"{store.name} 没算出结果"
+    model, store, result = _run_store(store_id)
     for sl in result.slices.values():
         spine_sources = [s.id for s in model.sources if s.is_spine]
         for sid in spine_sources:

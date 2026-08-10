@@ -18,6 +18,7 @@ from ..model.schema import Metric, Model, NodeExpr, Predicate, Template, ValueEx
 from .classify import COL_MAJOR, COL_MINOR, COL_NATURAL_UNLINKED
 from .link import LINK_KEY, LINKED
 from .normalize import PARENT_FIRST, is_parent_only
+from .predicate import PredicateError, compile_where
 from .types import ANCHOR_FILE, ANCHOR_ROW, ANCHOR_SHA, ANCHOR_SHEET
 
 #: 每行对指标的贡献额。
@@ -145,6 +146,11 @@ def _empty_facts() -> pl.DataFrame:
     return pl.DataFrame(schema=schema)
 
 
+def row_amount(expr: ValueExpr, frame: pl.DataFrame) -> pl.Expr:
+    """按取值表达式算每行净额。给报告层用，核算走 evaluate_metric。"""
+    return _value_expr(expr, frame, [])
+
+
 def _value_expr(expr: ValueExpr, frame: pl.DataFrame, notes: list[str]) -> pl.Expr:
     """取值表达式求值。产出每行的贡献额。"""
     if expr.op == "constant":
@@ -170,33 +176,10 @@ def _value_expr(expr: ValueExpr, frame: pl.DataFrame, notes: list[str]) -> pl.Ex
 
 
 def _predicates(where: tuple[Predicate, ...], frame: pl.DataFrame, notes: list[str]) -> pl.Expr:
-    out = pl.lit(True)
-    for p in where:
-        if p.field not in frame.columns:
-            raise CalculateError(f"过滤条件引用了不存在的字段角色 {p.field}")
-        col = pl.col(p.field).cast(pl.Utf8)
-        if p.op == "eq":
-            cond = col == str(p.value)
-        elif p.op == "ne":
-            cond = col != str(p.value)
-        elif p.op == "in":
-            cond = col.is_in([str(v) for v in p.value])  # type: ignore[union-attr]
-        elif p.op == "not_in":
-            cond = ~col.is_in([str(v) for v in p.value])  # type: ignore[union-attr]
-        elif p.op == "contains":
-            cond = col.str.contains(str(p.value), literal=True)
-        elif p.op == "not_contains":
-            cond = ~col.str.contains(str(p.value), literal=True)
-        elif p.op == "gt":
-            cond = pl.col(p.field).cast(pl.Float64, strict=False) > float(p.value)  # type: ignore[arg-type]
-        elif p.op == "lt":
-            cond = pl.col(p.field).cast(pl.Float64, strict=False) < float(p.value)  # type: ignore[arg-type]
-        elif p.op == "notnull":
-            cond = pl.col(p.field).is_not_null()
-        else:  # pragma: no cover
-            raise CalculateError(f"未知过滤算子 {p.op}")
-        out = out & cond.fill_null(False)
-    return out
+    try:
+        return compile_where(where, frame)
+    except PredicateError as exc:
+        raise CalculateError(str(exc)) from exc
 
 
 # --------------------------------------------------------------------------- #

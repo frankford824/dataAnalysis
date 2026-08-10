@@ -356,8 +356,12 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
             frame, report = link(item.frame, metric, spine, item.template, bridges)
             _merge_link(link_reports, metric.id, report)
 
-            amount_role = metric.value.of[0] if metric.value.of else None
-            frame, creport = classify(frame, model, platform, amount_role, item.template)
+            # 未归类科目要带准确金额，那是用户判断该不该管的唯一依据。只取取值
+            # 表达式的第一个角色是不够的：支付宝把一笔钱拆成收入、支出两栏，余利宝
+            # 申购那 88 行的钱全在支出栏，只看收入栏会报成 0 元，看着像不用管的小事，
+            # 实际是 81 万的资金划转。
+            frame = _with_row_amount(frame, metric)
+            frame, creport = classify(frame, model, platform, ROW_AMOUNT, item.template)
             classify_reports.append(creport)
 
             hint_store = _first_hint(item.frame, "__hint_store__")
@@ -572,6 +576,18 @@ def _source_has_period(facts: pl.DataFrame, source_id: str, period: str) -> bool
     ).is_empty()
 
 
+#: 按指标取值表达式算出的每行净额。只用于报告，不参与核算。
+ROW_AMOUNT = "__row_amount__"
+
+
+def _with_row_amount(frame: pl.DataFrame, metric: Metric) -> pl.DataFrame:
+    try:
+        return frame.with_columns(calc.row_amount(metric.value, frame).alias(ROW_AMOUNT))
+    except Exception:
+        # 算不出来不该拖垮归类，报告里那一栏显示 0 就是了。
+        return frame.with_columns(pl.lit(0.0).alias(ROW_AMOUNT))
+
+
 def _merge_link(store: dict[str, LinkReport], metric_id: str, report: LinkReport) -> None:
     existing = store.get(metric_id)
     if existing is None:
@@ -583,6 +599,8 @@ def _merge_link(store: dict[str, LinkReport], metric_id: str, report: LinkReport
     existing.extract_failed_rows += report.extract_failed_rows
     existing.unlinked_amount += report.unlinked_amount
     existing.spine_keys = max(existing.spine_keys, report.spine_keys)
+    existing.spine_keys_total = max(existing.spine_keys_total, report.spine_keys_total)
+    existing.expect_label = existing.expect_label or report.expect_label
     existing.covered_keys |= report.covered_keys
 
 

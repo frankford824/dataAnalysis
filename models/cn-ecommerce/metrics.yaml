@@ -19,9 +19,17 @@
   time_basis: settle_date
   link: {key: base_order_id, to: order.order_id, grain: order}
   allocate: {mode: ratio, by: alloc_ratio}
+  expect:
+    - {field: pay_time, op: notnull}
+    - {field: refund_status, op: not_in, value: [退款成功]}
+  expect_label: 已付款且未退款
   note: >
     对账表是主订单级，脊柱是子订单级，所以按收入分配率拆到子订单。
     取值是收入+支出而不是单取收入，因为同一笔业务可能两栏都有数。
+
+    覆盖率只对已付款且未全额退款的订单要求。实测没有收款记录的 2,424 个订单里，
+    1,855 个退款成功、552 个连付款时间都没有；而有收款记录的 12,795 个里退款成功的
+    只占 1.8%。钱进了又全额退回，账单上就没有净收款这一行，这不是对账表没交全。
 
 - id: trade_refund
   name: 销售退款
@@ -98,9 +106,16 @@
   sign: negate
   time_basis: order_date
   link: {key: sub_order_id, to: order.sub_order_id, grain: order}
+  expect:
+    - {field: tracking_no, op: notnull}
+  expect_label: 已发货
   note: >
     子订单级直接挂，不分摊。聚水潭的线上子订单编号与脊柱的子订单编号一一对应。
     必须排除补发订单：它们在同一张表里，由补发成本单独归集，两边都算会重复记账。
+
+    覆盖率只对已发货的订单要求。没发货就没出库，聚水潭里根本没有这一行——
+    三家店缺商品成本的订单里，没运单号的占 80%(淘宝)、94%(1688)、95%(抖音)，
+    按全部订单算分母的话，覆盖率永远差十几个点，而缺口是虚的。
 
   by_platform:
     - platform: alibaba1688

@@ -452,6 +452,8 @@ class PlatformRule(Base):
     #: 覆盖过滤条件。给空列表就是这个平台不过滤。
     #: （留空表达不了「不过滤」，那和「不覆盖」分不开，所以用 None 表示不覆盖。）
     where: tuple[Predicate, ...] | None = None
+    #: 覆盖该平台的覆盖率分母。语义同 where：空列表表示按全部订单算。
+    expect: tuple[Predicate, ...] | None = None
     allocate: Allocation | None = None
     #: 该平台不分摊，源金额直接落到脊柱行。用来清掉缺省的分摊设置。
     #: （单靠 allocate 留空表达不了「不摊」，那和「不覆盖」分不开。）
@@ -485,6 +487,16 @@ class Metric(Base):
     value: ValueExpr
     #: 过滤条件，全部满足才纳入。
     where: tuple[Predicate, ...] = ()
+    #: 这个科目预期覆盖脊柱上哪些订单。覆盖率的分母。
+    #:
+    #: 不是每个订单都该有每项成本：没发货的订单不会有出库成本，聚水潭里根本没有
+    #: 这一行。分母若按全部订单算，覆盖率就永远不达标，而缺口是虚的——三家店实测
+    #: 缺商品成本的订单里 80%~95% 没有运单号。
+    #: 留空表示预期覆盖全部订单。
+    expect: tuple[Predicate, ...] = ()
+    #: expect 的人话说法，例如「已发货」。自检层要告诉用户分母是哪一批订单，
+    #: 否则「1,060 笔里覆盖了 98%」这句话没法核对。
+    expect_label: str = ""
     link: LinkRule | None = None
     sign: SignRule = "as_is"
     #: 时间归属依据。广告费按花费日而非下单日。
@@ -511,6 +523,7 @@ class Metric(Base):
         return self.model_copy(update={
             "link": rule.link or self.link,
             "where": self.where if rule.where is None else rule.where,
+            "expect": self.expect if rule.expect is None else rule.expect,
             "allocate": None if rule.direct else (rule.allocate or self.allocate),
             "major": rule.major or self.major,
         })

@@ -122,8 +122,12 @@ class LinkReport:
     excluded_rows: int = 0
     #: 规则链各环的命中情况。用来回答"这条规则还有没有用"。
     chain: object | None = None
-    #: 脊柱总键数。
+    #: 覆盖率的分母：脊柱上预期有这项数据的键数。指标没声明 expect 时等于全部键数。
     spine_keys: int = 0
+    #: 脊柱全部键数。和 spine_keys 不等时说明分母被 expect 收窄了，展示时要讲清楚。
+    spine_keys_total: int = 0
+    #: 分母收窄的依据，人话。例如「已发货」。
+    expect_label: str = ""
     #: 被本指标覆盖的脊柱键。存集合而不是计数，因为同一指标会被多个文件分批供给，
     #: 计数相加会重复。
     covered_keys: set[str] = field(default_factory=set)
@@ -151,12 +155,24 @@ class ClassifyReport:
 
     total_rows: int = 0
     classified_rows: int = 0
-    #: 原始科目 → (行数, 金额)。未命中时调 AI 提建议，人工确认后写回字典。
-    unmatched: dict[str, tuple[int, float]] = field(default_factory=dict)
+    #: 原始科目 → 物理行锚点 → 该行净额。
+    #:
+    #: 按物理行存而不是直接累加，因为一张对账表会被多个指标各归类一遍：淘宝有七个
+    #: 科目从同一张表出数，同一行就被数了七次。实测余利宝申购那 88 行被报成 528 行。
+    unmatched_rows: dict[str, dict[tuple[str, str, str], float]] = field(default_factory=dict)
     #: 被归类规则链显式排除的行数。
     excluded_rows: int = 0
     #: 规则链各环命中情况。
     chain: object | None = None
+
+    def note_unmatched(self, label: str, row: tuple[str, str, str], amount: float) -> None:
+        """记一行未归类。同一物理行重复报只留一次。"""
+        self.unmatched_rows.setdefault(label, {})[row] = amount
+
+    @property
+    def unmatched(self) -> dict[str, tuple[int, float]]:
+        """原始科目 → (行数, 金额)。未命中时调 AI 提建议，人工确认后写回字典。"""
+        return {k: (len(v), sum(v.values())) for k, v in self.unmatched_rows.items()}
 
     @property
     def hit_rate(self) -> float:

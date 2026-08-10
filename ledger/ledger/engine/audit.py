@@ -113,23 +113,35 @@ def _check_coverage(check, model, facts, links, classify, completeness, nodes, r
     threshold = check.threshold if check.threshold is not None else 0.95
     passed = report.coverage >= threshold
     gap = report.spine_keys - report.spine_keys_covered
+    # 分母被 expect 收窄时要说清算的是哪一批订单，不然「1,060 笔」对不上订单明细的行数。
+    scope = (
+        f"{report.expect_label}的 {report.spine_keys:,} 笔"
+        if report.expect_label
+        else f"{report.spine_keys:,} 笔"
+    )
     if passed:
-        message = f"{metric_name} 覆盖了 {report.coverage:.1%} 的订单，正常"
+        message = f"{metric_name} 覆盖了{scope}订单里的 {report.coverage:.1%}，正常"
     else:
+        # 数字由引擎给，排查建议由模型给。两者都要，不能二选一：
+        # 光有建议看不出差多少，光有数字不知道该去查什么。
         message = (
-            f"有 {gap:,} 笔订单没有{metric_name}（覆盖 {report.coverage:.1%}，"
-            f"要求 {threshold:.0%}）。这些订单的利润会偏高，数据可能只传了一部分。"
+            f"有 {gap:,} 笔订单没有{metric_name}（{scope}订单里覆盖 {report.coverage:.1%}，"
+            f"要求 {threshold:.0%}）。" + (check.message or "这些订单的利润会偏高。")
         )
+    detail = {
+        "metric": check.metric,
+        "coverage": report.coverage,
+        "threshold": threshold,
+        "spine_keys": report.spine_keys,
+        "uncovered": gap,
+    }
+    if report.expect_label:
+        detail["scope"] = report.expect_label
+        detail["spine_keys_total"] = report.spine_keys_total
     return Finding(
         check.id, check.name, passed=passed, blocking=check.blocking and not passed,
-        message=check.message or message,
-        detail={
-            "metric": check.metric,
-            "coverage": report.coverage,
-            "threshold": threshold,
-            "spine_keys": report.spine_keys,
-            "uncovered": gap,
-        },
+        message=message,
+        detail=detail,
     )
 
 
