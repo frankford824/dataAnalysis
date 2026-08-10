@@ -408,7 +408,8 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
 
     for store, period in _slice_keys(spine_facts if not spine_facts.is_empty() else facts):
         result.slices[(store, period)] = _build_slice(
-            model, ingestion, facts, spine_facts, store, period, link_reports, classify_report
+            model, ingestion, facts, spine_facts, spine.frame, store, period,
+            link_reports, classify_report,
         )
     return result
 
@@ -475,6 +476,7 @@ def _build_slice(
     ingestion: Ingestion,
     facts: pl.DataFrame,
     spine_facts: pl.DataFrame,
+    spine: pl.DataFrame,
     store: str,
     period: str,
     link_reports: dict[str, LinkReport],
@@ -487,7 +489,14 @@ def _build_slice(
         if not spine_facts.is_empty()
         else spine_facts
     )
-    completeness = _completeness(model, ingestion, facts, scoped, scoped_spine, store, period)
+    spine_rows = (
+        spine.filter((pl.col(SPINE_STORE) == store) & (pl.col(SPINE_PERIOD) == period)).height
+        if not spine.is_empty() and {SPINE_STORE, SPINE_PERIOD} <= set(spine.columns)
+        else 0
+    )
+    completeness = _completeness(
+        model, ingestion, facts, scoped, scoped_spine, store, period, spine_rows
+    )
 
     unavailable = {
         m.id for m in model.metrics if m.source in completeness.missing
@@ -512,6 +521,7 @@ def _completeness(
     scoped_spine: pl.DataFrame,
     store: str,
     period: str,
+    spine_rows: int,
 ) -> Completeness:
     """完整度。责任人信息来自数据源契约，不需要额外维护。
 
@@ -534,6 +544,12 @@ def _completeness(
         if not source.required_for_close:
             continue
         if source.id in contributing:
+            out.arrived.append(source.id)
+            continue
+        # 脊柱源不产出金额事实，它交付的是订单骨架本身，所以在事实里永远找不到它。
+        # 拿事实判断会一直报「订单明细没交」——而正是它撑起了整张损益表。
+        # 有脊柱行就说明它到了。
+        if source.is_spine and spine_rows > 0:
             out.arrived.append(source.id)
             continue
         out.missing.append(source.id)

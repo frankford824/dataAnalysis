@@ -48,6 +48,7 @@
   required_for_close: true
   provides: [freight_cost]
   dedupe_key: [tracking_no]
+  company_wide: true
   note: >
     这张表只有运单号，没有订单号。要先拿运单号去订单明细查物流单号得到主订单编号，
     查不到再去聚水潭查快递单号得到原始线上订单号。实测九成五的行两级都回查不到，
@@ -107,6 +108,7 @@
   required_for_close: false
   provides: [small_payment_cost]
   dedupe_key: [serial_no]
+  company_wide: true
   note: >
     客服给客户的小额补偿。全集团一张表，要按网店名称筛。
     表里的网店（美食专家、淘宝嘻嘻哈哈、京东皇莉诗…）大多不属于我们核算的这三家店，

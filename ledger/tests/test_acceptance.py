@@ -51,3 +51,32 @@ def test_all_three_stores_covered() -> None:
     """三家店都得在验收里。少一家就等于那家的口径没人看着。"""
     platforms = {c.platform for c in CASES.values()}
     assert platforms == {"taobao", "alibaba1688", "douyin"}
+
+
+@needs_real_data
+@pytest.mark.slow
+@pytest.mark.parametrize("store_id", ["taobao_xibishun", "alibaba1688_xingze", "douyin_qianhuajian"])
+def test_spine_source_not_reported_missing(store_id: str) -> None:
+    """订单明细交了就不能报它缺。
+
+    脊柱源不产出金额事实，它交付的是订单骨架本身，所以在事实表里永远查不到它。
+    早先据此判断完整度，结果三家店都被报「订单明细没有本月数据」——而正是它撑起了
+    整张损益表。催人补一份已经交了的文件，是最快让人不信这套提示的办法。
+    """
+    from ledger.engine.runtime import ingest, run
+    from ledger.model.loader import load_model
+    from conftest import MODELS, PLATFORM_DATA
+
+    model = load_model(MODELS / "cn-ecommerce")
+    store = model.store(store_id)
+    files = [p for p in PLATFORM_DATA.rglob("*.xlsx") if store.owns(p.name)]
+    assert files, f"{store.name} 一个文件都没找到"
+
+    result = run(ingest(files, model, [store.name]), store.platform)
+    assert result.slices, f"{store.name} 没算出结果"
+    for sl in result.slices.values():
+        spine_sources = [s.id for s in model.sources if s.is_spine]
+        for sid in spine_sources:
+            assert sid not in sl.completeness.missing, (
+                f"{store.name} 的 {sid} 交了却被报缺：{sl.completeness.reasons.get(sid)}"
+            )

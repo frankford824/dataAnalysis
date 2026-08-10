@@ -266,6 +266,44 @@ _ROLE_LABEL = {
 # --------------------------------------------------------------------------- #
 
 
+#: 公司级主表里挂不上本店订单的那部分。绝大多数是别家店的，也可能夹着本店漏的单，
+#: 所以照样列出来，只是不算进本店未归属总额。
+_OTHER_STORES = "其他店的数据（公司级主表）"
+
+
+def _one_row_once(unlinked: pl.DataFrame, model: Model) -> pl.DataFrame:
+    """让一个物理行只算一次。
+
+    一张表会被多个指标共用：淘宝的软件服务费、物流费、赔付、营销费用等七项
+    全从同一张对账表出数，每个指标都对整表求值，所以同一物理行在源事实里出现多次——
+    实测那 31,618 行各出现了 6 次。
+
+    损益表不受影响，它在投影时按科目过滤过。但未归属统计直接读源事实，不去重就会把
+    同一笔钱报六遍：淘宝的未归属会从 30 万虚报成 120 万。这种量级的错报比不报更坏，
+    人会因此不信整套账。
+
+    保留「指标口径和这行的科目一致」的那一条：只有它的取数方向和这行相符，
+    符号才是对的。
+    """
+    keys = [c for c in ("file_sha", "sheet", "row_no") if c in unlinked.columns]
+    if not keys:
+        return unlinked
+    majors = {m.id: (m.major or "") for m in model.metrics}
+    return (
+        unlinked.with_columns(
+            pl.col("metric_id")
+            .replace_strict(majors, default="", return_dtype=pl.Utf8)
+            .alias("__declared_major__")
+        )
+        .sort(
+            (pl.col("__declared_major__") == pl.col("major")).fill_null(False).cast(pl.Int8),
+            descending=True,
+        )
+        .unique(subset=keys, keep="first", maintain_order=True)
+        .drop("__declared_major__")
+    )
+
+
 def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str, int, float]], float]:
     """把挂不上订单的钱分成"不用管的"和"需要看的"。
 
@@ -277,14 +315,18 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
     unlinked = facts.filter(~pl.col("linked"))
     if unlinked.is_empty():
         return [], 0.0
+    unlinked = _one_row_once(unlinked, model)
 
     natural = {
         e.raw for e in model.dictionary if e.naturally_unlinked
     }
     naturally_unlinked_metrics = {m.id for m in model.metrics if m.naturally_unlinked}
+    company_wide = {s.id for s in model.sources if s.company_wide}
 
     tagged = unlinked.with_columns(
-        pl.when(pl.col("metric_id").is_in(list(naturally_unlinked_metrics)))
+        pl.when(pl.col("source_id").is_in(list(company_wide)))
+        .then(pl.lit(_OTHER_STORES))
+        .when(pl.col("metric_id").is_in(list(naturally_unlinked_metrics)))
         .then(pl.coalesce(pl.col("minor"), pl.col("subject"), pl.lit("其他")))
         .when(pl.col("subject").is_in(list(natural)))
         .then(pl.coalesce(pl.col("minor"), pl.col("subject")))
@@ -300,7 +342,10 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
         (row["bucket"], int(row["rows"]), float(row["amount"]))
         for row in grouped.iter_rows(named=True)
     ]
-    total = round(sum(a for _, _, a in buckets), 2)
+    # 公司级主表里挂不上的那部分不计入本店未归属：运费和小额打款交上来是全公司的，
+    # 别家店的运单本来就不该算这家店的账。仍然列在桶里让人看得见，但不进总额——
+    # 否则本店真正需要查归属的钱会被埋在几十万里，谁也不会去看。
+    total = round(sum(a for label, _, a in buckets if label != _OTHER_STORES), 2)
     return buckets, total
 
 

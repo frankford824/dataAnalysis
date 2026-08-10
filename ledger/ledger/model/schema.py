@@ -226,6 +226,16 @@ class SourceContract(Base):
     #: 这种事不能靠叮嘱店长「别重复传」来防：交叉重叠是协作的常态，
     #: 得让引擎在结构上不可能算错。声明了去重键，重复交多少份都是同一个结果。
     dedupe_key: tuple[str, ...] = ()
+    #: 这份数据交上来是全公司的，每家店只取属于自己订单的那部分。
+    #:
+    #: 和 dedupe_key 是两件事：去重键管的是「同一份被交了好几遍」，
+    #: 这个管的是「一份里混着所有店」。运费和小额打款两者都成立，但将来完全可能
+    #: 出现财务统一交一份、不会重复交的公司级表。
+    #:
+    #: 为什么必须标出来：全公司运费表 30 万条运单里只有 2,576 条属于 1688 星泽，
+    #: 其余挂不到这家店的订单上。不标的话这 54.8 万会被报成本店「没进利润的钱」，
+    #: 而它本来就不是这家店的钱。这种误报比不报更糟——它会让人不再信这个提示。
+    company_wide: bool = False
     note: str = ""
 
 
@@ -583,6 +593,60 @@ class Check(Base):
 
 
 # --------------------------------------------------------------------------- #
+# 7. 店铺注册表
+# --------------------------------------------------------------------------- #
+
+
+class Store(Base):
+    """一家店。数据归属的单位，也是账期结算的单位。
+
+    店铺和法人主体是多对一：实测 1688星泽气球派对 和 抖音浅花涧节日装饰 同属
+    义乌星泽天成供应链管理有限公司。这层对应关系必须能配，不能从店名推——
+    店名里带的是平台，不是主体。
+
+    主体也不总能从数据里读到：1688 收款明细有「归属主体名称」、抖音对账单有
+    「商户主体名称」，而淘宝的支付宝和微信账单根本不带主体信息。能读到的地方
+    引擎拿来和这里配的核对，读不到的地方只能靠配。
+    """
+
+    id: str
+    #: 店铺全名。交上来的文件名里带的就是这个，形如「聚水潭成本-淘宝喜必顺.xlsx」。
+    name: str
+    platform: str
+    #: 法人主体名。数据里读不到的店只能靠配，留空则自检提示未配置。
+    entity: str = ""
+    entity_tax_id: str = ""
+    #: 归档店铺不参与新账期，历史账仍可查。关店不等于删数据。
+    archived: bool = False
+    #: 文件名里认这家店的别名。改过名或简称都放这里。
+    aliases: tuple[str, ...] = ()
+    note: str = ""
+
+    def owns(self, filename: str) -> bool:
+        """这个文件名是不是这家店的。"""
+        return any(a and a in filename for a in (self.name, *self.aliases))
+
+
+#: 平台名的常见前缀写法。只用于给未登记店铺提建议，不参与任何计算——
+#: 猜出来的东西不能进账，登记必须由人确认。
+_PLATFORM_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("taobao", ("淘宝", "天猫", "TB", "tmall")),
+    ("alibaba1688", ("1688", "阿里巴巴", "阿里")),
+    ("douyin", ("抖音", "抖店")),
+    ("pdd", ("拼多多", "PDD", "pdd")),
+    ("jd", ("京东", "JD", "jd")),
+)
+
+
+def guess_platform(store_name: str) -> str:
+    """从店名前缀猜平台。只用于提示，返回空串表示猜不出来。"""
+    for platform, prefixes in _PLATFORM_PREFIXES:
+        if any(store_name.startswith(p) for p in prefixes):
+            return platform
+    return ""
+
+
+# --------------------------------------------------------------------------- #
 # 模型容器
 # --------------------------------------------------------------------------- #
 
@@ -595,6 +659,7 @@ class Model(Base):
     version: str = "1"
     #: 统一记账货币。
     currency: str = "CNY"
+    stores: tuple[Store, ...] = ()
     sources: tuple[SourceContract, ...] = ()
     templates: tuple[Template, ...] = ()
     metrics: tuple[Metric, ...] = ()
@@ -603,6 +668,27 @@ class Model(Base):
     checks: tuple[Check, ...] = ()
 
     # -- 索引 ------------------------------------------------------------- #
+
+    def store(self, sid: str) -> Store:
+        return _pick(self.stores, sid, "店铺")
+
+    def store_of(self, filename: str) -> Store | None:
+        """这个文件属于哪家店。认不出返回 None，由调用方决定怎么提示。
+
+        多家店同时匹配时取匹配串最长的那个：店名有长有短（「喜必顺」和
+        「淘宝喜必顺」），短的会误伤长的，最长匹配才是最具体的那家。
+        """
+        best: Store | None = None
+        best_len = 0
+        for s in self.stores:
+            for alias in (s.name, *s.aliases):
+                if alias and alias in filename and len(alias) > best_len:
+                    best, best_len = s, len(alias)
+        return best
+
+    def active_stores(self) -> tuple[Store, ...]:
+        """在营的店。归档店不参与新账期，但历史账仍可重算。"""
+        return tuple(s for s in self.stores if not s.archived)
 
     def source(self, sid: str) -> SourceContract:
         return _pick(self.sources, sid, "数据源")
