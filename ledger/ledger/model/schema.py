@@ -651,6 +651,10 @@ _PLATFORM_PREFIXES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+#: 引擎认得的平台。登记新店时界面从这里出选项，免得手打出 "taobao " 这种带空格的值。
+KNOWN_PLATFORMS: tuple[str, ...] = tuple(p for p, _ in _PLATFORM_PREFIXES)
+
+
 def guess_platform(store_name: str) -> str:
     """从店名前缀猜平台。只用于提示，返回空串表示猜不出来。"""
     for platform, prefixes in _PLATFORM_PREFIXES:

@@ -50,6 +50,84 @@ class TestStoresEndpoint:
         stores = client.get("/api/stores").json()["stores"]
         assert all("entity" in s for s in stores)
 
+    def test_tells_ui_what_is_editable(self, client):
+        """哪些字段能改由后端说，界面别自己猜——猜错了就会渲染出一个改不动的输入框。"""
+        body = client.get("/api/stores").json()
+        assert "entity" in body["editable"]
+        assert "id" not in body["editable"] and "name" not in body["editable"]
+        assert "taobao" in body["platforms"]
+
+
+@pytest.fixture
+def sandbox(tmp_path, monkeypatch):
+    """把模型复制到临时目录再改。
+
+    改配置的接口是真的写文件，直接冲仓库里那份等于让测试改坏项目自己的模型。
+    """
+    import shutil
+
+    import ledger.api as api
+
+    target = tmp_path / "cn-ecommerce"
+    shutil.copytree(api.DEFAULT_MODEL, target)
+    monkeypatch.setattr(api, "DEFAULT_MODEL", target)
+    return target
+
+
+class TestEditStore:
+    """法人主体这类东西数据里读不出来，只能由人配——那就必须能从界面配。
+
+    支付宝和微信账单都不带主体信息，引擎读不到也不该猜。要人去改 YAML 才能配一家店，
+    这就不是产品而是脚手架了。
+    """
+
+    def test_sets_entity(self, client, sandbox):
+        res = client.patch("/api/stores/taobao_xibishun",
+                           json={"entity": "某某电子商务有限公司"})
+        assert res.status_code == 200
+        assert res.json()["store"]["entity"] == "某某电子商务有限公司"
+        again = client.get("/api/stores").json()["stores"]
+        assert next(s for s in again if s["id"] == "taobao_xibishun")["entity"] \
+            == "某某电子商务有限公司"
+
+    def test_writes_through_to_the_model_file(self, client, sandbox):
+        client.patch("/api/stores/taobao_xibishun", json={"entity": "某某电子商务有限公司"})
+        text = (sandbox / "stores.yaml").read_text(encoding="utf-8")
+        assert "某某电子商务有限公司" in text
+        assert "# 店铺注册表。" in text, "注释是取证记录，不能被写回冲掉"
+
+    def test_can_clear_it_again(self, client, sandbox):
+        client.patch("/api/stores/taobao_xibishun", json={"entity": "填错了"})
+        res = client.patch("/api/stores/taobao_xibishun", json={"entity": ""})
+        assert res.json()["store"]["entity"] == ""
+
+    def test_rejects_empty_patch(self, client, sandbox):
+        assert client.patch("/api/stores/taobao_xibishun", json={}).status_code == 400
+
+    def test_rejects_unknown_store(self, client, sandbox):
+        res = client.patch("/api/stores/没这家店", json={"entity": "x"})
+        assert res.status_code == 400
+
+    def test_cannot_rename(self, client, sandbox):
+        """name 是认文件的依据，改了以前交过的文件立刻认不出。"""
+        res = client.patch("/api/stores/taobao_xibishun", json={"name": "新名字"})
+        assert res.status_code == 400
+        assert client.get("/api/stores").json()["stores"][0]["name"] == "淘宝喜必顺"
+
+    def test_adds_a_store(self, client, sandbox):
+        res = client.post("/api/stores", json={
+            "id": "pdd_new", "name": "拼多多新店", "platform": "pdd",
+        })
+        assert res.status_code == 200
+        ids = {s["id"] for s in client.get("/api/stores").json()["stores"]}
+        assert "pdd_new" in ids
+
+    def test_refuses_duplicate_name(self, client, sandbox):
+        res = client.post("/api/stores", json={
+            "id": "taobao_other", "name": "淘宝喜必顺", "platform": "taobao",
+        })
+        assert res.status_code == 400
+
 
 class TestPage:
     def test_serves_the_page(self, client):

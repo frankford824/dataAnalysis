@@ -9,6 +9,10 @@ pydantic==2.13.4
 # 模型是一目录 YAML。
 PyYAML==6.0.3
 
+# 改配置要写回 YAML，而且不能把文件里的注释冲掉——stores.yaml 里每条主体都记着
+# 它是从哪张表哪一列读出来的，那些说明比字段本身更值钱。PyYAML 写回会全部丢掉。
+ruamel.yaml==0.19.1
+
 # Excel 读取主力。Rust 实现，比 openpyxl 快 6.5 倍，还能读 .xls 和 .xlsb——
 # 交上来的文件什么格式都有。
 python-calamine==0.8.2

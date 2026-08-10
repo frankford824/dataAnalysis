@@ -19,9 +19,16 @@ import unicodedata
 from collections import defaultdict
 from pathlib import Path
 
+from .engine.audit import (
+    BUCKET_EXCLUDED_FLOW,
+    BUCKET_NEEDS_WORK,
+    BUCKET_OTHER_PERIOD,
+    BUCKET_OTHER_STORES,
+)
 from .engine.runtime import Slice, ingest, run
+from .model.config import add_store, update_store
 from .model.loader import ModelError, load_model
-from .model.schema import Model, Store, guess_platform
+from .model.schema import KNOWN_PLATFORMS, Model, Store, guess_platform
 
 #: 仓库自带的模型。
 DEFAULT_MODEL = Path(__file__).resolve().parents[2] / "models" / "cn-ecommerce"
@@ -192,15 +199,28 @@ def _render_statement(sl: Slice, model: Model) -> None:
             print(f"{'  ' * nv.level}└ 缺 {'、'.join(nv.missing_sources)}，这一项不出数")
 
 
+#: 每个桶为什么不用管，一句话说清。要人查的那个桶不在这里——它本来就该占注意力。
+_BUCKET_WHY = {
+    BUCKET_OTHER_STORES: "交上来就是全公司的，绝大多数属于别家店",
+    BUCKET_EXCLUDED_FLOW: "理财、调拨、保证金、广告预充值，不是损益",
+    BUCKET_OTHER_PERIOD: "订单号是对的，但订单不在本期。跨期结算或者导出时日期选宽了",
+}
+
+
 def _render_unlinked(sl: Slice) -> None:
     buckets = sl.audit.unlinked_buckets
     if not buckets:
         return
-    print(f"\n挂不到本店订单的钱：本店 {sl.audit.unlinked_total:,.2f}")
+    total = sl.audit.unlinked_total
+    head = "要查归属的钱" if total else "没有要查归属的钱"
+    print(f"\n没进利润的钱：{head} {total:,.2f}")
     for label, count, amount in buckets:
-        print(f"  {_pad(label, 30)}{_pad(f'{amount:,.2f}', 16, right=True)}  {count:,} 笔")
-    print("  本店那部分不是丢了，是还没归属，查清归属才会进利润。")
-    print("  公司级主表那部分交上来就是全公司的，绝大多数属于别家店，不算本店的账。")
+        why = _BUCKET_WHY.get(label, "")
+        print(f"  {_pad(label, 26)}{_pad(f'{amount:,.2f}', 15, right=True)}  {count:>7,} 笔"
+              + (f"   {why}" if why else ""))
+    if total:
+        print(f"  只有「{BUCKET_NEEDS_WORK}」要人查，查清了才会进利润。"
+              f"其余几类本来就不该算本店这一期。")
 
 
 # --------------------------------------------------------------------------- #
@@ -321,8 +341,62 @@ def cmd_stores(args: argparse.Namespace) -> int:
         print("\n一个主体下有多家店：")
         for entity, names in shared.items():
             print(f"  {entity}：{'、'.join(names)}")
-    if any(not s.entity for s in model.stores):
-        print("\n主体未配置的店没法按主体汇总。数据里读不到主体的平台只能手工配。")
+    blank = [s for s in model.stores if not s.entity]
+    if blank:
+        print("\n这些店还没配主体，按主体汇总时会漏掉：")
+        for s in blank:
+            print(f"  {s.name}    配置命令：ledger store set {s.id} --entity 主体全名")
+    return 0
+
+
+def cmd_store_set(args: argparse.Namespace) -> int:
+    """改一家店的配置。
+
+    法人主体这类东西数据里读不出来（支付宝和微信账单不带主体信息），只能靠人配。
+    要人去改 YAML 才能配，那是脚手架不是产品，所以命令行和界面都得能改。
+    """
+    changes: dict[str, object] = {}
+    for key in ("entity", "entity_tax_id", "note"):
+        value = getattr(args, key, None)
+        if value is not None:
+            changes[key] = value
+    if args.alias:
+        model = load_model(args.model)
+        existing = list(model.store(args.store_id).aliases)
+        changes["aliases"] = existing + [a for a in args.alias if a not in existing]
+    if args.archive is not None:
+        changes["archived"] = args.archive
+    if not changes:
+        print("没说要改什么。可改：--entity --tax-id --alias --note --archive/--unarchive")
+        return 1
+
+    store = update_store(args.model, args.store_id, changes)
+    print(f"{store.name} 已更新：")
+    print(f"  平台      {store.platform}")
+    print(f"  法人主体  {store.entity or '（未配置）'}")
+    if store.entity_tax_id:
+        print(f"  税号      {store.entity_tax_id}")
+    if store.aliases:
+        print(f"  别名      {'、'.join(store.aliases)}")
+    print(f"  状态      {'已归档' if store.archived else '在营'}")
+    return 0
+
+
+def cmd_store_add(args: argparse.Namespace) -> int:
+    """登记一家新店。开新店、接新平台都走这里，不改代码也不手编文件。"""
+    platform = args.platform or guess_platform(args.name)
+    if not platform:
+        print(f"猜不出 {args.name} 是哪个平台，用 --platform 指定。"
+              f"可选：{'、'.join(KNOWN_PLATFORMS)}")
+        return 1
+    store = add_store(args.model, Store(
+        id=args.id, name=args.name, platform=platform,
+        entity=args.entity or "", entity_tax_id=args.tax_id or "",
+        aliases=tuple(args.alias or ()), note=args.note or "",
+    ))
+    print(f"已登记 {store.name}（{store.platform}）")
+    if not store.entity:
+        print(f"  主体还没配：ledger store set {store.id} --entity 主体全名")
     return 0
 
 
@@ -341,6 +415,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("stores", help="看店铺注册表")
     s.set_defaults(func=cmd_stores)
+
+    st = sub.add_parser("store", help="改店铺配置：主体、税号、别名、归档")
+    ssub = st.add_subparsers(dest="store_cmd", required=True)
+
+    se = ssub.add_parser("set", help="改一家店的配置")
+    se.add_argument("store_id", help="店铺 id，用 ledger stores 看")
+    se.add_argument("--entity", help="法人主体全名")
+    se.add_argument("--tax-id", dest="entity_tax_id", help="主体税号")
+    se.add_argument("--alias", action="append", help="再认一个文件名里的别名，可重复")
+    se.add_argument("--note", help="备注：这个值是从哪来的")
+    se.add_argument("--archive", dest="archive", action="store_true", default=None,
+                    help="归档：不参与新账期，历史账仍可查")
+    se.add_argument("--unarchive", dest="archive", action="store_false",
+                    help="取消归档")
+    se.set_defaults(func=cmd_store_set)
+
+    sa = ssub.add_parser("add", help="登记一家新店")
+    sa.add_argument("id", help="店铺 id，英文，以后不能改（它是关联键）")
+    sa.add_argument("name", help="店铺全名，交上来的文件名里带的就是这个")
+    sa.add_argument("--platform", help=f"平台，不给就从店名猜。可选：{'、'.join(KNOWN_PLATFORMS)}")
+    sa.add_argument("--entity", help="法人主体全名")
+    sa.add_argument("--tax-id", dest="tax_id", help="主体税号")
+    sa.add_argument("--alias", action="append", help="别名，可重复")
+    sa.add_argument("--note", help="备注")
+    sa.set_defaults(func=cmd_store_add)
 
     return p
 

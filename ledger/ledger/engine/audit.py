@@ -16,6 +16,7 @@ import polars as pl
 
 from ..model.schema import Check, Model
 from .calculate import NodeValue, _apply
+from .link import EXCLUDED_KEY
 from .types import ClassifyReport, Completeness, Finding, LinkReport
 
 
@@ -280,7 +281,23 @@ _ROLE_LABEL = {
 
 #: 公司级主表里挂不上本店订单的那部分。绝大多数是别家店的，也可能夹着本店漏的单，
 #: 所以照样列出来，只是不算进本店未归属总额。
-_OTHER_STORES = "其他店的数据（公司级主表）"
+BUCKET_OTHER_STORES = "其他店的数据（公司级主表）"
+
+#: 取键规则链显式判定为非经营流水的行。理财申购、银行间调拨、保证金进出、广告预充值
+#: 都在这里——规则链认出来了并且决定不算，报成"挂不上要查"就是自相矛盾。
+#: 实测淘宝 5 月有 64 行、47.78 万，全是这类。
+BUCKET_EXCLUDED_FLOW = "非经营流水（规则已排除）"
+
+#: 订单号取到了，格式也对，但不在本期的订单明细里。
+#:
+#: 这是账期边界，不是数据问题。两个来源：一是店长导出时日期选宽了，交上来的对账表
+#: 跨了三个月（实测支付宝账单 4/5/6 月各占 28%/42%/30%）；二是跨期结算，淘宝确认
+#: 收货后才打款，4 月的订单 5 月才到账。实测淘宝 5 月这类 31,549 行、17.52 万，
+#: 其中 99.4% 的订单号在聚水潭 5+6 月表里也查不到，即下单在 4 月及更早。
+BUCKET_OTHER_PERIOD = "其他账期的订单"
+
+#: 剩下的才是真要人查的：连订单号都取不出来，也没被规则认领。
+BUCKET_NEEDS_WORK = "取不出订单号，要查归属"
 
 
 def _one_row_once(unlinked: pl.DataFrame, model: Model) -> pl.DataFrame:
@@ -319,8 +336,13 @@ def _one_row_once(unlinked: pl.DataFrame, model: Model) -> pl.DataFrame:
 def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str, int, float]], float]:
     """把挂不上订单的钱分成"不用管的"和"需要看的"。
 
-    AI 在这里的价值是分类和降噪。字典里已标注"天然无订单号"的科目自动归入前者，
-    其余归入后者由人判断。
+    分桶的依据是"为什么挂不上"，因为不同原因要的处置完全不同。混在一起报出来的
+    净额没有业务含义：淘宝 5 月那 -30.29 万，是 -47.78 万非经营流水（规则故意排除的）
+    和 +17.52 万其他账期订单收款相减的巧合，而真正要人查的只有 5 行、308.31 元。
+    把这三样加在一起摆在界面上，用户要么白查一场，要么学会无视这个数——两种都比
+    不报更坏。
+
+    字典里已标注"天然无订单号"的科目同样自动归入不用管的那边。
     """
     if facts.is_empty():
         return [], 0.0
@@ -335,29 +357,47 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
     naturally_unlinked_metrics = {m.id for m in model.metrics if m.naturally_unlinked}
     company_wide = {s.id for s in model.sources if s.company_wide}
 
+    has_key = pl.col("link_key").is_not_null() & (pl.col("link_key").cast(pl.Utf8) != "")
     tagged = unlinked.with_columns(
         pl.when(pl.col("source_id").is_in(list(company_wide)))
-        .then(pl.lit(_OTHER_STORES))
+        .then(pl.lit(BUCKET_OTHER_STORES))
+        # 规则链的显式决定优先于其他判断：它已经认出这行是什么并且决定不算了。
+        .when(pl.col("link_key").cast(pl.Utf8) == EXCLUDED_KEY)
+        .then(pl.lit(BUCKET_EXCLUDED_FLOW))
         .when(pl.col("metric_id").is_in(list(naturally_unlinked_metrics)))
         .then(pl.coalesce(pl.col("minor"), pl.col("subject"), pl.lit("其他")))
         .when(pl.col("subject").is_in(list(natural)))
         .then(pl.coalesce(pl.col("minor"), pl.col("subject")))
-        .otherwise(pl.lit("看起来是订单的钱"))
+        .when(has_key)
+        .then(pl.lit(BUCKET_OTHER_PERIOD))
+        .otherwise(pl.lit(BUCKET_NEEDS_WORK))
         .alias("bucket")
     )
+    # 要人查的那一桶排最前。其余按金额排——它们是给人扫一眼确认"哦这些不用管"的，
+    # 而要查的那桶是唯一需要行动的，埋在中间就等于没报。
     grouped = (
         tagged.group_by("bucket")
         .agg(pl.len().alias("rows"), pl.col("amount").sum().round(2).alias("amount"))
-        .sort("amount")
+        .sort(
+            (pl.col("bucket") == BUCKET_NEEDS_WORK).cast(pl.Int8),
+            pl.col("amount"),
+            descending=[True, False],
+        )
     )
     buckets = [
         (row["bucket"], int(row["rows"]), float(row["amount"]))
         for row in grouped.iter_rows(named=True)
     ]
-    # 公司级主表里挂不上的那部分不计入本店未归属：运费和小额打款交上来是全公司的，
-    # 别家店的运单本来就不该算这家店的账。仍然列在桶里让人看得见，但不进总额——
-    # 否则本店真正需要查归属的钱会被埋在几十万里，谁也不会去看。
-    total = round(sum(a for label, _, a in buckets if label != _OTHER_STORES), 2)
+    # 只有真正要人查的才进总额。其余三类都列在桶里让人看得见，但不进总额：
+    #   公司级主表      运费和小额打款交上来是全公司的，别家店的运单不该算这家店的账
+    #   非经营流水      规则链已经认出并决定不算，再报一遍等于自相矛盾
+    #   其他账期的订单  账期边界，那笔钱属于别的月份，本期查不出结果
+    # 否则真正需要查的那几百块会被埋在几十万里，谁也不会去看。
+    total = round(
+        sum(a for label, _, a in buckets
+            if label not in (BUCKET_OTHER_STORES, BUCKET_EXCLUDED_FLOW, BUCKET_OTHER_PERIOD)),
+        2,
+    )
     return buckets, total
 
 

@@ -4,15 +4,22 @@
 丢掉，也不能硬摊进利润。但报得过头一样有害：淘宝的未归属曾经虚报到 120 万，
 1688 曾经虚报 54.8 万，这种量级会让人干脆不看这个提示，等于白报。
 
-两个虚报的来源都不是数据问题，是统计口径：
-一是同一物理行被多个指标各算一次，二是公司级主表里别家店的钱被算进本店。
+三个虚报的来源都不是数据问题，是统计口径：
+一是同一物理行被多个指标各算一次，二是公司级主表里别家店的钱被算进本店，
+三是把「规则已排除的非经营流水」和「其他账期的订单」也算成了要人查的钱。
 """
 
 from __future__ import annotations
 
 import polars as pl
 
-from ledger.engine.audit import _bucket_unlinked
+from ledger.engine.audit import (
+    BUCKET_EXCLUDED_FLOW,
+    BUCKET_NEEDS_WORK,
+    BUCKET_OTHER_PERIOD,
+    _bucket_unlinked,
+)
+from ledger.engine.link import EXCLUDED_KEY
 from ledger.model.schema import (
     Metric,
     Model,
@@ -130,3 +137,82 @@ class TestNothingUnlinked:
                  "amount": -10.0, "row_no": 1, "linked": True}]
         buckets, total = _bucket_unlinked(_facts(rows), _model())
         assert buckets == [] and total == 0.0
+
+
+class TestBucketsByReason:
+    """按「为什么挂不上」分桶，因为不同原因要的处置完全不同。
+
+    淘宝 5 月曾经报出 -30.29 万「看起来是订单的钱」，而这个数字没有任何业务含义，
+    它是三样东西加在一起的净额：
+
+      -47.78 万   64 行，规则链显式判定为非经营流水（余利宝申购、保证金、广告预充值）
+      +17.52 万   31,549 行，订单号是对的但订单不在本期（跨期结算，或导出日期选宽了）
+        -308.31 元  5 行，连订单号都取不出来 —— 只有这 308 块真要人查
+
+    把三样加起来摆在界面上，用户要么白查一场，要么学会无视这个数。两种都比不报更坏。
+    """
+
+    def test_excluded_flow_not_in_total(self):
+        """规则链已经认出这行是什么并决定不算了，再报成「挂不上要查」是自相矛盾。"""
+        rows = [{"metric_id": "trade_receipt", "link_key": EXCLUDED_KEY,
+                 "amount": -477800.64, "row_no": 1}]
+        buckets, total = _bucket_unlinked(_facts(rows), _model())
+        assert total == 0.0
+        assert buckets[0][0] == BUCKET_EXCLUDED_FLOW
+        assert buckets[0][2] == -477800.64, "不进总额，但金额要照实列出来"
+
+    def test_key_found_but_not_in_this_period(self):
+        """订单号取到了、格式也对，只是订单不在本期。账期边界不是数据问题。"""
+        rows = [{"metric_id": "trade_receipt", "link_key": "4502253026216007946",
+                 "amount": 175201.61, "row_no": 1}]
+        buckets, total = _bucket_unlinked(_facts(rows), _model())
+        assert total == 0.0
+        assert buckets[0][0] == BUCKET_OTHER_PERIOD
+
+    def test_no_key_is_the_only_thing_that_counts(self):
+        rows = [{"metric_id": "software_fee", "link_key": None,
+                 "amount": -308.31, "row_no": 1}]
+        buckets, total = _bucket_unlinked(_facts(rows), _model())
+        assert total == -308.31
+        assert buckets[0][0] == BUCKET_NEEDS_WORK
+
+    def test_empty_key_counts_as_no_key(self):
+        rows = [{"metric_id": "software_fee", "link_key": "", "amount": -5.0, "row_no": 1}]
+        _buckets, total = _bucket_unlinked(_facts(rows), _model())
+        assert total == -5.0
+
+    def test_three_reasons_separated(self):
+        """三类混在一起时，总额只留要人查的那一类。"""
+        rows = [
+            {"metric_id": "trade_receipt", "link_key": EXCLUDED_KEY,
+             "amount": -477800.64, "row_no": 1},
+            {"metric_id": "trade_receipt", "link_key": "4502253026216007946",
+             "amount": 175201.61, "row_no": 2},
+            {"metric_id": "software_fee", "link_key": None, "amount": -308.31, "row_no": 3},
+        ]
+        buckets, total = _bucket_unlinked(_facts(rows), _model())
+        assert total == -308.31, "净额 -30.29 万没有业务含义，不该是报出来的那个数"
+        assert len(buckets) == 3
+        assert {label for label, _, _ in buckets} == {
+            BUCKET_EXCLUDED_FLOW, BUCKET_OTHER_PERIOD, BUCKET_NEEDS_WORK,
+        }
+
+    def test_needs_work_sorts_first(self):
+        """要人查的排最前。它是唯一需要行动的，埋在中间就等于没报。"""
+        rows = [
+            {"metric_id": "trade_receipt", "link_key": EXCLUDED_KEY,
+             "amount": -477800.64, "row_no": 1},
+            {"metric_id": "trade_receipt", "link_key": "45022530262160079",
+             "amount": 175201.61, "row_no": 2},
+            {"metric_id": "software_fee", "link_key": None, "amount": -308.31, "row_no": 3},
+        ]
+        buckets, _total = _bucket_unlinked(_facts(rows), _model())
+        assert buckets[0][0] == BUCKET_NEEDS_WORK
+
+    def test_company_wide_wins_over_other_reasons(self):
+        """公司级主表优先：那些行属于哪家店都还没确定，谈不上账期或规则。"""
+        rows = [{"metric_id": "freight_cost", "source_id": "freight",
+                 "link_key": "12345", "amount": -5000.0, "row_no": 1}]
+        buckets, total = _bucket_unlinked(_facts(rows), _model(company_wide=("freight",)))
+        assert total == 0.0
+        assert "其他店" in buckets[0][0]

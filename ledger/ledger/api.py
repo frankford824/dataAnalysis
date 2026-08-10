@@ -16,11 +16,13 @@ from typing import Annotated
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 from .cli import DEFAULT_MODEL, SUFFIXES, _as_dict, group_by_store
 from .engine.runtime import ingest, run
+from .model.config import EDITABLE, add_store, update_store
 from .model.loader import ModelError, load_model
-from .model.schema import guess_platform
+from .model.schema import KNOWN_PLATFORMS, Store, guess_platform
 from .web import PAGE
 
 app = FastAPI(title="记账", docs_url="/api/docs")
@@ -38,18 +40,69 @@ def index() -> str:
     return PAGE
 
 
+def _store_dict(s) -> dict:
+    return {
+        "id": s.id, "name": s.name, "platform": s.platform,
+        "entity": s.entity, "entity_tax_id": s.entity_tax_id,
+        "archived": s.archived, "aliases": list(s.aliases), "note": s.note,
+    }
+
+
 @app.get("/api/stores")
 def stores() -> dict:
     model = _model()
     return {
-        "stores": [
-            {
-                "id": s.id, "name": s.name, "platform": s.platform,
-                "entity": s.entity, "archived": s.archived,
-            }
-            for s in model.stores
-        ]
+        "stores": [_store_dict(s) for s in model.stores],
+        "editable": list(EDITABLE),
+        "platforms": sorted({s.platform for s in model.stores} | set(KNOWN_PLATFORMS)),
     }
+
+
+class StorePatch(BaseModel):
+    """能改的就这几项。id 和 name 不在里面——见 config.EDITABLE 的说明。"""
+
+    entity: str | None = None
+    entity_tax_id: str | None = None
+    archived: bool | None = None
+    aliases: list[str] | None = None
+    note: str | None = None
+
+
+@app.patch("/api/stores/{store_id}")
+def patch_store(store_id: str, patch: StorePatch) -> dict:
+    """改一家店的配置，写回 stores.yaml。
+
+    法人主体这类东西数据里读不出来（支付宝和微信账单不带主体信息），只能靠人配。
+    要人去改 YAML 才能配，那就不是产品。
+    """
+    changes = patch.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(400, "没有要改的字段")
+    try:
+        store = update_store(DEFAULT_MODEL, store_id, changes)
+    except ModelError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"store": _store_dict(store)}
+
+
+class StoreNew(BaseModel):
+    id: str
+    name: str
+    platform: str
+    entity: str = ""
+    entity_tax_id: str = ""
+    aliases: list[str] = []
+    note: str = ""
+
+
+@app.post("/api/stores")
+def create_store(new: StoreNew) -> dict:
+    """登记一家新店。开新店、接新平台都走这里，不用改代码也不用改文件。"""
+    try:
+        store = add_store(DEFAULT_MODEL, Store(**{**new.model_dump(), "aliases": tuple(new.aliases)}))
+    except ModelError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"store": _store_dict(store)}
 
 
 @app.post("/api/run")

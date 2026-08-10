@@ -103,6 +103,25 @@ PAGE = """<!DOCTYPE html>
   .note code { background: #fff; padding: 1px 6px; border-radius: 4px;
     border: 1px solid var(--line); font-size: 13px; }
   .note li { margin: 4px 0; }
+
+  /* 店铺设置。默认收起——店长每月来这里是为了交表，不是为了改配置。 */
+  #settings { margin-top: 28px; }
+  .link { background: none; border: 0; color: var(--accent); cursor: pointer;
+    font-size: 13px; padding: 0 4px; }
+  .storerow { display: grid; grid-template-columns: 180px 1fr 200px auto 64px;
+    gap: 10px; align-items: center; padding: 8px 0;
+    border-top: 1px solid var(--line); }
+  .storename { font-size: 14px; }
+  .storename small { display: block; color: var(--muted); font-size: 12px; }
+  .storerow input { padding: 6px 9px; border: 1px solid var(--line);
+    border-radius: 7px; font-size: 13px; font-family: inherit; }
+  .storerow input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .storerow button { padding: 6px 14px; border: 1px solid var(--line);
+    border-radius: 7px; background: #fff; cursor: pointer; font-size: 13px;
+    font-family: inherit; }
+  .storerow button:hover { border-color: var(--accent); color: var(--accent); }
+  .said { font-size: 12px; color: var(--muted); }
+  .other small { color: var(--muted); font-size: 12px; font-weight: 400; }
 </style>
 </head>
 <body>
@@ -118,6 +137,11 @@ PAGE = """<!DOCTYPE html>
   <input type="file" id="file" multiple>
   <div id="status" class="status"></div>
   <div id="out"></div>
+
+  <div class="sub" id="settings">
+    <h3>店铺设置 <button id="toggle" class="link">展开</button></h3>
+    <div id="stores" hidden></div>
+  </div>
 </main>
 <script>
 const drop = document.getElementById('drop');
@@ -219,18 +243,32 @@ function missing(s) {
     + s.missing_sources.map(esc).join('、') + '</p></div>';
 }
 
+// 每类钱为什么不用管。要人查的那类不在这里——它本来就该占注意力。
+const BUCKET_WHY = {
+  '其他店的数据（公司级主表）': '交上来就是全公司的，绝大多数属于别家店',
+  '非经营流水（规则已排除）': '理财、调拨、保证金、广告预充值，不是损益',
+  '其他账期的订单': '订单号是对的，但订单不在本期。跨期结算，或者导出时日期选宽了',
+};
+const NEEDS_WORK = '取不出订单号，要查归属';
+
 function unlinked(s) {
   if (!s.unlinked_buckets.length) return '';
   const rows = s.unlinked_buckets.map(b => {
-    const other = b.label.indexOf('其他店') === 0;
-    return '<tr' + (other ? ' class="other"' : '') + '><td>' + esc(b.label)
+    const why = BUCKET_WHY[b.label] || '';
+    return '<tr' + (why ? ' class="other"' : '') + '><td>' + esc(b.label)
+      + (why ? '<br><small>' + esc(why) + '</small>' : '')
       + '</td><td class="n">' + money(b.amount) + '</td><td class="n">'
       + b.count.toLocaleString('zh-CN') + ' 笔</td></tr>';
   }).join('');
-  return '<div class="sub"><h3>挂不到本店订单的钱：本店 ' + money(s.unlinked_total)
-    + '</h3><table>' + rows + '</table>'
-    + '<p>本店那部分不是丢了，是还没归属，查清才会进利润。'
-    + '公司级主表那部分交上来就是全公司的，绝大多数属于别家店，不算本店的账。</p></div>';
+  const head = s.unlinked_total
+    ? '要查归属的钱 ' + money(s.unlinked_total)
+    : '没有要查归属的钱';
+  return '<div class="sub"><h3>没进利润的钱：' + head + '</h3><table>' + rows + '</table>'
+    + (s.unlinked_total
+        ? '<p>只有「' + NEEDS_WORK + '」要人查，查清了才会进利润。'
+          + '其余几类本来就不该算本店这一期。</p>'
+        : '<p>列出来的几类都不该算本店这一期，不用管。</p>')
+    + '</div>';
 }
 
 function failure(f) {
@@ -253,13 +291,66 @@ function orphans(list) {
         return '<li>' + esc(o.file) + hint + '</li>';
       }).join('')
     + '</ul><p>认不出的文件不会塞进某家店凑数，那会把一家店的钱记到另一家头上。'
-    + '在 stores.yaml 里登记后重传即可。</p></div>';
+    + '在下面的「店铺设置」里登记这家店，然后重传即可。</p></div>';
 }
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g,
     c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
+
+// 店铺设置。法人主体这类东西数据里读不出来——支付宝和微信账单不带主体信息，
+// 只能由人告诉引擎。要人去改 YAML 才能配，那是脚手架不是产品，所以放在界面上。
+const toggle = document.getElementById('toggle');
+const storesEl = document.getElementById('stores');
+
+toggle.onclick = async () => {
+  const showing = !storesEl.hidden;
+  storesEl.hidden = showing;
+  toggle.textContent = showing ? '展开' : '收起';
+  if (!showing) await loadStores();
+};
+
+async function loadStores() {
+  storesEl.innerHTML = '<p class="why">正在读……</p>';
+  const res = await fetch('/api/stores');
+  const data = await res.json();
+  storesEl.innerHTML = data.stores.map(storeRow).join('')
+    + '<p class="why">主体是多对一的：几家店可以同属一个主体，这层关系推不出来只能配。'
+    + '改完立刻生效，下次算账就按新配置走。</p>';
+}
+
+function storeRow(s) {
+  return '<div class="storerow" data-id="' + esc(s.id) + '">'
+    + '<div class="storename">' + esc(s.name)
+    + '<small>' + esc(s.platform) + (s.archived ? ' · 已归档' : '') + '</small></div>'
+    + '<input class="entity" value="' + esc(s.entity) + '" placeholder="法人主体全名（未配置）">'
+    + '<input class="taxid" value="' + esc(s.entity_tax_id) + '" placeholder="税号（可空）">'
+    + '<button class="save">保存</button>'
+    + '<span class="said"></span></div>';
+}
+
+storesEl.onclick = async e => {
+  if (!e.target.classList.contains('save')) return;
+  const row = e.target.closest('.storerow');
+  const said = row.querySelector('.said');
+  said.textContent = '正在存……';
+  const res = await fetch('/api/stores/' + encodeURIComponent(row.dataset.id), {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      entity: row.querySelector('.entity').value.trim(),
+      entity_tax_id: row.querySelector('.taxid').value.trim(),
+    }),
+  });
+  if (res.ok) {
+    said.textContent = '已保存';
+    setTimeout(() => { said.textContent = ''; }, 2500);
+  } else {
+    const body = await res.json().catch(() => ({}));
+    said.textContent = '没存上：' + (body.detail || res.status);
+  }
+};
 </script>
 </body>
 </html>
