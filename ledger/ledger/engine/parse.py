@@ -249,8 +249,12 @@ def _unmerge(data: bytes, sheet: str, rows: list[list]) -> list[list]:
         value = rows[r1][c1]
         if value is None or value == "":
             continue
-        for r in range(r1 + 1, min(r2 + 1, len(rows))):
+        for r in range(r1, min(r2 + 1, len(rows))):
             for c in range(c1, min(c2 + 1, len(rows[r]))):
+                # 左上角是值本身所在的格子，其余全填。不能从 r1+1 起：
+                # 那样只覆盖纵向合并，A2:B2 这种单行横向合并会被整个跳过。
+                if (r, c) == (r1, c1):
+                    continue
                 if rows[r][c] is None or rows[r][c] == "":
                     rows[r][c] = value
     return rows
