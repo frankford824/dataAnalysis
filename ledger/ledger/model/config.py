@@ -30,6 +30,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from .loader import ModelError, load_model
 from .schema import SourceContract, Store, Template
+from .transaction import locked_model
 
 #: 店铺的哪些字段允许改。
 #:
@@ -46,6 +47,7 @@ def _yaml() -> YAML:
     return y
 
 
+@locked_model
 def update_store(model_dir: str | Path, store_id: str, changes: dict[str, Any]) -> Store:
     """改一家店的配置。返回改完之后的这家店。"""
     root = Path(model_dir)
@@ -82,6 +84,7 @@ def update_store(model_dir: str | Path, store_id: str, changes: dict[str, Any]) 
     return load_model(root).store(store_id)
 
 
+@locked_model
 def add_store(model_dir: str | Path, store: Store) -> Store:
     """登记一家新店。"""
     root = Path(model_dir)
@@ -121,6 +124,7 @@ def add_store(model_dir: str | Path, store: Store) -> Store:
 _ID_OK = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
+@locked_model
 def add_template(
     model_dir: str | Path,
     template: Template,
@@ -176,6 +180,7 @@ def add_template(
     return load_model(root).template(template.id)
 
 
+@locked_model
 def drop_template(model_dir: str | Path, template_id: str, *, source: str = "") -> None:
     """把一个模板（连同顺带登记的数据源）撤掉。
 

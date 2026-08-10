@@ -14,16 +14,17 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
+from decimal import Decimal
 
 import polars as pl
 
 from ..model.schema import Template
+from ..money import decimal_amount, sum_amounts
 from .types import ControlTotal, RawTable
 
 #: 金额允许的误差。逐笔累加的浮点误差远小于此。
-_TOLERANCE = 0.01
+_TOLERANCE = Decimal("0.01")
 
 
 @dataclass
@@ -60,17 +61,18 @@ def verify(table: RawTable, frame: pl.DataFrame, template: Template) -> list[Con
 def _check_one(control: ControlTotal, frame: pl.DataFrame, role: str) -> ControlResult:
     values = frame.get_column(role).cast(pl.Float64, strict=False).fill_null(0.0).to_list()
     got_count = sum(1 for v in values if v != 0.0)
-    got_amount = math.fsum(values)
+    got_amount = sum_amounts(values)
 
     problems = []
     if control.count is not None and got_count != control.count:
         problems.append(
             f"笔数 文件说 {control.count:,}、解析出 {got_count:,}，差 {got_count - control.count:+,}"
         )
-    if control.amount is not None and abs(got_amount - control.amount) > _TOLERANCE:
+    expected = decimal_amount(control.amount) if control.amount is not None else None
+    if expected is not None and abs(got_amount - expected) > _TOLERANCE:
         problems.append(
-            f"金额 文件说 {control.amount:,.2f}、解析出 {got_amount:,.2f}，"
-            f"差 {got_amount - control.amount:+,.2f}"
+            f"金额 文件说 {expected:,.2f}、解析出 {got_amount:,.2f}，"
+            f"差 {got_amount - expected:+,.2f}"
         )
 
     if not problems:

@@ -35,7 +35,7 @@
 #nav a.on .count { color: var(--accent); }
 #nav .foot { margin-top: auto; font-size: var(--t-xs); color: var(--n5); line-height: 1.7; }
 
-main { padding: var(--s5) var(--s6) var(--s7); max-width: 1180px; }
+main { padding: var(--s5) var(--s6) var(--s7); max-width: 1180px; min-width: 0; }
 main > header { margin-bottom: var(--s5); }
 main > header h1 { font-size: var(--t-xl); }
 main > header .sub { color: var(--n6); font-size: var(--t-sm); margin-top: var(--s1); }
@@ -250,4 +250,24 @@ table.cols tr.quiet:hover { opacity: 1; }
   #nav ul { flex-direction: row; }
   #nav .foot { display: none; }
   main { padding: var(--s4); }
+}
+
+@media (max-width: 640px) {
+  #nav { padding: var(--s3); gap: var(--s3); }
+  #nav .brand { flex: 0 0 auto; }
+  #nav ul { flex: 0 0 auto; }
+  main { padding: var(--s3); }
+
+  /* The desktop editor has five fixed columns (at least 706px). On a phone it
+     becomes one vertical form so the document itself never scrolls sideways. */
+  .storerow { grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
+  .storerow > *, .storerow input, .storerow select, .storerow button {
+    min-width: 0; max-width: 100%;
+  }
+  .storerow input, .storerow select { width: 100%; }
+
+  /* Data tables may scroll inside their own region; they must not widen body. */
+  table.deliver, table.cols { display: block; max-width: 100%; overflow-x: auto; }
+  table.cols { min-width: 560px; }
+  #progress { left: var(--s3); right: var(--s3); bottom: var(--s3); max-width: none; }
 }

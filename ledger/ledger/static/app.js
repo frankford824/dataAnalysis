@@ -64,11 +64,16 @@ function toast(text, bad) {
 
 /** 接口调用。失败一律把后端那句人话原样抛出来，别自己编。 */
 async function api(path, opts) {
+  opts = opts ? {...opts, headers: {...(opts.headers || {})}} : {headers: {}};
+  const token = sessionStorage.getItem('ledger-token');
+  if (token) opts.headers.Authorization = 'Bearer ' + token;
   const res = await fetch(path, opts);
   if (!res.ok) {
     let detail = res.status + '';
     try { detail = (await res.json()).detail || detail; } catch (e) { /* 非 JSON 就算了 */ }
-    throw new Error(detail);
+    const err = new Error(detail);
+    err.status = res.status;
+    throw err;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -78,6 +83,20 @@ function json(method, body) {
 }
 
 const S = {boot: null, overview: null};
+
+function loginGate(message) {
+  main.innerHTML = `<div class="card"><header><h1>身份验证</h1></header>
+    <p class="muted">${esc(message)}</p>
+    <div class="row wrap"><label class="fld">访问 token
+      <input id="auth-token" type="password" autocomplete="current-password"></label>
+      <button class="primary" id="auth-go">登录</button></div></div>`;
+  $('auth-go').onclick = () => {
+    const token = $('auth-token').value.trim();
+    if (!token) return;
+    sessionStorage.setItem('ledger-token', token);
+    location.reload();
+  };
+}
 
 // --------------------------------------------------------------------------
 // 路由
@@ -548,11 +567,10 @@ function wireStore(storeId, period, snap) {
 
   const close = $('close');
   if (close) close.onclick = async () => {
-    const by = prompt('谁结的账？（会记进留痕）') || '';
     close.disabled = true;
     try {
       await api(`/api/stores/${encodeURIComponent(storeId)}/periods/${encodeURIComponent(period)}/close`,
-        json('POST', {by}));
+        json('POST'));
       toast(`${period} 已结账，数字冻住了`);
       S.overview = null;
       route();
@@ -565,7 +583,7 @@ function wireStore(storeId, period, snap) {
     if (!note) return;
     try {
       await api(`/api/stores/${encodeURIComponent(storeId)}/periods/${encodeURIComponent(period)}/reopen`,
-        json('POST', {by: '', note}));
+        json('POST', {note}));
       toast(`${period} 已反结账`);
       S.overview = null;
       route();
@@ -982,6 +1000,7 @@ function onboardBody() {
        于是新模板的签名是老模板列集的子集，老版的表以后会被新模板抢走。 */
     time_slots: W.draft.time_slots,
     total_row_marker: W.draft.total_row_marker,
+    model_revision: W.draft.model_revision,
   };
 }
 
@@ -1085,6 +1104,10 @@ function tryResult(r) {
     S.boot = await api('/api/bootstrap');
     $('c-stores').textContent = S.boot.stores.length || '';
   } catch (err) {
+    if (err.status === 401) {
+      loginGate(err.message);
+      return;
+    }
     main.innerHTML = fail(err.message);
     return;
   }

@@ -9,12 +9,12 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 
 import polars as pl
 
 from ..model.schema import Metric, Model, NodeExpr, Predicate, Template, ValueExpr
+from ..money import decimal_amount, money_float, sum_amounts
 from .classify import COL_MAJOR, COL_MINOR, COL_NATURAL_UNLINKED
 from .link import LINK_KEY, LINKED
 from .normalize import PARENT_FIRST, is_parent_only
@@ -278,9 +278,9 @@ def evaluate_statement(
 def _apply(op: str, values: list[float | None]) -> float | None:
     nums = [v for v in values if v is not None]
     if op == "add":
-        return round(math.fsum(nums), 2)
+        return float(sum_amounts(nums))
     if op == "negate":
-        return round(-nums[0], 2) if nums else None
+        return money_float(-decimal_amount(nums[0])) if nums else None
     if op == "ratio":
         if len(nums) < 2 or nums[1] == 0:
             return None  # DIVIDE 的除零语义：返回空而不是报错
@@ -295,5 +295,7 @@ def totals_by_metric(facts: pl.DataFrame, only_linked: bool = False) -> dict[str
     frame = facts.filter(pl.col("linked")) if only_linked else facts
     if frame.is_empty():
         return {}
-    grouped = frame.group_by("metric_id").agg(pl.col("amount").sum().round(2))
-    return dict(zip(grouped.get_column("metric_id").to_list(), grouped.get_column("amount").to_list()))
+    totals = {}
+    for metric_id, amount in frame.select("metric_id", "amount").iter_rows():
+        totals[metric_id] = totals.get(metric_id, decimal_amount(0)) + decimal_amount(amount)
+    return {metric_id: float(sum_amounts([amount])) for metric_id, amount in totals.items()}

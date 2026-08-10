@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import polars as pl
 
 from ..model.schema import Check, Model
+from ..money import decimal_amount, money_float, sum_amounts
 from .calculate import NodeValue, _apply
 from .link import EXCLUDED_KEY
 from .types import ClassifyReport, Completeness, Finding, LinkReport
@@ -155,7 +156,7 @@ def _check_unclassified(check, model, facts, links, classify, completeness, node
         return Finding(check.id, check.name, passed=True, blocking=False, message="所有科目都认识")
     top = sorted(unmatched.items(), key=lambda kv: -abs(kv[1][1]))[:5]
     lines = [f"  · {name}：{c} 笔，{amount:,.2f} 元" for name, (c, amount) in top]
-    total = sum(abs(a) for _, a in unmatched.values())
+    total = float(sum_amounts(abs(decimal_amount(a)) for _, a in unmatched.values()))
     message = (
         f"有 {len(unmatched)} 个科目字典里没有，共 {count:,} 笔、{total:,.2f} 元：\n"
         + "\n".join(lines)
@@ -209,8 +210,8 @@ def _check_tie_out(check, model, facts, links, classify, completeness, nodes, re
             check.id, check.name, passed=True, blocking=False,
             message=f"{check.name}：等式有一边数据不全，等数据齐了再对",
         )
-    diff = round(left - right, 2)
-    passed = abs(diff) <= check.tolerance
+    diff = money_float(decimal_amount(left) - decimal_amount(right))
+    passed = abs(decimal_amount(diff)) <= decimal_amount(check.tolerance)
     message = (
         f"{check.name} 对得上"
         if passed
@@ -375,29 +376,25 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
     )
     # 要人查的那一桶排最前。其余按金额排——它们是给人扫一眼确认"哦这些不用管"的，
     # 而要查的那桶是唯一需要行动的，埋在中间就等于没报。
-    grouped = (
-        tagged.group_by("bucket")
-        .agg(pl.len().alias("rows"), pl.col("amount").sum().round(2).alias("amount"))
-        .sort(
-            (pl.col("bucket") == BUCKET_NEEDS_WORK).cast(pl.Int8),
-            pl.col("amount"),
-            descending=[True, False],
-        )
-    )
+    grouped = {}
+    for bucket, amount in tagged.select("bucket", "amount").iter_rows():
+        entry = grouped.setdefault(bucket, [0, []])
+        entry[0] += 1
+        entry[1].append(amount)
     buckets = [
-        (row["bucket"], int(row["rows"]), float(row["amount"]))
-        for row in grouped.iter_rows(named=True)
+        (bucket, int(values[0]), float(sum_amounts(values[1])))
+        for bucket, values in grouped.items()
     ]
+    buckets.sort(key=lambda row: (row[0] != BUCKET_NEEDS_WORK, row[2]))
     # 只有真正要人查的才进总额。其余三类都列在桶里让人看得见，但不进总额：
     #   公司级主表      运费和小额打款交上来是全公司的，别家店的运单不该算这家店的账
     #   非经营流水      规则链已经认出并决定不算，再报一遍等于自相矛盾
     #   其他账期的订单  账期边界，那笔钱属于别的月份，本期查不出结果
     # 否则真正需要查的那几百块会被埋在几十万里，谁也不会去看。
-    total = round(
-        sum(a for label, _, a in buckets
-            if label not in (BUCKET_OTHER_STORES, BUCKET_EXCLUDED_FLOW, BUCKET_OTHER_PERIOD)),
-        2,
-    )
+    total = float(sum_amounts(
+        a for label, _, a in buckets
+        if label not in (BUCKET_OTHER_STORES, BUCKET_EXCLUDED_FLOW, BUCKET_OTHER_PERIOD)
+    ))
     return buckets, total
 
 

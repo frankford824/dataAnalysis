@@ -34,6 +34,7 @@ from .model.propose import Draft, propose
 from .model.propose import spine_roles as propose_spine_roles
 from .model.loader import ModelError, load_model
 from .model.schema import Model, ParseOptions, SourceContract, Template
+from .model.transaction import assert_revision, model_lock
 from .workspace import Workspace
 
 #: 试跑采样多少行给人看。看几行是为了确认「取出来的确实是这个意思」，不是为了看全。
@@ -419,6 +420,7 @@ def land(
     source: SourceContract | None = None,
     by: str = "",
     recompute_stores: bool = True,
+    expected_revision: str | None = None,
 ) -> Landed:
     """把确认过的模板写进模型，然后把用得上它的店重算一遍。
 
@@ -430,31 +432,33 @@ def land(
     # 退路是按字节还原，不是反过来再改一遍文件。删一条记录得重写整个文档，而重写
     # 会顺手把嵌套缩进全改掉——退回去的文件跟原来那份差 600 行。存下原样最省事，
     # 也最可信：退回去的就是原来那个文件，一个字节都不差。
-    before = _snapshot(Path(model_dir))
-    saved = add_template(model_dir, template, source=source, by=by)
-    model = load_model(model_dir)
-    out = Landed(template_id=saved.id, source_id=saved.source)
+    with model_lock(model_dir):
+        assert_revision(model_dir, expected_revision)
+        before = _snapshot(Path(model_dir))
+        saved = add_template(model_dir, template, source=source, by=by)
+        model = load_model(model_dir)
+        out = Landed(template_id=saved.id, source_id=saved.source)
 
-    if not recompute_stores:
+        if not recompute_stores:
+            return out
+
+        # 写模板只保证「模型能加载」，不保证「引擎能算完」——两者差得很远：
+        # 脊柱少一列分摊比例，模型校验一路绿灯，引擎跑到分摊那一步才抛异常。
+        # 真让这种模板留在模型里，整个系统从此算不出账，而现场没人知道是刚接的表干的。
+        # 所以算不出就退回去，宁可这次接不上。
+        try:
+            for store in model.active_stores():
+                if not ws.active_files(store.id):
+                    continue
+                report = service.recompute(ws, model, store)
+                out.stores.append(store.id)
+                out.periods.extend(report.periods)
+        except Exception as exc:
+            _restore(before)
+            raise ModelError(
+                f"模板写进去之后算不出账，已经退回，模型还是原来那份。原因：{exc}"
+            ) from exc
         return out
-
-    # 写模板只保证「模型能加载」，不保证「引擎能算完」——两者差得很远：
-    # 脊柱少一列分摊比例，模型校验一路绿灯，引擎跑到分摊那一步才抛异常。
-    # 真让这种模板留在模型里，整个系统从此算不出账，而现场没人知道是刚接的表干的。
-    # 所以算不出就退回去，宁可这次接不上。
-    try:
-        for store in model.active_stores():
-            if not ws.active_files(store.id):
-                continue
-            report = service.recompute(ws, model, store)
-            out.stores.append(store.id)
-            out.periods.extend(report.periods)
-    except Exception as exc:
-        _restore(before)
-        raise ModelError(
-            f"模板写进去之后算不出账，已经退回，模型还是原来那份。原因：{exc}"
-        ) from exc
-    return out
 
 
 #: 落库会动到的文件。只存这两份，别整目录快照——整目录会把人在这期间手改的

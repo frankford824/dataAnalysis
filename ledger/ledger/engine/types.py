@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..money import sum_amounts
+
 #: 证据锚点列名。跟着数据一路传到最终结果，保证任何数字都能点回原始文件行号。
 ANCHOR_SHA = "__sha__"
 ANCHOR_FILE = "__file__"
@@ -172,7 +174,7 @@ class ClassifyReport:
     @property
     def unmatched(self) -> dict[str, tuple[int, float]]:
         """原始科目 → (行数, 金额)。未命中时调 AI 提建议，人工确认后写回字典。"""
-        return {k: (len(v), sum(v.values())) for k, v in self.unmatched_rows.items()}
+        return {k: (len(v), float(sum_amounts(v.values()))) for k, v in self.unmatched_rows.items()}
 
     @property
     def hit_rate(self) -> float:

@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 import polars as pl
 
 from ..model.schema import Metric
+from ..money import decimal_amount, money_float, sum_amounts
 from .link import SPINE_PERIOD, SPINE_STORE, Spine, target_role
 
 #: 脊柱事实的列。
@@ -49,11 +50,19 @@ def aggregate_by_key(source_facts: pl.DataFrame, metric: Metric) -> pl.DataFrame
         frame = frame.filter(pl.col("major") == metric.major)
     if frame.is_empty():
         return pl.DataFrame(schema={"link_key": pl.Utf8, "amount": pl.Float64})
-    return (
+    totals = {}
+    for key, amount in (
         frame.filter(pl.col("link_key").is_not_null())
-        .group_by("link_key")
-        .agg(pl.col("amount").sum().alias("amount"))
-    )
+        .select("link_key", "amount")
+        .iter_rows()
+    ):
+        totals[key] = totals.get(key, decimal_amount(0)) + decimal_amount(amount)
+    return pl.DataFrame({
+        "link_key": list(totals),
+        # Allocation can legitimately carry sub-cent weights. Preserve them at
+        # this intermediate boundary and round only the final ledger output.
+        "amount": [float(sum_amounts([amount], cents=False)) for amount in totals.values()],
+    }, schema={"link_key": pl.Utf8, "amount": pl.Float64})
 
 
 def project(
@@ -100,17 +109,16 @@ def project(
     )
     all_keys = set(by_key.get_column("link_key").to_list())
     orphan_keys = all_keys - matched_keys
-    orphan_amount = float(
+    orphan_amount = float(sum_amounts(
         by_key.filter(pl.col("link_key").is_in(list(orphan_keys)))
-        .select(pl.col("amount").sum())
-        .item()
-        or 0.0
-    ) if orphan_keys else 0.0
+        .get_column("amount")
+        .to_list()
+    )) if orphan_keys else 0.0
 
     proj = Projection(
         facts=facts.filter(pl.col("amount") != 0.0),
         notes=ratio_health(keyed, metric),
-        orphan_amount=round(orphan_amount, 2),
+        orphan_amount=money_float(orphan_amount),
         orphan_keys=len(orphan_keys),
         uncovered_rows=keyed.height - covered,
     )

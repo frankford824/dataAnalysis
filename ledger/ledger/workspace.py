@@ -74,6 +74,8 @@ create table if not exists run (
   period    text not null,
   at        text not null,
   can_close integer not null,
+  evidence_ready integer not null default 0,
+  evidence_error text not null default '',
   shas      text not null,
   result    text not null
 );
@@ -95,7 +97,15 @@ create table if not exists period (
 """
 
 #: 后加的列。老工作区打开时补上，不用导数据。
-_COLUMNS = {"period": {"at_version": "integer not null default 0"}}
+_COLUMNS = {
+    "period": {"at_version": "integer not null default 0"},
+    # Old runs have no trustworthy proof that their Parquet archive completed.
+    # They intentionally migrate to not-ready and must be recomputed before close.
+    "run": {
+        "evidence_ready": "integer not null default 0",
+        "evidence_error": "text not null default ''",
+    },
+}
 
 
 class WorkspaceError(Exception):
@@ -317,16 +327,27 @@ class Workspace:
     # 快照
     # ------------------------------------------------------------------ #
 
-    def record(self, store_id: str, period: str, result: dict[str, Any], shas: list[str]) -> int:
+    def record(
+        self,
+        store_id: str,
+        period: str,
+        result: dict[str, Any],
+        shas: list[str],
+        *,
+        evidence_ready: bool = True,
+    ) -> int:
         """存一次算账结果。已结账的账期不覆盖快照，只标记有新数据。"""
         with self.conn as conn:
             state = conn.execute(
                 "select state from period where store_id=? and period=?", (store_id, period)
             ).fetchone()
             cur = conn.execute(
-                "insert into run (store_id, period, at, can_close, shas, result) values (?,?,?,?,?,?)",
+                "insert into run "
+                "(store_id, period, at, can_close, evidence_ready, shas, result) "
+                "values (?,?,?,?,?,?,?)",
                 (
                     store_id, period, _now(), int(bool(result.get("can_close"))),
+                    int(evidence_ready),
                     json.dumps(sorted(shas)), json.dumps(result, ensure_ascii=False),
                 ),
             )
@@ -336,6 +357,35 @@ class Workspace:
                     (store_id, period, OPEN, _now()),
                 )
             return int(cur.lastrowid or 0)
+
+    def mark_evidence(self, run_id: int, *, ready: bool, error: str = "") -> None:
+        """Finalize a run only after its row-level evidence archive is durable."""
+        with self.conn as conn:
+            row = conn.execute("select result from run where id=?", (run_id,)).fetchone()
+            if row is None:
+                raise WorkspaceError(f"没有第 {run_id} 次算账记录")
+            result = json.loads(row["result"])
+            if not ready:
+                message = "事实证据留档失败，不能结账"
+                if error:
+                    message += f"：{error}"
+                result["can_close"] = False
+                findings = result.setdefault("findings", [])
+                if not any(f.get("id") == "evidence_archive" for f in findings):
+                    findings.append({
+                        "id": "evidence_archive",
+                        "name": "事实证据留档",
+                        "blocking": True,
+                        "passed": False,
+                        "message": message,
+                    })
+            conn.execute(
+                "update run set evidence_ready=?, evidence_error=?, can_close=?, result=? where id=?",
+                (
+                    int(ready), error[:1000], int(bool(result.get("can_close"))),
+                    json.dumps(result, ensure_ascii=False), run_id,
+                ),
+            )
 
     def facts_path(self, run_id: int) -> Path:
         """这次算账的事实行存哪。
@@ -410,6 +460,9 @@ class Workspace:
         run = self.latest_run(store_id, period)
         if run is None:
             raise WorkspaceError(f"{period} 还没算过账，不能结")
+        if not run["evidence_ready"]:
+            why = run["evidence_error"] or "事实证据尚未完成留档"
+            raise WorkspaceError(f"{period} 结不了账：{why}")
         if not run["can_close"]:
             result = json.loads(run["result"])
             blockers = [
@@ -455,7 +508,8 @@ class Workspace:
     def history(self, store_id: str, period: str) -> list[dict[str, Any]]:
         """这个账期算过几次、每次结论如何。翻旧账用。"""
         rows = self.conn.execute(
-            "select id, at, can_close from run where store_id=? and period=? order by id desc",
+            "select id, at, can_close, evidence_ready, evidence_error "
+            "from run where store_id=? and period=? order by id desc",
             (store_id, period),
         ).fetchall()
         return [dict(r) for r in rows]

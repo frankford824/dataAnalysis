@@ -10,6 +10,7 @@ import io
 
 import pytest
 
+from ledger.service import _keep_facts
 from ledger.workspace import CLOSED, OPEN, Workspace, WorkspaceError
 
 
@@ -125,6 +126,37 @@ def test_history_lists_every_run(ws):
     ws.record("s1", "2025-05", _result(), ["a"])
     ws.record("s1", "2025-05", _result(False), ["a"])
     assert len(ws.history("s1", "2025-05")) == 2
+
+
+def test_evidence_failure_is_visible_and_blocks_close(ws):
+    run_id = ws.record("s1", "2025-05", _result(), ["a"], evidence_ready=False)
+    ws.mark_evidence(run_id, ready=False, error="磁盘已满")
+    state = ws.state("s1", "2025-05")
+    assert state.result["can_close"] is False
+    assert any(f["id"] == "evidence_archive" for f in state.result["findings"])
+    with pytest.raises(WorkspaceError, match="磁盘已满"):
+        ws.close_period("s1", "2025-05")
+
+
+def test_pending_evidence_blocks_close(ws):
+    ws.record("s1", "2025-05", _result(), ["a"], evidence_ready=False)
+    with pytest.raises(WorkspaceError, match="证据"):
+        ws.close_period("s1", "2025-05")
+
+
+def test_parquet_write_error_is_recorded_not_swallowed(ws):
+    class BrokenFacts:
+        def is_empty(self):
+            return False
+
+        def write_parquet(self, _path):
+            raise OSError("只读文件系统")
+
+    run_id = ws.record("s1", "2025-05", _result(), ["a"], evidence_ready=False)
+    _keep_facts(ws, run_id, type("SliceStub", (), {"facts": BrokenFacts()})())
+    run = ws.latest_run("s1", "2025-05")
+    assert run["evidence_ready"] == 0
+    assert "只读文件系统" in run["evidence_error"]
 
 
 # --------------------------------------------------------------------------- #

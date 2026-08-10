@@ -149,11 +149,12 @@ def recompute(ws: Workspace, model: Model, store: Store) -> Recomputed:
     shas = [i.ref.sha256 for i in ing.items]
     for (_s, _p), sl in sorted(result.slices.items(), key=lambda kv: (kv[0][1] or "")):
         payload = slice_dict(sl, store, model)
-        run_id = ws.record(store.id, sl.period, payload, shas)
+        run_id = ws.record(store.id, sl.period, payload, shas, evidence_ready=False)
         _keep_facts(ws, run_id, sl)
         state = ws.state(store.id, sl.period)
+        shown = state.result if state and state.result else payload
         out.periods.append({
-            **payload,
+            **shown,
             "run_id": run_id,
             "state": state.state if state else "open",
             "stale": bool(state and state.stale),
@@ -162,13 +163,17 @@ def recompute(ws: Workspace, model: Model, store: Store) -> Recomputed:
 
 
 def _keep_facts(ws: Workspace, run_id: int, sl: Slice) -> None:
-    """把事实行落一份，供事后下钻。写失败不该拖垮算账。"""
+    """把事实行落一份；失败会把本次快照降级为不可结账。"""
     if sl.facts.is_empty():
+        ws.mark_evidence(run_id, ready=True)
         return
+    path = ws.facts_path(run_id)
     try:
-        sl.facts.write_parquet(ws.facts_path(run_id))
-    except Exception:  # pragma: no cover - 磁盘满、权限之类
-        pass
+        sl.facts.write_parquet(path)
+        ws.mark_evidence(run_id, ready=True)
+    except Exception as exc:  # 磁盘满、权限之类必须显式拦住结账
+        path.unlink(missing_ok=True)
+        ws.mark_evidence(run_id, ready=False, error=str(exc))
 
 
 def facts_of(ws: Workspace, run_id: int) -> pl.DataFrame | None:
