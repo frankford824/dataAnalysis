@@ -409,7 +409,7 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
     for store, period in _slice_keys(spine_facts if not spine_facts.is_empty() else facts):
         result.slices[(store, period)] = _build_slice(
             model, ingestion, facts, spine_facts, spine.frame, store, period,
-            link_reports, classify_report,
+            link_reports, classify_report, platform,
         )
     return result
 
@@ -481,6 +481,7 @@ def _build_slice(
     period: str,
     link_reports: dict[str, LinkReport],
     classify_report: ClassifyReport,
+    platform: str,
 ) -> Slice:
     scoped = facts.filter((pl.col("store") == store) & (pl.col("period") == period))
     # 损益从脊柱事实出数；源事实留作证据链与挂钩率统计。
@@ -504,7 +505,8 @@ def _build_slice(
     totals = calc.totals_by_metric(
         scoped_spine if not scoped_spine.is_empty() else scoped, only_linked=False
     )
-    nodes = calc.evaluate_statement(model, totals, unavailable)
+    inapplicable = {m.id for m in model.metrics if m.for_platform(platform) is None}
+    nodes = calc.evaluate_statement(model, totals, unavailable, inapplicable)
     result = audit(model, scoped, link_reports, classify_report, completeness, nodes)
     return Slice(
         store=store, period=period, nodes=nodes, facts=scoped,

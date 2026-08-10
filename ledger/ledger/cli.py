@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import unicodedata
 from collections import defaultdict
@@ -60,8 +61,12 @@ def _amount(value: float | None, *, available: bool = True, display: str = "amou
 
 
 def _oneline(text: str) -> str:
-    """压成一行。模型里的提示语用 YAML 折叠写法，带着换行和缩进空格。"""
-    return " ".join(text.split())
+    """压成一行。
+
+    模型里的提示语用 YAML 折叠写法，换行会变成空格。中文标点后面本来不该有空格，
+    直接压会留下「还没同步， 或者」这种夹缝。
+    """
+    return re.sub(r"(?<=[，。；：、！？）】」“”])\s+", "", " ".join(text.split()))
 
 
 # --------------------------------------------------------------------------- #
@@ -174,7 +179,7 @@ def _render_statement(sl: Slice, model: Model) -> None:
     print("─" * 64)
     for node in model.statement:
         nv = sl.nodes.get(node.id)
-        if nv is None:
+        if nv is None or not nv.applicable:
             continue
         indent = "  " * max(0, nv.level - 1)
         label = f"{indent}{nv.name}"
@@ -240,7 +245,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             total_slices += 1
             closable += 1 if sl.can_close else 0
             if args.json:
-                payload.append(_as_dict(sl, store))
+                payload.append(_as_dict(sl, store, model))
             else:
                 render_slice(sl, store, model)
 
@@ -252,8 +257,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
-def _as_dict(sl: Slice, store: Store) -> dict:
-    """给 API 和界面用的结构。和终端输出同源，不会两边说法不一致。"""
+def _as_dict(sl: Slice, store: Store, model: Model) -> dict:
+    """给 API 和界面用的结构。和终端输出同源，不会两边说法不一致。
+
+    数据源一律转成中文名再出去：催人补数据时说 order_detail 没人知道那是什么。
+    """
     return {
         "store": store.name,
         "store_id": store.id,
@@ -261,20 +269,25 @@ def _as_dict(sl: Slice, store: Store) -> dict:
         "entity": store.entity,
         "period": sl.period,
         "can_close": sl.can_close,
+        # 按公式树声明的顺序和范围出，和终端输出走同一条路。
+        # 直接倒 sl.nodes 会把指标级节点也带出来，界面上「商品成本」会重复三行，
+        # 而且顺序是求值顺序不是报表顺序。
         "statement": [
             {
                 "id": nv.id, "name": nv.name, "level": nv.level,
-                "value": nv.value, "available": nv.available,
-                "missing_sources": nv.missing_sources, "is_total": nv.is_total,
+                "value": nv.value, "available": nv.available, "display": nv.display,
+                "missing_sources": [_source_name(model, s) for s in nv.missing_sources],
+                "is_total": nv.is_total,
             }
-            for nv in sl.nodes.values()
+            for nv in (sl.nodes.get(node.id) for node in model.statement)
+            if nv is not None and nv.applicable
         ],
         "findings": [
             {"id": f.check_id, "name": f.name, "passed": f.passed,
-             "blocking": f.blocking, "message": f.message}
+             "blocking": f.blocking, "message": _oneline(f.message)}
             for f in sl.audit.findings
         ],
-        "missing_sources": sl.completeness.missing,
+        "missing_sources": [_source_name(model, s) for s in sl.completeness.missing],
         "unlinked_total": sl.audit.unlinked_total,
         "unlinked_buckets": [
             {"label": b[0], "count": b[1], "amount": b[2]}

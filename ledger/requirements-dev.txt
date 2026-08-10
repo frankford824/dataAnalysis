@@ -1,0 +1,5 @@
+-r requirements.txt
+
+pytest==9.1.1
+# starlette 的 TestClient 要它才能起来，接口测试用得上。
+httpx2==2.10.0

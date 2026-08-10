@@ -1,0 +1,23 @@
+# 运行时依赖。版本是本机实测跑通三家店的那一套。
+
+# 列式计算。全部核算走它，几十万行的对账表在内存里过一遍就出结果。
+polars==1.43.2
+
+# 建模数据的校验。模型加载不过就直接报错，宁可启动不了也不带着错模型算钱。
+pydantic==2.13.4
+
+# 模型是一目录 YAML。
+PyYAML==6.0.3
+
+# Excel 读取主力。Rust 实现，比 openpyxl 快 6.5 倍，还能读 .xls 和 .xlsb——
+# 交上来的文件什么格式都有。
+python-calamine==0.8.2
+
+# 备用解析器，兼带写 xlsx（测试要现场造样本）。calamine 读不了的怪文件退回给它。
+openpyxl==3.1.5
+
+# Web 界面与接口。
+fastapi==0.141.1
+uvicorn==0.52.1
+# 上传是 multipart，FastAPI 不自带。
+python-multipart==0.0.32

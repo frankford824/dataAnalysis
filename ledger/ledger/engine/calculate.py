@@ -50,6 +50,9 @@ class NodeValue:
     missing_sources: list[str] = field(default_factory=list)
     children: list[str] = field(default_factory=list)
     is_total: bool = False
+    #: 这个平台有没有这一项。为假时界面收起来——1688 没有软件服务费，
+    #: 摆一行 0 在那里会被读成「这个月没花这笔钱」。
+    applicable: bool = True
 
 
 # --------------------------------------------------------------------------- #
@@ -205,12 +208,21 @@ def evaluate_statement(
     model: Model,
     metric_totals: dict[str, float],
     unavailable_metrics: set[str],
+    inapplicable_metrics: set[str] | None = None,
 ) -> dict[str, NodeValue]:
     """按公式树求值。
 
-    unavailable_metrics 是"数据没到"的指标。它与"算出来是 0"必须严格区分：
-    前者让上层节点不出数，后者正常参与运算。
+    三种"没有数"要分清楚，混起来会让人读错账：
+
+    unavailable_metrics 是数据没到，上层节点不出数，界面显示破折号并说明缺什么。
+    inapplicable_metrics 是这个平台根本没有这一项——1688 没有软件服务费，抖音没有
+    分项的平台费用。它们的值确实是 0，但显示成 0 会被读成"这个月没花这笔钱"，
+    而且一张损益表上半数行都是这种 0，真正要看的几行就淹了。标出来让界面收起。
+    算出来是 0 则照常参与运算。
+
+    不适用只影响呈现，不影响任何金额：本来就没有数据的项，算进去也是加 0。
     """
+    inapplicable = inapplicable_metrics or set()
     resolved: dict[str, NodeValue] = {}
     metric_names = {m.id: m.name for m in model.metrics}
     metric_sources = {m.id: m.source for m in model.metrics}
@@ -240,6 +252,7 @@ def evaluate_statement(
                 value=None if missing else metric_totals.get(ref, 0.0),
                 available=not missing,
                 missing_sources=missing,
+                applicable=ref not in inapplicable,
             )
         spec = model.node(ref)
         refs = spec.children if spec.children else (spec.formula.of if spec.formula else ())
@@ -270,6 +283,8 @@ def evaluate_statement(
             missing_sources=missing,
             children=list(refs),
             is_total=spec.is_total,
+            # 只要有一个子项在这个平台成立，这一行就该出现。合计行因此总是出现。
+            applicable=any(p.applicable for p in parts) if parts else True,
         )
 
     for spec in model.statement:
