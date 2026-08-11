@@ -42,3 +42,6 @@ harness/web/vite.config.d.ts
 .DS_Store
 Thumbs.db
 desktop/src-tauri/gen/
+
+# 部署时生成的访问 token 明文。服务器上只存 sha256，这份是给人看的，不进仓库。
+tools/deploy/.tokens.local.txt
