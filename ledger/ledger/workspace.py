@@ -201,6 +201,11 @@ class Workspace:
             conn.row_factory = sqlite3.Row
             # 界面读、上传写，同时发生很正常。WAL 让读不被写挡住。
             conn.execute("pragma journal_mode=wal")
+            # WAL 只解决读写并发，写与写还是要排队。默认排不到就立刻抛
+            # "database is locked"：两个人同时交表，后一个直接失败，而他交的表
+            # 已经落盘了——文件在、账没记，这种半截状态最难查。等一会儿再说没写上，
+            # 比立刻报错诚实得多。写事务本身只是插几行运行记录，等不到 30 秒。
+            conn.execute("pragma busy_timeout=30000")
             conn.executescript(_SCHEMA)
             _migrate(conn)
             conn.commit()

@@ -132,7 +132,7 @@ def bootstrap(request: Request) -> dict:
 
 
 @app.post("/api/upload")
-async def upload(
+def upload(
     request: Request,
     files: Annotated[list[UploadFile], File()],
 ) -> dict:
@@ -140,6 +140,12 @@ async def upload(
 
     重算整家店而不是这一批文件：损益要靠订单明细做脊柱，单独一张运费表算不出账。
     留档的价值就在这儿——上周交的订单明细还在，这周补张运费表就能出完整结果。
+
+    这个函数必须是 `def` 而不是 `async def`。`intake` 要解析几十万行、跑完整店重算，
+    是实打实的阻塞活；写成 `async def` 它就跑在事件循环上，一个人交表的这几分钟里
+    整台服务器不响应任何请求——别人打不开界面，自己也看不到进度。同步函数由
+    starlette 丢进线程池，解析归线程、事件循环继续收请求，而 polars 的计算在 Rust
+    里放掉 GIL，该吃满的核照样吃满。
     """
     model = _model()
     ws = workspace()
