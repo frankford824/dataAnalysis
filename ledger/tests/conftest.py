@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import functools
+import os
 import sys
 from pathlib import Path
 
@@ -26,10 +28,37 @@ MODELS = ROOT.parent / "models"
 #: 真实平台数据。不在仓库里，只有本机有。
 PLATFORM_DATA = Path("/home/wsfwk/data/platform")
 
-#: 没有真实数据时跳过端到端验收。
-needs_real_data = pytest.mark.skipif(
-    not PLATFORM_DATA.exists(), reason="需要本机的平台数据，仓库里没有"
-)
+#: 明确声明这台机器没有语料。
+#:
+#: 缺语料默认是**失败**而不是跳过，这一点是故意的，而且是这套测试里最重要的一个决定。
+#:
+#: 端到端验收和回放是唯一能证明「引擎算的是对的」的两条测试，上面那两百多条单元测试
+#: 保的都是零件。缺语料时静默跳过，跑出来是一片绿加两行灰字——没人会去看灰字。于是
+#: 「测试全过」这句话在有语料和没语料的机器上含义完全不同，而改引擎的人（尤其是模型）
+#: 只会看到那个绿。
+#:
+#: 所以跳过必须是一个显式动作：设 `LEDGER_NO_CORPUS=1`。设了就等于签字承认
+#: 「我这次没有验证引擎算得对不对」，这句话应该说出口，不该由缺省行为替人说。
+NO_CORPUS = os.environ.get("LEDGER_NO_CORPUS") == "1"
+
+
+def needs_real_data(fn):
+    """标记一条要真实语料的测试。没语料就报失败，除非显式声明放弃。"""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not PLATFORM_DATA.exists():
+            if NO_CORPUS:
+                pytest.skip("LEDGER_NO_CORPUS=1，本次显式放弃引擎正确性验证")
+            pytest.fail(
+                f"找不到历史数据语料 {PLATFORM_DATA}。\n"
+                f"这条测试是引擎正确性的依据之一，缺语料不等于通过，所以报失败而不是跳过。\n"
+                f"这台机器确实没有语料、也接受「本次不验证引擎算得对不对」，"
+                f"就设 LEDGER_NO_CORPUS=1 再跑。"
+            )
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def write_xlsx(

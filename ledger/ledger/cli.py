@@ -39,6 +39,9 @@ from .workspace import default_root
 #: 仓库自带的模型。
 DEFAULT_MODEL = Path(__file__).resolve().parents[2] / "models" / "cn-ecommerce"
 
+#: 真实历史数据。不在仓库里（几百兆的平台导出），回放要它。
+CORPUS = Path("/home/wsfwk/data/platform")
+
 #: 引擎能解析的文件。别的一律不碰，也不假装能读。
 SUFFIXES = {".xlsx", ".xlsm", ".xls", ".xlsb", ".csv", ".zip"}
 
@@ -413,6 +416,58 @@ def cmd_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_replay(args: argparse.Namespace) -> int:
+    """回放：拿真实历史数据重算，逐个数字和基线比。
+
+    改引擎之后必须跑这个。返回码是给自动化用的：1 表示有数字变了，
+    调用方（提交前的检查、模型自己发起的改动）据此停下来等人看。
+    """
+    from .replay import compare, load_baseline, snapshot, write_baseline
+
+    corpus = args.corpus
+    if not corpus.exists():
+        print(
+            f"找不到历史数据语料 {corpus}。\n"
+            "回放是引擎改动的唯一验收依据，没有语料就没有依据，这里不会假装通过。",
+            file=sys.stderr,
+        )
+        return 2
+
+    model = load_model(args.model)
+    current = snapshot(model, corpus, args.store or None)
+    if not current:
+        print(f"{corpus} 里没有任何一家在营店铺的数据", file=sys.stderr)
+        return 2
+
+    if args.record:
+        from .replay import BASELINE, engine_version
+
+        version = engine_version()
+        write_baseline(current, note=args.note or "")
+        n = sum(len(p) for p in current.values())
+        print(f"已录基线：{len(current)} 家店 {n} 个账期 → {BASELINE}")
+        if version.endswith("-dirty"):
+            print(
+                "注意：工作区有未提交的改动，这份基线对应的代码不在版本库里。\n"
+                "     提交之后再录一次，否则将来没法回答「这份基线是哪一版录的」。"
+            )
+        print("把它和这次的代码改动一起提交，那份 diff 就是改动对账上数字的全部影响。")
+        return 0
+
+    baseline = load_baseline()
+    if not baseline:
+        print(
+            "还没有基线。先在一个已知算得对的版本上跑 "
+            "`ledger replay --record` 把当前结果录下来。",
+            file=sys.stderr,
+        )
+        return 2
+
+    rp = compare(current, baseline)
+    print(rp.report())
+    return 0 if rp.clean else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ledger", description="把交上来的表算成账。"
@@ -437,6 +492,16 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--port", type=int, default=8000)
     w.add_argument("--home", type=Path, help=f"工作区目录，默认 {default_root()}")
     w.set_defaults(func=cmd_web)
+
+    rp = sub.add_parser(
+        "replay", help="回放：拿真实历史数据重算，逐个数字和基线比。改引擎后必跑"
+    )
+    rp.add_argument("--corpus", type=Path, default=CORPUS, help=f"历史数据目录，默认 {CORPUS}")
+    rp.add_argument("--store", action="append", help="只回放这家店，可重复")
+    rp.add_argument("--record", action="store_true",
+                    help="把当前结果录成新基线。只在确认变化是想要的之后用")
+    rp.add_argument("--note", help="录基线时写一句为什么变，进基线文件")
+    rp.set_defaults(func=cmd_replay)
 
     s = sub.add_parser("stores", help="看店铺注册表")
     s.set_defaults(func=cmd_stores)

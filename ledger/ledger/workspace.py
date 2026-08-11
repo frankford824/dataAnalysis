@@ -35,6 +35,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, Iterator
 
+from .version import engine_version
+
 #: 账期状态。只有两个——「算过了」不是一种状态，那是有没有快照的事。
 OPEN = "open"
 CLOSED = "closed"
@@ -76,6 +78,9 @@ create table if not exists run (
   can_close integer not null,
   evidence_ready integer not null default 0,
   evidence_error text not null default '',
+  -- 哪一版代码算的。改坏了要回滚，得先说得清回到哪一版；带 -dirty 的那些
+  -- 是拿没进版本库的代码算的，不可复现，不能当回滚目标。
+  engine    text not null default '',
   shas      text not null,
   result    text not null
 );
@@ -104,6 +109,8 @@ _COLUMNS = {
     "run": {
         "evidence_ready": "integer not null default 0",
         "evidence_error": "text not null default ''",
+        # 老记录留空。空就是空——不知道是哪一版算的，别猜一个填进去。
+        "engine": "text not null default ''",
     },
 }
 
@@ -155,6 +162,11 @@ class PeriodState:
     run_id: int | None = None
     result: dict[str, Any] | None = None
     at: str = ""
+    #: 算这份账的那一版引擎。老记录是空的——空就是「不知道」，不猜。
+    #:
+    #: 不进 `result`：`result` 是回放逐字段比对的那份东西，塞进去的话每提交一次
+    #: 基线就全变，比对当天就废了。版本是「这份结果的出身」，不是结果本身。
+    engine: str = ""
     #: 结账之后又有文件交上来。要人反结账才会重算。
     stale: bool = False
 
@@ -343,11 +355,11 @@ class Workspace:
             ).fetchone()
             cur = conn.execute(
                 "insert into run "
-                "(store_id, period, at, can_close, evidence_ready, shas, result) "
-                "values (?,?,?,?,?,?,?)",
+                "(store_id, period, at, can_close, evidence_ready, engine, shas, result) "
+                "values (?,?,?,?,?,?,?,?)",
                 (
                     store_id, period, _now(), int(bool(result.get("can_close"))),
-                    int(evidence_ready),
+                    int(evidence_ready), engine_version(),
                     json.dumps(sorted(shas)), json.dumps(result, ensure_ascii=False),
                 ),
             )
@@ -448,6 +460,7 @@ class Workspace:
             run_id=int(shown["id"]) if shown else None,
             result=json.loads(shown["result"]) if shown else None,
             at=shown["at"] if shown else "",
+            engine=(shown["engine"] or "") if shown else "",
             stale=stale,
         )
 

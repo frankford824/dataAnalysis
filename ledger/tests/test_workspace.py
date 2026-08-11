@@ -101,6 +101,30 @@ def test_record_creates_open_period(ws):
     assert state.result is not None
 
 
+def test_every_run_says_which_engine_computed_it(ws):
+    """没有这个印，「回滚」是句空话。
+
+    改坏了不一定报错，常见的形态是某家店某个月的数字悄悄变了。发现的时候第一个
+    问题是「这个数是哪一版算的」——快照可以是几周前的，光看提交时间只能靠猜。
+    """
+    from ledger.version import engine_version
+
+    ws.record("s1", "2025-05", _result(), ["a"])
+    assert ws.state("s1", "2025-05").engine == engine_version()
+
+
+def test_the_engine_stamp_stays_out_of_the_numbers(ws):
+    """版本印不许进 result。
+
+    result 是回放逐字段比对的那份东西。版本进去之后，每提交一次基线就整份变，
+    于是人开始习惯性地重录基线——门槛当天就废了。
+    """
+    ws.record("s1", "2025-05", _result(), ["a"])
+    st = ws.state("s1", "2025-05")
+    assert st.engine
+    assert "engine" not in st.result
+
+
 def test_latest_snapshot_wins_while_open(ws):
     ws.record("s1", "2025-05", _result(profit=1), ["a"])
     ws.record("s1", "2025-05", _result(profit=2), ["a"])
