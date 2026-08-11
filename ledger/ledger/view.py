@@ -25,7 +25,7 @@ from .model.propose import Draft, role_facts
 from .model.schema import Model, Store
 
 if TYPE_CHECKING:  # 只为类型标注；运行时导入会让 view 依赖向导层，方向反了
-    from .onboard import DryRun
+    from .onboard import Assisted, DryRun
 
 
 def oneline(text: str) -> str:
@@ -393,6 +393,9 @@ def draft_dict(draft: Draft, table: RawTable, model: Model) -> dict[str, Any]:
                 "occurrence": g.occurrence,
                 "derived": g.derived,
                 "no_name_match": g.no_name_match,
+                "model_role": g.model_role,
+                "model_why": oneline(g.model_why),
+                "model_filled": g.model_filled,
                 "alternatives": [
                     {"role": r, "hint": facts[r].hint if r in facts else ""}
                     for r in g.alternatives
@@ -401,7 +404,25 @@ def draft_dict(draft: Draft, table: RawTable, model: Model) -> dict[str, Any]:
             for g in draft.columns
         ],
         "vanished": list(draft.vanished),
-        "warnings": [oneline(w) for w in draft.warnings],
+        "warnings": [oneline(w) for w in (*draft.notices, *draft.warnings)],
+    }
+
+
+def assist_dict(assisted: "Assisted") -> dict[str, Any]:
+    """模型这一轮做了什么。
+
+    采纳、分歧、挡掉的都摆出来，一条不省。人要判断的不是「模型准不准」这种笼统的事，
+    是「这一次它动的这几列对不对」——只给个「模型提了 5 列」，人无从判断起。
+    """
+    return {
+        "ok": assisted.ok,
+        "model": assisted.model,
+        "elapsed_ms": assisted.elapsed_ms,
+        "summary": assisted.summary(),
+        "adopted": list(assisted.adopted),
+        "disputed": list(assisted.disputed),
+        "agreed": list(assisted.agreed),
+        "refused": list(assisted.refused),
     }
 
 

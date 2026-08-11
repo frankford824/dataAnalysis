@@ -451,6 +451,9 @@ function closer(storeId, period, s) {
   return `<div class="spread" style="margin:16px 0 20px">
     <div class="row">${pill}
       <span class="muted xs">${s.at ? '算于 ' + esc(when(s.at)) : ''}${
+        /* 哪一版引擎算的。改坏了要回滚，得先说得清回到哪一版；-dirty 是拿没进
+           版本库的代码算的，回不去，所以单独标出来。 */
+        s.engine ? ' · 引擎 ' + esc(s.engine) : ''}${
         s.note ? ' · ' + esc(s.note) : ''}</span></div>
     <div class="row">
       <button class="link" id="recompute">重算</button>
@@ -868,9 +871,7 @@ async function viewOnboard(sha, sheet, headerRow, source) {
       <div class="sub">${esc(d.file)}${d.sheet ? ' · ' + esc(d.sheet) : ''}
         · ${count(d.rows)} 行 · ${esc(d.summary)}</div></header>
 
-    ${(d.warnings || []).length ? `<div class="card"><div class="banner warn">
-      <strong>接之前先看这几件事</strong>
-      <ul>${d.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div></div>` : ''}
+    <div id="w-warn">${warnCard(d)}</div>
 
     <div class="card">
       <header><h2>这张表是什么</h2>
@@ -901,7 +902,8 @@ async function viewOnboard(sha, sheet, headerRow, source) {
         : `数据源「${esc(src.name)}」目前没有指标从它取数——接上之后能解析能查，但不会进损益表。`) : ''}</p>
     </div>
 
-    ${columnCards(d)}
+    <div id="w-assist"></div>
+    <div id="w-cols">${columnCards(d)}</div>
 
     <div class="card">
       <header><h2>试跑</h2>
@@ -917,6 +919,87 @@ async function viewOnboard(sha, sheet, headerRow, source) {
       而这在纸面上完全看不出来：列名全对、填充率 100%、行数也只多一行。</p>
     </div>`;
   wireOnboard();
+  askModel(sha, sheet, headerRow, source);
+}
+
+/* 警告说的全是「照现在这份映射落库会出什么事」。映射一改就得重画,不然屏幕上会
+   同时挂着「spend 没映上」和一行映着 spend 的表格——自相矛盾的警告比没有警告坏,
+   它会让人开始忽略所有警告。 */
+function warnCard(d) {
+  return (d.warnings || []).length ? `<div class="card"><div class="banner warn">
+    <strong>接之前先看这几件事</strong>
+    <ul>${d.warnings.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div></div>` : '';
+}
+
+/* 规则草案已经在屏幕上了,这一步再去问模型,回来把它的意见叠上去。
+
+   分两次请求不是为了快,是为了人能对照:先看到的是确定性那份,模型动了哪几列
+   一目了然。合成一次的话,屏幕上是一份分不清谁提的混合结果,而这套东西的全部
+   安全性都建立在「模型错了有人看得出来」上面。
+
+   模型没配、超时、答得不成样子,这里安静地什么都不做——向导本来就不靠它。 */
+async function askModel(sha, sheet, headerRow, source) {
+  const box = $('w-assist');
+  if (!box) return;
+  const asked = W.draft && W.draft.sha;
+  box.innerHTML = `<div class="card"><span class="small muted">正在问模型…（不影响上面这份规则提议）</span></div>`;
+  let d;
+  try {
+    const q = new URLSearchParams();
+    if (sheet) q.set('sheet', sheet);
+    if (headerRow !== undefined && headerRow !== '') q.set('header_row', headerRow);
+    if (source) q.set('source', source);
+    d = await api(`/api/onboard/${encodeURIComponent(sha)}/assist?${q}`);
+  } catch (e) {
+    box.innerHTML = '';
+    return;
+  }
+  /* 期间人改了表头行或数据源,这份回来的已经不是他正在看的那张表了。 */
+  if (!W.draft || W.draft.sha !== asked || !$('w-assist')) return;
+
+  const a = d.assist || {};
+  if (!a.ok) {
+    box.innerHTML = a.summary
+      ? `<div class="card"><span class="small muted">${esc(a.summary)}</span></div>` : '';
+    return;
+  }
+  /* 人可能已经动过下拉框了。把他改过的保留下来,模型不许覆盖人的手。
+
+     判据是「现在框里的值 ≠ 规则当初提的值」。拿模型那份当基准是不行的:规则本来
+     没填、模型刚补上的那一列,框里还是空的,一比就成了「人清空过」,于是模型补的
+     那一列被当作人的决定丢掉——屏幕上是下拉框写着「不映射」、旁边挂着「模型说
+     spend」的标签,自相矛盾。 */
+  const ruleSaid = {};
+  (W.draft.columns || []).forEach(c => ruleSaid[c.index] = c.role);
+  const mineNow = {};
+  main.querySelectorAll('tr[data-index]').forEach(tr => {
+    mineNow[tr.dataset.index] = tr.querySelector('.w-role').value;
+  });
+  const mine = c => c.index in mineNow && mineNow[c.index] !== (ruleSaid[c.index] ?? '');
+  const touched = d.columns.filter(mine);
+  W.draft = {...d, columns: d.columns.map(c => mine(c) ? {...c, role: mineNow[c.index]} : c)};
+
+  box.innerHTML = `<div class="card">
+    <header><h2>模型看了一遍</h2>
+      <span class="sub">${esc(a.model)} · ${(a.elapsed_ms / 1000).toFixed(1)} 秒</span></header>
+    <p class="small">${esc(a.summary)}</p>
+    ${a.adopted.length ? `<p class="small">规则没认出来、采纳了模型的：
+      <span class="mono">${a.adopted.map(esc).join('、')}</span>
+      —— 这几列在下面标着「模型提的」，理由摆在依据那一列。</p>` : ''}
+    ${a.disputed.length ? `<div class="banner warn"><strong>这几列两边说法不一样，保留的是规则那份</strong>
+      <ul>${a.disputed.map(x => `<li>${esc(x)}</li>`).join('')}</ul>
+      <p class="small">下拉框里两个都在，你挑。悄悄采纳模型的说法是不行的——
+      那样「规则提议」里就混着模型的猜测，再没有一处能对照。</p></div>` : ''}
+    ${a.refused.length ? `<p class="small muted">被挡掉 ${a.refused.length} 条：
+      ${a.refused.map(esc).join('；')}</p>` : ''}
+    ${touched.length ? `<p class="small muted">你已经改过的
+      ${touched.length} 列保持你的选择，模型不覆盖。</p>` : ''}
+    <p class="small muted">模型只在这一步说话。往下的试跑、合计行、掉行率、控制合计、
+    脊柱缺列全是确定性检查，它一道都绕不过去；这里错了的后果是你多点几下，不是钱算错。</p>
+  </div>`;
+  $('w-warn').innerHTML = warnCard(W.draft);
+  $('w-cols').innerHTML = columnCards(W.draft);
+  wireRoles(a.adopted.length > 0);
 }
 
 /* 78 列平铺是不可读的。万相台那张表里 71 列是平台自带的展现量、转化率、投产比,
@@ -953,14 +1036,28 @@ function colRow(c) {
   /* 用序号寻址而不是列名：列名会重复。淘宝万相台那张表两列都叫「推广主体ID」，
      按列名回传的话两列只能一起设同一个角色，而引擎会取到几乎全空的那一列——
      8226 行被当成合计行丢掉，推广费从 8.85 万变成 3354 元，全程不报错。 */
+  /* 模型的意见单独一个标记,不混进可信度里。三种情况在屏幕上得长得不一样:
+
+       模型提的    规则没认出来,只有模型一家之言
+       模型同意    规则和模型各自走到了同一个结论,这是最强的一档
+       模型说 X    两边打架,框里留的是规则那份,要人拍板
+
+     写成同一句话的话,唯一需要人费神的那种(打架)就混在另外两种里了;而把「模型
+     提的」显示成「模型同意」,等于让人以为一家之言有两重依据。 */
+  const m = !c.model_role ? ''
+    : c.model_filled ? '<span class="pill warn">模型提的</span>'
+    : c.model_role === c.role ? '<span class="pill ok">模型同意</span>'
+    : `<span class="pill warn">模型说 ${esc(c.model_role)}</span>`;
   return `<tr class="${c.derived ? 'quiet' : ''}" data-index="${c.index}">
     <td><div class="mono">${esc(c.column)}</div>
       ${c.occurrence ? `<div class="xs warn-text">第 ${c.occurrence + 1} 个同名列</div>` : ''}</td>
     <td class="xs muted">${SHAPE[c.shape] || c.shape}
       ${c.samples.length ? `<div class="mono xs">${esc(c.samples.slice(0, 2).join(' · ')).slice(0, 40)}</div>` : ''}</td>
     <td><select class="w-role">${opts}</select>
-      <div class="xs"><span class="pill ${cls}">${label}</span></div></td>
-    <td class="xs muted">${esc(c.why)}</td></tr>`;
+      <div class="xs"><span class="pill ${cls}">${label}</span> ${m}</div></td>
+    <td class="xs muted">${esc(c.why)}
+      ${c.model_role && c.model_role !== c.role && c.model_why
+        ? `<div class="xs">模型：${esc(c.model_why)}</div>` : ''}</td></tr>`;
 }
 
 const SHAPE = {number: '数字', time: '日期', id: '编号', text: '文本', empty: '整列空'};
@@ -968,7 +1065,12 @@ const SHAPE = {number: '数字', time: '日期', id: '编号', text: '文本', e
 function roleOptions(c) {
   /* 候选排在最前面：认不出的列如果有几个像的角色，那几个就是人要在里面挑的。
      全表角色也留着，因为提议不可能永远对。 */
+  /* 模型给的那个必须在候选里,而且排在最前:它是这一行唯一要人拍板的东西,
+     让人去「这个数据源的全部角色」那一组里翻着找,等于没提。 */
   const near = c.alternatives.map(a => a.role);
+  if (c.model_role && c.model_role !== c.role && !near.includes(c.model_role)) {
+    near.unshift(c.model_role);
+  }
   const rest = W.roles.map(r => r.role).filter(r => !near.includes(r) && r !== c.role);
   const one = (role, group) => {
     const f = W.roles.find(x => x.role === role);
@@ -1015,13 +1117,7 @@ function wireOnboard() {
   $('w-header').onchange = reload;
   $('w-source').onchange = reload;
 
-  /* 改了映射，之前那次试跑就不算了。不清掉的话人会拿着旧结果去落库。 */
-  main.querySelectorAll('.w-role').forEach(sel => sel.onchange = () => {
-    W.tried = null;
-    $('w-land').disabled = true;
-    $('w-result').innerHTML = '';
-    $('w-said').textContent = '映射改了，要重新试跑';
-  });
+  wireRoles();
 
   $('w-try').onclick = async () => {
     const body = onboardBody();
@@ -1054,6 +1150,26 @@ function wireOnboard() {
       toast('没落库：' + err.message, true);
     }
   };
+}
+
+/* 改了映射，之前那次试跑就不算了。不清掉的话人会拿着旧结果去落库——列名全对、
+   填充率 100% 的那份旧结果，看不出跟新映射有什么关系。
+
+   模型的意见叠上来之后整张表会重画，所以这里单独一个函数：重画完要再绑一次，
+   忘了绑的表现是「改了下拉框但落库按钮还亮着」。 */
+function wireRoles(invalidate) {
+  main.querySelectorAll('.w-role').forEach(sel => sel.onchange = () => {
+    W.tried = null;
+    $('w-land').disabled = true;
+    $('w-result').innerHTML = '';
+    $('w-said').textContent = '映射改了，要重新试跑';
+  });
+  if (invalidate && W.tried) {
+    W.tried = null;
+    $('w-land').disabled = true;
+    $('w-result').innerHTML = '';
+    $('w-said').textContent = '模型补了几列，要重新试跑';
+  }
 }
 
 function tryResult(r) {

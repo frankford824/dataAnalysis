@@ -291,6 +291,21 @@ class ColumnGuess:
     #: 界面靠这个标记把它们收拢成一组、共用一句说明——不然同一段话重复七十遍，
     #: 真正要人拍板的那几列就被埋掉了。
     no_name_match: bool = False
+    #: 大模型对这一列的建议。规则提议之后叠上来的，不覆盖 `role`。
+    #:
+    #: 分成两种情况，界面上要看得出区别：规则没提而模型提了，模型的建议进 `role`
+    #: 并把可信度记成 guess；规则和模型给的不一样，`role` 保持规则那份，冲突记在
+    #: 这里让人拍板。悄悄采纳模型的说法是不行的——那样人看到的「规则提议」
+    #: 其实混着模型的猜测，就再没有一处能对照了。
+    model_role: str = ""
+    #: 模型给的理由。人凭它决定信不信，所以原样带上来。
+    model_why: str = ""
+    #: `role` 这个值是模型填上去的，规则原本是空的。
+    #:
+    #: 和「模型同意规则的判断」必须分得开。两种情况下 `role` 和 `model_role` 都相等，
+    #: 但一个是两条独立的路走到了同一个结论，另一个只有模型一家之言——界面上写成
+    #: 同一句话，人就会把后者当成有两重依据。
+    model_filled: bool = False
 
     @property
     def settled(self) -> bool:
@@ -319,8 +334,15 @@ class Draft:
     vanished: tuple[str, ...] = ()
     #: 基准模板认得的列名（已归一）。用来挑出能把两版区分开的签名列。
     base_columns: frozenset[str] = frozenset()
-    #: 得让人看一眼的地方。
+    #: 得让人看一眼的地方。**全部由当前这份列映射推出来**，映射一改就作废。
     warnings: list[str] = field(default_factory=list)
+    #: 跟列映射无关的提醒，比如「这张表其实已经认得出来了」。重算警告时留着。
+    #:
+    #: 和 `warnings` 分开，是因为映射会被改：人改一列、模型补一列，警告都得重算。
+    #: 混在一条列表里就只能整份重来，那句跟映射无关的提醒会一起消失；不重算的话
+    #: 更糟——屏幕上会同时出现「spend 没映上」和一行映着 spend 的表格，人这时候
+    #: 该信哪个？自相矛盾的警告比没有警告坏，它会让人开始忽略所有警告。
+    notices: list[str] = field(default_factory=list)
     #: 解析参数的建议（表头在第几行之类）。
     parse: ParseOptions = field(default_factory=ParseOptions)
     #: 时间槽位。账期是按时间分的，不给槽位这张表算不出属于哪个月。
@@ -533,8 +555,18 @@ def propose(
     _fill_slots(draft, model, globals_)
 
     draft.vanished = tuple(c for c in base_roles.keys() - present) if base else ()
-    _add_warnings(draft, model, role_facts(model, draft.source))
+    refresh_warnings(draft, model)
     return draft
+
+
+def refresh_warnings(draft: Draft, model: Model) -> None:
+    """按当前这份列映射重算警告。
+
+    映射被改过之后必须调一次。警告说的全是「照现在这份映射落库会出什么事」——
+    映射变了警告不变，说的就是另一份映射的事，而人没法知道这一点。
+    """
+    draft.warnings.clear()
+    _add_warnings(draft, model, role_facts(model, draft.source))
 
 
 def _guess_column(

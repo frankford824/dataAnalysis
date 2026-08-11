@@ -289,7 +289,7 @@ def period_detail(store_id: str, period: str) -> dict:
         raise HTTPException(404, f"{period} 还没算过账")
     return {
         "state": st.state, "stale": st.stale, "at": st.at, "run_id": st.run_id,
-        "by": st.by, "note": st.note,
+        "by": st.by, "note": st.note, "engine": st.engine,
         "history": workspace().history(store_id, period),
         **view.reorder_statement(st.result, model),
     }
@@ -440,6 +440,35 @@ def onboard_draft(sha: str, sheet: str = "", header_row: int | None = None, sour
     except ModelError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {**view.draft_dict(draft, table, model), "model_revision": model_revision(DEFAULT_MODEL)}
+
+
+@app.get("/api/onboard/{sha}/assist")
+def onboard_assist(sha: str, sheet: str = "", header_row: int | None = None, source: str = "") -> dict:
+    """再出一份草案，这次带上模型的意见。
+
+    单独一个端点、界面上是第二次请求，不是把模型塞进上面那个。理由有两条，
+    都不是性能：
+
+    一、人先看到的必须是确定性那份。规则草案零点几秒出屏，模型要等几秒；合在一起
+        的话整个向导都得等模型，而模型是可以关掉、可以超时的东西——不该由它决定
+        向导打不打得开。
+
+    二、屏幕上要能看出「模型动了哪里」。先渲染规则那份，模型的意见再叠上去标注，
+        人看到的是一次可对照的变化，而不是一份分不清谁提的混合结果。
+    """
+    model = _model()
+    try:
+        draft, table = onboard.draft_for(
+            workspace(), model, sha, sheet=sheet, header_row=header_row, source_hint=source,
+        )
+    except ModelError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    assisted = onboard.advise(draft, model)
+    return {
+        **view.draft_dict(draft, table, model),
+        "assist": view.assist_dict(assisted),
+        "model_revision": model_revision(DEFAULT_MODEL),
+    }
 
 
 class OnboardCommit(BaseModel):

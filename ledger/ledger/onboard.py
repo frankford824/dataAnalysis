@@ -25,12 +25,13 @@ from typing import Any
 
 import polars as pl
 
+from . import assist
 from .engine.normalize import NormalizeError, normalize
 from .engine.parse import ParseError, parse
 from .engine.recognize import match_headers
 from .engine.types import RawTable
 from .model.config import add_template
-from .model.propose import Draft, propose
+from .model.propose import Draft, propose, refresh_warnings, role_facts
 from .model.propose import spine_roles as propose_spine_roles
 from .model.loader import ModelError, load_model
 from .model.schema import Model, ParseOptions, SourceContract, Template
@@ -95,8 +96,147 @@ def draft_for(
         parse=opts or ParseOptions(),
     )
     if seen.known:
-        d.warnings.insert(0, f"这张表现在已经能被「{seen.template_id}」认出来了，不用再接。")
+        d.notices.append(f"这张表现在已经能被「{seen.template_id}」认出来了，不用再接。")
     return d, table
+
+
+# --------------------------------------------------------------------------- #
+# 叠上模型的意见
+# --------------------------------------------------------------------------- #
+
+#: 模型的建议能填进空位，但填不满整张表。超过这个数就是它在乱猜，不如不要。
+#:
+#: 这个数不是拍脑袋来的：真实语料里角色最多的数据源是订单表，11 个角色。一次提议
+#: 越过这个数，说明模型在把平台自带的指标列往角色上硬套，而那种错误恰恰是不报错的。
+_MAX_ADOPT = 12
+
+
+@dataclass(frozen=True, slots=True)
+class Assisted:
+    """模型这一轮做了什么。界面上要能一眼看出它动了哪里。"""
+
+    #: 模型没配、超时、乱答，都是这个——调用方照常用规则草案。
+    ok: bool = False
+    note: str = ""
+    model: str = ""
+    elapsed_ms: int = 0
+    #: 规则没提、采纳了模型的列。
+    adopted: tuple[str, ...] = ()
+    #: 规则和模型给的不一样，`role` 保持规则那份，等人拍板。
+    disputed: tuple[str, ...] = ()
+    #: 两边一致。这是最强的一档证据，虽然它不改变任何东西。
+    agreed: tuple[str, ...] = ()
+    #: 建议被合并这一层挡掉了，写清为什么。
+    refused: tuple[str, ...] = ()
+
+    def summary(self) -> str:
+        if not self.ok:
+            return self.note
+        bits = []
+        if self.adopted:
+            bits.append(f"补上 {len(self.adopted)} 列")
+        if self.disputed:
+            bits.append(f"{len(self.disputed)} 列跟规则不一致，要你拍板")
+        if self.agreed:
+            bits.append(f"{len(self.agreed)} 列跟规则一致")
+        if self.refused:
+            bits.append(f"{len(self.refused)} 条被挡掉")
+        return "模型" + ("；".join(bits) if bits else "没提出任何列")
+
+
+def advise(
+    draft: Draft,
+    model: Model,
+    *,
+    root: Path | None = None,
+    config: assist.Config | None = None,
+) -> Assisted:
+    """让模型看一遍这份草案，把它的意见叠到列上。**原地改 `draft`。**
+
+    合并策略只有一条原则：规则提议过的列，模型改不动。
+
+        规则没提，模型提了      填进去，可信度记成 guess，注明是模型提的
+        两边给的一样            不动，记一笔「模型也这么认为」
+        两边给的不一样          保留规则那份，冲突摆出来让人拍板
+        规则判定是派生列        不采纳，摆出来让人拍板
+
+    为什么不让模型覆盖规则：覆盖之后，界面上写着「规则提议」的东西其实混着模型的
+    猜测，人就再没有一处能对照了。而这套东西的全部安全性都建立在「人能对照着看」
+    上面——模型错了要有人看得出来，看不出来的错误才是危险的。
+
+    采纳只发生在空位上。空位本来就是「规则不知道」，模型填错的后果和规则不填一样，
+    都是人得自己去点；填对的收益却是实打实的。真实语料上模型比规则多对 13 项。
+    """
+    facts = list(role_facts(model, draft.source).values())
+    advice = assist.suggest_roles(draft.columns, facts, config=config, root=root)
+    if not advice.ok:
+        return Assisted(note=advice.note, model=advice.model, elapsed_ms=advice.elapsed_ms)
+
+    refused = list(advice.rejected)
+    if len(advice.items) > _MAX_ADOPT:
+        return Assisted(
+            note=f"模型一次提了 {len(advice.items)} 列，超过 {_MAX_ADOPT} 列的上限，这次不采纳",
+            model=advice.model,
+            elapsed_ms=advice.elapsed_ms,
+            refused=tuple(refused),
+        )
+
+    by_index = {c.index: c for c in draft.columns}
+    #: 规则已经占掉的角色。模型不能往已占的角色上再填一列——一个角色映两列会被
+    #: 模型完整性检查拦下，但报出来的是一句 ModelError，不如在这里说清是谁想干什么。
+    taken = {c.role: c.index for c in draft.columns if c.role}
+
+    adopted: list[str] = []
+    disputed: list[str] = []
+    agreed: list[str] = []
+
+    for s in advice.items:
+        col = by_index.get(s.index)
+        if col is None:
+            refused.append(f"序号 {s.index} 不在这张表里")
+            continue
+        col.model_role = s.role
+        col.model_why = s.why
+
+        if col.role == s.role:
+            agreed.append(col.column)
+            continue
+        if col.role:
+            disputed.append(f"{col.column}：规则说 {col.role}，模型说 {s.role}")
+            continue
+        if col.derived:
+            disputed.append(f"{col.column}：看着是表里自己算出来的结果列，模型却要映成 {s.role}")
+            continue
+        if s.role in taken:
+            other = by_index[taken[s.role]].column
+            refused.append(f"{s.role} 已经给了「{other}」，模型又要给「{col.column}」")
+            col.model_role = ""
+            col.model_why = ""
+            continue
+
+        col.role = s.role
+        col.model_filled = True
+        col.confidence = "guess"
+        col.why = f"模型提的：{s.why}" if s.why else "模型提的，规则没认出来"
+        col.no_name_match = False
+        taken[s.role] = col.index
+        adopted.append(col.column)
+
+    if adopted:
+        # 映射改了，警告就得跟着改。不重算的话，屏幕上会同时出现「spend 没映上」
+        # 和一行映着 spend 的表格——人这时候该信哪个。
+        refresh_warnings(draft, model)
+
+    return Assisted(
+        ok=True,
+        note=advice.note,
+        model=advice.model,
+        elapsed_ms=advice.elapsed_ms,
+        adopted=tuple(adopted),
+        disputed=tuple(disputed),
+        agreed=tuple(agreed),
+        refused=tuple(refused),
+    )
 
 
 # --------------------------------------------------------------------------- #

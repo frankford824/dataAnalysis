@@ -284,6 +284,70 @@ class TestEditStore:
         assert res.status_code == 400
 
 
+class TestOnboardAssist:
+    """模型建议走单独一个端点，而且它坏掉不能影响向导。
+
+    这两条是同一件事的两面：分开是为了人先看到确定性那份、看得出模型动了哪里；
+    坏掉不影响，是因为向导本来就不靠它——模型是加分项，不是依赖。
+    """
+
+    def _unknown(self, client):
+        """交一张谁也认不出的表，拿它的内容哈希。"""
+        data = _xlsx_bytes([
+            ["莫名其妙的列", "另一列", "第三列"],
+            ["a", "1", "2025-05-01"],
+            ["b", "2", "2025-05-02"],
+        ])
+        res = _upload(client, ("推广-淘宝喜必顺.xlsx", data))
+        tables = res.json()["unknown_tables"]
+        assert tables, "前提：这张表确实没被认出来"
+        return tables[0]["sha"]
+
+    def test_the_draft_endpoint_does_not_wait_for_the_model(self, client, monkeypatch):
+        """规则草案这一条路上，一个出站请求都不许有。
+
+        向导要在零点几秒内打开。模型是可以关掉、可以超时、可以答十几秒的东西，
+        让它挡在向导前面，等于把「能不能接表」交给一个不归自己管的服务。
+        """
+        from ledger import assist
+
+        def boom(*a, **kw):
+            raise AssertionError("规则草案这条路不该碰模型")
+
+        monkeypatch.setattr(assist.urllib.request, "urlopen", boom)
+        res = client.get(f"/api/onboard/{self._unknown(client)}")
+        assert res.status_code == 200
+        assert res.json()["columns"]
+
+    def test_no_model_configured_is_a_normal_answer(self, client, monkeypatch):
+        """没配模型不是错误。返回 200，界面上安静地什么都不显示。"""
+        from ledger import assist
+
+        monkeypatch.setattr(assist, "load_config", lambda root=None: assist.Config())
+        res = client.get(f"/api/onboard/{self._unknown(client)}/assist")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["assist"]["ok"] is False
+        assert body["columns"], "模型没说话，规则那份照样给"
+
+    def test_a_broken_model_still_returns_the_rule_draft(self, client, monkeypatch):
+        from ledger import assist
+
+        monkeypatch.setattr(
+            assist, "load_config",
+            lambda root=None: assist.Config(base_url="https://x/v1", model="m", api_key="k"),
+        )
+
+        def boom(*a, **kw):
+            raise TimeoutError("模型没理我")
+
+        monkeypatch.setattr(assist.urllib.request, "urlopen", boom)
+        res = client.get(f"/api/onboard/{self._unknown(client)}/assist")
+        assert res.status_code == 200, "模型超时不是 500——向导没坏，只是这次没建议"
+        assert res.json()["assist"]["ok"] is False
+        assert res.json()["columns"]
+
+
 class TestPage:
     def test_serves_the_page(self, client):
         res = client.get("/")
