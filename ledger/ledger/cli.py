@@ -468,6 +468,87 @@ def cmd_replay(args: argparse.Namespace) -> int:
     return 0 if rp.clean else 1
 
 
+def cmd_fees(args: argparse.Namespace) -> int:
+    """列出引擎认识的全部费项，可选和一份外部对照表比差集。
+
+    业务手里那份费项对照表是人维护的，引擎这边是字典加模板规则链，两边各自会长。
+    每次接新平台、补新科目之后跑一次，就知道谁落后于谁——落后的一方补上，
+    而不是等某笔钱掉进未分类了才发现。
+    """
+    from .fees import diff_table, known_fees
+
+    model = load_model(args.model)
+    fees = known_fees(model)
+    if args.platform:
+        fees = [f for f in fees if f.platform in args.platform or f.platform == "*"]
+
+    if args.compare:
+        table = _read_fee_table(args.compare)
+        if table is None:
+            return 2
+        diff = diff_table(model, table, set(args.platform) if args.platform else None)
+        print(f"对照表 {len(table)} 条，引擎 {len({f.norm for f in fees})} 条（去重后）")
+        print(f"两边都有 {len(diff.both)} 条\n")
+
+        print(f"引擎认识、对照表没有：{len(diff.only_engine)} 条")
+        for f in diff.only_engine:
+            where = "字典" if f.origin == "dictionary" else f"模板 {f.origin}"
+            what = "排除，不进账" if f.excluded else f.major
+            print(f"  [{f.platform}] {f.key}\n      → {what}（{where}，按 {f.field} {f.how}）")
+
+        print(f"\n对照表有、引擎不认：{len(diff.only_table)} 条  ← 这些进来会落未分类")
+        for raw, major in diff.only_table:
+            print(f"  {raw}  →  对照表说归「{major or '(空)'}」")
+        return 0 if diff.clean else 1
+
+    by_platform: dict[str, list] = defaultdict(list)
+    for f in fees:
+        by_platform[f.platform].append(f)
+    for platform in sorted(by_platform):
+        items = by_platform[platform]
+        print(f"\n{platform}（{len(items)} 条）")
+        for f in sorted(items, key=lambda x: (x.origin != "dictionary", x.major, x.key)):
+            where = "字典" if f.origin == "dictionary" else f.origin
+            what = "排除" if f.excluded else f.major
+            print(f"  {f.key:<40} → {what:<20} {where} / {f.field} {f.how}")
+    print(f"\n合计 {len(fees)} 条，去重后 {len({f.norm for f in fees})} 个不同的科目名")
+    return 0
+
+
+def _read_fee_table(path: Path) -> dict[str, str] | None:
+    """读业务那份费项对照表。多个工作表就全都读，一个平台一张是他们的习惯。"""
+    from python_calamine import CalamineWorkbook
+
+    try:
+        wb = CalamineWorkbook.from_path(str(path))
+    except Exception as exc:  # noqa: BLE001
+        print(f"打不开 {path}：{exc}", file=sys.stderr)
+        return None
+
+    table: dict[str, str] = {}
+    for sheet in wb.sheet_names:
+        rows = wb.get_sheet_by_name(sheet).to_python()
+        if not rows:
+            continue
+        header = ["" if c is None else str(c).strip() for c in rows[0]]
+        if "业务描述" not in header:
+            continue
+        i_desc = header.index("业务描述")
+        i_major = header.index("业务大类") if "业务大类" in header else None
+        for row in rows[1:]:
+            desc = str(row[i_desc]).strip() if i_desc < len(row) and row[i_desc] is not None else ""
+            if not desc:
+                continue
+            major = ""
+            if i_major is not None and i_major < len(row) and row[i_major] is not None:
+                major = str(row[i_major]).strip()
+            table[desc] = major
+    if not table:
+        print(f"{path} 里没有找到「业务描述」列", file=sys.stderr)
+        return None
+    return table
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="ledger", description="把交上来的表算成账。"
@@ -502,6 +583,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="把当前结果录成新基线。只在确认变化是想要的之后用")
     rp.add_argument("--note", help="录基线时写一句为什么变，进基线文件")
     rp.set_defaults(func=cmd_replay)
+
+    f = sub.add_parser("fees", help="列出引擎认识的全部费项，或和外部对照表比差集")
+    f.add_argument("--platform", action="append", help="只看这个平台，可重复")
+    f.add_argument("--compare", type=Path, help="和这份对照表比（xlsx，要有「业务描述」列）")
+    f.set_defaults(func=cmd_fees)
 
     s = sub.add_parser("stores", help="看店铺注册表")
     s.set_defaults(func=cmd_stores)

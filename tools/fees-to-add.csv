@@ -1,0 +1,41 @@
+﻿平台,业务描述/关键词,引擎归到的口径项,引擎从哪儿知道的,匹配方式,本期命中行数
+taobao,交易分账,marketing_fee,模板 taobao_settlement_alipay_v1,biz_type equals,73881
+taobao,消费者体验提升计划服财务费,software_fee,模板 taobao_settlement_alipay_v1,remark contains,39168
+taobao,扣款,marketing_fee,模板 taobao_settlement_wechat_v1,biz_type equals,6233
+taobao,交易收款,trade_receipt,模板 taobao_settlement_wechat_v1,biz_type equals,3642
+taobao,消费者体验提升计划服务费,software_fee,模板 taobao_settlement_alipay_v1,remark contains,266
+taobao,天猫保证金-解冻,（排除，不进账）,模板 taobao_settlement_alipay_v1,remark contains,255
+taobao,天猫保证金-充值（代扣）,（排除，不进账）,模板 taobao_settlement_alipay_v1,remark equals,107
+taobao,余利宝,（排除，不进账）,模板 taobao_settlement_alipay_v1,remark contains,88
+taobao,万相台无界版自动充值,ad_topup,模板 taobao_settlement_alipay_v1,remark contains,77
+taobao,交易退款(售后),trade_refund,模板 taobao_settlement_wechat_v1,biz_type equals,52
+taobao,商家集运物流责任货值赔付,logistics_fee,模板 taobao_settlement_alipay_v1,remark contains,31
+taobao,扣款退回,marketing_fee,模板 taobao_settlement_wechat_v1,biz_type equals,15
+taobao,保险理赔-本地退赔款,trade_compensation,模板 taobao_settlement_alipay_v1,remark contains,2
+taobao,售后退款追缴消费券返还金额,marketing_fee,模板 taobao_settlement_alipay_v1,remark contains,1
+taobao,太保产险苏州本地退赔款,trade_compensation,模板 taobao_settlement_alipay_v1,remark contains,1
+taobao,转出到网商银行,（排除，不进账）,模板 taobao_settlement_alipay_v1,remark contains,1
+taobao,88VIP淘宝消费券技术服务费,software_fee,科目字典,subject exact,0
+taobao,^订单.*打款$,trade_receipt,模板 taobao_settlement_wechat_v1,remark regex,0
+taobao,^订单.*退款$,trade_refund,模板 taobao_settlement_wechat_v1,remark regex,0
+taobao,保证金解冻,（排除，不进账）,模板 taobao_settlement_alipay_v1,remark contains,0
+taobao,公益宝贝,marketing_fee,科目字典,subject exact,0
+taobao,品牌新享营销托管,marketing_fee,科目字典,subject exact,0
+taobao,基础软件服务费,software_fee,科目字典,subject exact,0
+taobao,消费券代付资金扣回,software_fee,科目字典,subject exact,0
+taobao,淘宝大促软件技术服务费,marketing_fee,科目字典,subject exact,0
+taobao,淘宝天猫跨境服务基础费,software_fee,科目字典,subject exact,0
+taobao,淘宝天猫跨境服务增值费,software_fee,科目字典,subject exact,0
+taobao,淘宝客佣金,marketing_fee,科目字典,subject exact,0
+taobao,淘宝新品礼金软件服务费,marketing_fee,科目字典,subject exact,0
+taobao,淘宝新客礼金软件服务费,marketing_fee,科目字典,subject exact,0
+taobao,淘金币软件服务费,software_fee,科目字典,subject exact,0
+taobao,百亿补贴软件服务费（渠道）,marketing_fee,科目字典,subject exact,0
+taobao,类目软件服务费,software_fee,科目字典,subject exact,0
+taobao,类目软件服务费（原天猫佣金）,software_fee,科目字典,subject exact,0
+taobao,聚划算佣金,software_fee,科目字典,subject exact,0
+taobao,营销托管软件服务费,marketing_fee,科目字典,subject exact,0
+alibaba1688,订单售后退款,trade_receipt_1688,模板 alibaba1688_settlement_in_v1,subject contains,0
+alibaba1688,订单收入,trade_receipt_1688,模板 alibaba1688_settlement_in_v1,subject contains,0
+taobao,转入到网商银行,（排除，不进账）,模板 taobao_settlement_alipay_v1,remark contains,0
+taobao,限时红包代商家垫付扣回,marketing_fee,科目字典,subject exact,0
