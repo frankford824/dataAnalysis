@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+import polars as pl
+
 from ..model.schema import Bridge, ClassifyRule, FieldMatch, KeyRule
 
 #: 规则链求值结果里表示"显式排除"的哨兵。与"没命中"必须区分开。
@@ -54,6 +56,14 @@ class ChainStats:
         return out
 
 
+#: Python 的 re 支持、Rust 的 regex 不支持的写法。撞上就不能交给 Polars 批量跑。
+#:
+#: 断言类（前后向查看）和反向引用不在 Rust regex 的能力范围内——它保证线性时间，
+#: 代价就是放弃这几样。真写了这种模式，Polars 那边不是算错而是直接报错，
+#: 但与其等它报错，不如提前认出来走逐行那条路。
+_NOT_IN_RUST_REGEX = re.compile(r"\(\?[=!<]|\\\d")
+
+
 class Matcher:
     """把 FieldMatch 编译成一个可反复调用的判定函数。"""
 
@@ -66,6 +76,42 @@ class Matcher:
         self._equals = {str(v) for v in spec.equals}
         self._matches = re.compile(spec.matches) if spec.matches else None
         self._notnull = spec.notnull
+
+    @property
+    def vectorizable(self) -> bool:
+        """这一环能不能交给 Polars 整列一次算完。"""
+        for pattern in (self._matches, self._extract):
+            if pattern is not None and _NOT_IN_RUST_REGEX.search(pattern.pattern):
+                return False
+        return True
+
+    def mask(self, text: pl.Expr) -> pl.Expr:
+        """这一环适用于哪些行。`text` 是已经转成字符串并去过空白的那一列。
+
+        和 `apply` 必须逐条对齐，包括一个容易看漏的地方：`apply` 最后返回的是
+        `text or None`，也就是空串也算不适用——即使 `notnull` 是关的。所以这里
+        无条件带上「非空」，而不是只在 `_notnull` 时才加。
+        """
+        cond = text.is_not_null() & (text != "")
+        if self._equals:
+            cond = cond & text.is_in(sorted(self._equals))
+        if self._contains:
+            # contains_any 底下是 Aho-Corasick，一趟扫完所有关键词，
+            # 比逐个 contains 再 or 起来快得多，关键词越多差距越大。
+            cond = cond & text.str.contains_any(list(self._contains))
+        if self._matches is not None:
+            cond = cond & text.str.contains(self._matches.pattern)
+        if self._extract is not None:
+            got = self.value(text)
+            cond = cond & got.is_not_null() & (got != "")
+        return cond.fill_null(False)
+
+    def value(self, text: pl.Expr) -> pl.Expr:
+        """这一环取到的值。没有正则提取就是整个字段值。"""
+        if self._extract is None:
+            return text
+        group = 1 if self._extract.groups else 0
+        return text.str.extract(self._extract.pattern, group)
 
     def apply(self, value: object) -> str | None:
         """返回提取到的值，或 None 表示这一环不适用。"""
@@ -221,3 +267,29 @@ def _norm(value: object) -> str:
     if s.endswith(".0") and s[:-2].isdigit():
         s = s[:-2]
     return s
+
+
+def norm_expr(col: pl.Expr) -> pl.Expr:
+    """`_norm` 的整列版本。两边必须给出同一个结果。
+
+    `.0` 结尾那一段是在还原一个具体的坑：订单号列被 Excel 当数字存过，
+    读出来是 `12345.0`，和另一张表里的 `12345` 挂不上。只有纯数字才砍，
+    否则会把 `V1.0` 这种真名字砍成 `V1`。
+    """
+    s = col.fill_null("").str.replace_all(r"[\s\u3000'\"]+", "")
+    stem = s.str.strip_suffix(".0")
+    return pl.when(stem.str.contains(r"^\d+$")).then(stem).otherwise(s)
+
+
+def text_expr(frame_dtype: pl.DataType, field: str) -> pl.Expr:
+    """把一列取成「Python 里 `str(v).strip()` 之后的样子」。
+
+    非字符串列要先转字符串，这一步的分歧是这里唯一需要小心的地方：Polars 把
+    Float64 的 12345 转成 `12345.0`，Python 的 `str()` 也是 `12345.0`，一致；
+    但 Int64 到字符串两边都是 `12345`，也一致。真正对不上的是浮点走科学计数法
+    的极端值，而规则链看的都是科目名、备注、业务类型这些文本列，不会撞上。
+    """
+    col = pl.col(field)
+    if frame_dtype != pl.Utf8:
+        col = col.cast(pl.Utf8)
+    return col.str.strip_chars()

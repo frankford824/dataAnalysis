@@ -18,6 +18,7 @@ import hashlib
 import io
 import re
 import tempfile
+import threading
 import zipfile
 from pathlib import Path
 from typing import IO, Any, Iterator
@@ -190,7 +191,13 @@ def _parse_archive(path: Path, options: ParseOptions, sha: str, depth: int) -> l
     return tables
 
 
-def _read_sheets(path: Path, options: ParseOptions) -> list[tuple[str, list[list]]]:
+#: 上一个读过的工作簿。每个线程各存一份，见 `_read_sheets` 的说明。
+_recent = threading.local()
+
+
+def _read_sheets(
+    path: Path, options: ParseOptions, max_rows: int | None = None
+) -> list[tuple[str, list[list]]]:
     """把工作簿读成 [(工作表名, 行列表)]。
 
     优先用 calamine：它是 Rust 实现，实测 64 MB 的对账表 2.3 秒读完，openpyxl 要
@@ -198,19 +205,77 @@ def _read_sheets(path: Path, options: ParseOptions) -> list[tuple[str, list[list
     .xls 老二进制格式它根本打不开。
 
     openpyxl 留作兜底。两条路径读出来的值必须一致，read_sheets_agree 那个测试盯着这件事。
+
+    `max_rows` 给识别阶段用：只要看表头长什么样时，不必把 184 万行都转成 Python 对象。
+
+    只记住上一个文件
+    --------------
+    摄入一个文件要读它两到三遍：先按默认选项解一遍去认它是什么表，认出来之后模板
+    往往声明了别的表头行，于是整个文件再解一遍；对账表有两张工作表各自认到一张模板，
+    就再解两遍。实测淘宝一家店 113 MB 的文件读进来 294 MB。
+
+    但这几遍读的是同样的字节——表头在第几行是解析阶段的事，`_read_sheets` 这一层
+    只管把格子取出来，`header_row` 根本不参与。所以留一份上次的结果就能省掉后面几遍。
+
+    只留一份、不留更多，是因为一个 67 MB 的工作簿摊成 Python 对象要占一个多 G。
+    而且省下的几乎都在「同一个文件的连续几遍」上，隔了一个文件再回头读的情况不存在，
+    留更多只是多占内存。每个线程各留各的：一个线程同时只处理一个文件，共用一份
+    反而会互相顶掉。
     """
+    key = _sheet_key(path)
+    cached = getattr(_recent, "sheets", None)
+    if cached is not None and cached[0] == key:
+        return _select(cached[1], options, max_rows, path)
+
     data = path.read_bytes()
     sheets: list[tuple[str, list[list]]] | None = None
     if _CALAMINE_OK:
         try:
-            sheets = _read_with_calamine(data, options)
+            # 缓存要给后面几遍用，所以存全量；只有识别那种明确限行的读法不进缓存。
+            sheets = _read_with_calamine(data, options if max_rows else _ALL_SHEETS, max_rows)
         except ParseError:
             raise
         except Exception:
             pass  # 落到 openpyxl 再试一次，读得出来就不算失败
     if sheets is None:
         sheets = _read_with_openpyxl(path, data, options)
-    return [(name, _unmerge(data, name, rows)) for name, rows in sheets]
+        if max_rows is not None:
+            sheets = [(name, rows[:max_rows]) for name, rows in sheets]
+        return [(name, _unmerge(data, name, rows)) for name, rows in sheets]
+
+    unmerged = [(name, _unmerge(data, name, rows)) for name, rows in sheets]
+    if max_rows is None:
+        # 先扔掉旧的再放新的，否则换文件的一瞬间两个大工作簿同时在内存里。
+        _recent.sheets = None
+        _recent.sheets = (key, unmerged)
+    return _select(unmerged, options, max_rows, path)
+
+
+#: 读全量时用的选项：不限工作表。缓存要能服务后面任何一次按表名取的读法。
+_ALL_SHEETS = ParseOptions()
+
+
+def _sheet_key(path: Path) -> tuple[str, int, int]:
+    """文件在磁盘上变了就不该再用缓存。大小和修改时间足够——同一次摄入过程中
+    文件被换掉是不该发生的事，真发生了这两个值也基本不可能同时不变。"""
+    st = path.stat()
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
+def _select(
+    sheets: list[tuple[str, list[list]]],
+    options: ParseOptions,
+    max_rows: int | None,
+    path: Path,
+) -> list[tuple[str, list[list]]]:
+    if options.sheet:
+        names = [n for n, _ in sheets]
+        if options.sheet not in names:
+            raise ParseError(f"工作表 {options.sheet} 不存在，实际有：{', '.join(names)}")
+        sheets = [(n, r) for n, r in sheets if n == options.sheet]
+    if max_rows is not None:
+        sheets = [(n, r[:max_rows]) for n, r in sheets]
+    return sheets
 
 
 # --------------------------------------------------------------------------- #
@@ -353,14 +418,19 @@ def _cell_to_rc(cell: str) -> tuple[int, int]:
     return int(m.group(2)) - 1, col - 1
 
 
-def _read_with_calamine(data: bytes, options: ParseOptions) -> list[tuple[str, list[list]]]:
+def _read_with_calamine(
+    data: bytes, options: ParseOptions, max_rows: int | None = None
+) -> list[tuple[str, list[list]]]:
     wb = CalamineWorkbook.from_filelike(io.BytesIO(data))
     names = wb.sheet_names
     if options.sheet:
         if options.sheet not in names:
             raise ParseError(f"工作表 {options.sheet} 不存在，实际有：{', '.join(names)}")
         names = [options.sheet]
-    return [(name, wb.get_sheet_by_name(name).to_python()) for name in names]
+    return [
+        (name, wb.get_sheet_by_name(name).to_python(nrows=max_rows))
+        for name in names
+    ]
 
 
 def _read_with_openpyxl(path: Path, data: bytes, options: ParseOptions) -> list[tuple[str, list[list]]]:
@@ -394,7 +464,7 @@ def _sheets(wb, options: ParseOptions):
 
 
 def _xlsx_headers(path: Path, options: ParseOptions) -> Iterator[tuple[str, list[str]]]:
-    for name, rows in _read_sheets(path, options):
+    for name, rows in _read_sheets(path, options, max_rows=options.header_row + 1):
         if len(rows) > options.header_row:
             yield name, _clean_header(rows[options.header_row], options)
         else:
@@ -403,21 +473,23 @@ def _xlsx_headers(path: Path, options: ParseOptions) -> Iterator[tuple[str, list
 
 def _parse_xlsx(path: Path, options: ParseOptions, sha: str) -> list[RawTable]:
     tables: list[RawTable] = []
+    clean = _cell_cleaner(options)
     for name, values_rows in _read_sheets(path, options):
         ref = FileRef(sha256=sha, filename=path.name, sheet=name)
         headers: list[str] = []
         rows: list[RawRow] = []
         data_starts = options.header_row + 1 + options.skip_after_header
+        append = rows.append
         for i, values in enumerate(values_rows):
             if i == options.header_row:
                 headers = _clean_header(values, options)
                 continue
             if i < data_starts or not headers:
                 continue
-            cells = _clean_cells(values, len(headers), options)
+            cells = clean(values, len(headers))
             if cells is None:
                 continue
-            rows.append(RawRow(row_no=i + 1, cells=cells))
+            append(RawRow(row_no=i + 1, cells=cells))
         table = RawTable(ref=ref, headers=headers, rows=rows)
         if not headers:
             table.notes.append(f"工作表 {name} 第 {options.header_row + 1} 行没有表头")
@@ -537,6 +609,9 @@ def _parse_csv(path: Path, options: ParseOptions, sha: str) -> RawTable:
     reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
     data_starts = header_row + 1 + options.skip_after_header
     comment_rows = 0
+    clean = _cell_cleaner(options)
+    width = len(headers)
+    append = table.rows.append
     for i, values in enumerate(reader):
         if i < data_starts:
             continue
@@ -545,10 +620,10 @@ def _parse_csv(path: Path, options: ParseOptions, sha: str) -> RawTable:
         if values and str(values[0]).startswith(_COMMENT_PREFIX):
             comment_rows += 1
             continue
-        cells = _clean_cells(values, len(headers), options)
+        cells = clean(values, width)
         if cells is None:
             continue
-        table.rows.append(RawRow(row_no=i + 1, cells=cells))
+        append(RawRow(row_no=i + 1, cells=cells))
     if comment_rows:
         table.notes.append(f"跳过 {comment_rows} 行 # 开头的注释行")
     if table.controls:
@@ -570,19 +645,59 @@ def _clean_header(values: Any, options: ParseOptions) -> list[str]:
     return out
 
 
-def _clean_cells(values: Any, width: int, options: ParseOptions) -> tuple[Any, ...] | None:
-    """返回 None 表示整行为空，跳过。宽度不足补空，超出的保留。
+def _cell_cleaner(options: ParseOptions):
+    """按这套解析选项，编出一个专用的整行清洗函数。
 
-    超出表头宽度的单元格不能丢：这批文件第一行是人手写的说明文字，只占稀疏几个
-    单元格，真表头在第二行。按第一行的宽度截断会把真表头一起截没，识别就永远
-    发现不了它。归一时只按角色绑定的列取值，多出来的列留着无害。
+    为什么要绕这一道，而不是直接写个 `_clean_cells(values, width, options)`：
+    清洗是全流程调用次数最多的地方。淘宝一家店一个月 175 万行、2,700 万个单元格，
+    每个单元格都要读一次 `options.strip_tabs`、一次 `options.null_tokens`、
+    再套一层函数调用。这些每次都一样的东西，一个月要重算两千七百万遍。
+    编成闭包之后它们变成闭包变量，在循环里就是一次 LOAD_DEREF。实测这一处
+    从 16 秒降到 5 秒——什么都没少做，只是不再把常量当变量算。
+
+    同时把「这行是不是空的」并进同一趟循环。原先是清洗完再 `any(...)` 扫一遍，
+    每行多一个生成器对象、多一趟遍历，1,745,962 行就是 175 万个生成器、3 秒。
     """
-    cells = [_strip(v, options) if isinstance(v, str) or v is None else v for v in (values or ())]
-    if not any(c not in (None, "") for c in cells):
-        return None
-    if len(cells) < width:
-        cells.extend([None] * (width - len(cells)))
-    return tuple(cells)
+    # 转 frozenset：模型里它是元组（配置要有序、要能写进 YAML），但这里每个单元格
+    # 都要查一次成员关系，元组是逐个比对，7 个空值记号就是最多 7 次字符串比较。
+    nulls = frozenset(options.null_tokens)
+    # strip(None) 和 strip() 等价，所以不需要在循环里分支判断该调哪个。
+    chars = "\t\u3000 \r\n\ufeff" if options.strip_tabs else None
+
+    def clean(values: Any, width: int) -> tuple[Any, ...] | None:
+        """返回 None 表示整行为空，跳过。宽度不足补空，超出的保留。
+
+        超出表头宽度的单元格不能丢：这批文件第一行是人手写的说明文字，只占稀疏几个
+        单元格，真表头在第二行。按第一行的宽度截断会把真表头一起截没，识别就永远
+        发现不了它。归一时只按角色绑定的列取值，多出来的列留着无害。
+
+        写成一个推导式而不是 for + append，差别不小：2,700 万个单元格意味着 2,700 万
+        次 `append` 的方法查找和调用，光这一项就两秒半。推导式在字节码层面直接
+        `LIST_APPEND`，省掉的正是这一层。
+
+        空行判定用 `list.count("")` 而不是 `any(...)`：清洗完 None 已经变成空串，
+        所以「整行为空」等价于「每个格子都等于空串」。`count` 是 C 里一趟扫完，
+        `any` 每行要新建一个生成器对象——175 万行就是 175 万个。
+        用 `not any(cells)` 会更快但是错的：数字 0 是假值，一行全是 0 的数据会被
+        当成空行整行丢掉，而那正是需要被记下来的一行。
+
+        判类型用 `v.__class__ is str` 而不是 `isinstance`，因为后者是一次真函数调用，
+        在这个量级上是一秒半。代价是 str 的子类会走到 else 分支不被清洗——上游只有
+        calamine、csv、openpyxl 三个来源，都只产出原生 str，所以这个代价目前是零。
+        """
+        cells = [
+            ("" if (s := v.strip(chars)) in nulls else s)
+            if v.__class__ is str
+            else ("" if v is None else v)
+            for v in values or ()
+        ]
+        if cells.count("") == len(cells):
+            return None
+        if len(cells) < width:
+            cells.extend([None] * (width - len(cells)))
+        return tuple(cells)
+
+    return clean
 
 
 def _strip(value: Any, options: ParseOptions) -> str:

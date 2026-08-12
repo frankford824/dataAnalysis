@@ -19,7 +19,14 @@ import polars as pl
 
 from ..model.schema import LinkRule, Metric, Predicate, Template
 from .predicate import compile_where, missing_fields
-from .rules import EXCLUDED, ChainStats, compile_key_rules, resolve_key
+from .rules import (
+    EXCLUDED,
+    ChainStats,
+    compile_key_rules,
+    norm_expr,
+    resolve_key,
+    text_expr,
+)
 from .types import LinkReport
 
 #: 关联键归一后的列名。
@@ -221,6 +228,11 @@ def _keys_from_chain(
     if not fields:
         return frame.with_columns(pl.lit(None, dtype=pl.Utf8).alias(LINK_KEY)), ChainStats()
 
+    fast = _keys_vectorized(frame, compiled, bridges)
+    if fast is not None:
+        keys, stats = fast
+        return frame.with_columns(keys.alias(LINK_KEY)), stats
+
     stats = ChainStats()
 
     def resolve(row: dict) -> str | None:
@@ -235,6 +247,99 @@ def _keys_from_chain(
         .map_elements(resolve, return_dtype=pl.Utf8)
     )
     return frame.with_columns(keys.alias(LINK_KEY)), stats
+
+
+#: 没有任何一环命中。
+_NO_RULE = -1
+
+#: 收缩候选集时用来记住行原来在第几行。`__row__` 已经被锚点占了——它记的是这一行
+#: 在源文件里的行号，不是它在这个 frame 里的下标，两回事，撞名字会静悄悄地串。
+_ROWNO = "__rowno__"
+_HIT = "__chainhit__"
+
+
+def _keys_vectorized(
+    frame: pl.DataFrame, compiled: list, bridges: dict[str, dict[str, str]]
+) -> tuple[pl.Series, ChainStats] | None:
+    """整列版的取键规则链。有一环批量跑不了就整条返回 None，让调用方走逐行。
+
+    和归类那条链同一个思路：每一环「适用于哪些行」是一次列扫描，「第一条命中的生效」
+    是一次 coalesce。区别在于取键还要把值取出来——正则提取、回中间表查、归一，
+    这三步在 Polars 里分别是 `str.extract`、`replace_strict`、几次字符串替换，
+    都不用回 Python。
+
+    实测支付宝账务明细取一次键要过 7 环规则，169 万行就是 169 万次 Python 调用。
+    """
+    plan: list[tuple[int, pl.Expr, pl.Expr]] = []
+    for i, rule in enumerate(compiled):
+        m = rule.matcher
+        if not m.vectorizable:
+            return None
+        if m.field not in frame.columns:
+            continue  # 字段不在这张表里，这一环对谁都不适用（和逐行版一致）
+        text = text_expr(frame.schema[m.field], m.field)
+        mask = m.mask(text)
+
+        if rule.exclude:
+            value = pl.lit(EXCLUDED_KEY, dtype=pl.Utf8)
+        elif rule.via is not None:
+            # 回中间表查。查不到不算这一环命中，要继续往下试——所以把「查到了」
+            # 并进掩码，而不是让它产出一个空值。
+            looked = norm_expr(m.value(text)).replace_strict(
+                bridges.get(rule.via.source, {}), default=None, return_dtype=pl.Utf8
+            )
+            mask = mask & looked.is_not_null() & (looked != "")
+            value = norm_expr(looked)
+        else:
+            value = norm_expr(m.value(text))
+
+        plan.append((i, mask, value))
+
+    if not plan:
+        return None
+
+    #: 逐环收缩候选集，而不是把每一环都在全表上算一遍。
+    #:
+    #: 规则链是「命中即停」，逐行版天然省掉了后面几环——绝大多数行第一环就走了，
+    #: 剩下六环它连看都不看。整列版一开始没占到这个便宜：七环掩码在 169 万行上
+    #: 各扫一遍，正则一次不落，实测 CPU 反而从 30 秒涨到 50 秒，算得更快却更费。
+    #:
+    #: 于是把「命中即停」翻译成「命中即从候选集里拿走」：第一环在全表上算，
+    #: 第二环只看第一环没接住的，越往后候选集越小。取值那几步（正则提取、回表查、
+    #: 归一）更是只在真命中的行上算——一环接住一万行，就只算这一万行。
+    stats = ChainStats()
+    stats.total = frame.height
+    todo = frame.with_row_index(_ROWNO)
+    picked: list[pl.DataFrame] = []
+    for i, mask, value in plan:
+        if todo.height == 0:
+            break
+        todo = todo.with_columns(mask.fill_null(False).alias(_HIT))
+        hit = todo.filter(pl.col(_HIT))
+        if hit.height:
+            if compiled[i].exclude:
+                stats.excluded += hit.height
+            else:
+                stats.hits[i] = hit.height
+            picked.append(hit.select(pl.col(_ROWNO), value.alias("v")))
+            todo = todo.filter(~pl.col(_HIT))
+        todo = todo.drop(_HIT)
+    stats.unmatched = todo.height
+
+    if not picked:
+        return pl.Series("k", [None] * frame.height, dtype=pl.Utf8), stats
+
+    keys = (
+        pl.DataFrame({_ROWNO: pl.arange(0, frame.height, eager=True)})
+        .join(pl.concat(picked), on=_ROWNO, how="left")
+        .select(
+            # 归一之后可能是空串。逐行版在这种情况下照样算「这一环命中了」，只是键
+            # 为空，不会接着往下试——所以空串留到这最后一步才转成 null。
+            pl.when(pl.col("v") == "").then(None).otherwise(pl.col("v")).alias("k")
+        )
+        .get_column("k")
+    )
+    return keys, stats
 
 
 def _extract_keys(frame: pl.DataFrame, rule: LinkRule) -> pl.Expr:
