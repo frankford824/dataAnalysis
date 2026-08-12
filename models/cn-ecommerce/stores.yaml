@@ -24,11 +24,31 @@
 #
 # 只登记了目前有数据的三家。BI 逆向出的 45 个报表里还有几十家店（PDD 十几家、
 # 京东、抖店、另外几家 1688 和淘宝），要纳入就用上面的 add 命令加。
+#
+# 提成那两个字段也在这里配，因为口径本来就逐店不同：
+#
+#     ledger store set <id> --commission-base net_profit --on-loss skip
+#
+# commission_base 是提成按损益表哪一行算。三家现在都是 net_profit（利润），
+# 依据是他们自己订单明细表里人工算好的提成列——按利润除，比例精确到最大值最小值
+# 完全相同；按毛利除是 0.005 到 0.10 的一片噪声。详见 statement.yaml 里那一段。
+# 留空表示用模型默认基数，可选项是所有标了 commission_base 的行。
+#
+# commission_on_loss 是亏损订单怎么算。同一批人工表反推出来的政策三家并不一样，
+# 而且各自都精确到分：
+#
+#   淘宝喜必顺   deduct 倒扣  4,662 个亏损子订单逐笔扣，合计 5,346.96 = 利润 × 5%
+#   1688星泽     skip   不计  124 个亏损订单提成为 0，合计 1,577.75 = 盈利部分 × 5%
+#   抖音浅花涧   skip   不计   75 个亏损订单提成为 0，合计    62.65 = 盈利部分 × 5%
+#
+# 不是谁算错了，是两套政策并存。新店默认 deduct。
 
 - id: taobao_xibishun
   name: 淘宝喜必顺
   platform: taobao
   entity: ""
+  commission_base: net_profit
+  commission_on_loss: deduct
   note: >-
     主体待配。支付宝和微信账单都不带主体信息，引擎读不出来，也不该猜。在界面的店铺设置里填，或者 ledger store set taobao_xibishun --entity 主体全名。
 
@@ -37,12 +57,16 @@
   platform: alibaba1688
   entity: 义乌星泽天成供应链管理有限公司
   entity_tax_id: "91330782MACX8XB45T"
+  commission_base: net_profit
+  commission_on_loss: skip
   note: 主体取自 1688 收款明细的「归属主体名称」「归属主体税号」，2,304 行取值唯一。
 
 - id: douyin_qianhuajian
   name: 抖音浅花涧节日装饰
   platform: douyin
   entity: 义乌星泽天成供应链管理有限公司
+  commission_base: net_profit
+  commission_on_loss: skip
   note: >
     主体取自抖音对账单的「商户主体名称」，1,782 行取值唯一，
     和 1688星泽气球派对 是同一家主体。

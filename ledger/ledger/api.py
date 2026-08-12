@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -115,6 +115,9 @@ def bootstrap() -> dict:
             for n in view.statement_order(model)
         ],
         "sources": [{"id": s.id, "name": s.name} for s in model.sources],
+        # 提成基数的下拉选项。由模型说哪几行能选，界面不写死节点 id——换一家公司
+        # 换一套损益表，这个下拉自己就跟着变。
+        "commission_bases": [{"id": n.id, "name": n.name} for n in model.commission_bases()],
         "accepts": sorted(service.SUFFIXES),
         "model_revision": model_revision(DEFAULT_MODEL),
     }
@@ -360,6 +363,9 @@ def stores() -> dict:
         "stores": [view.store_dict(s) for s in model.stores],
         "editable": list(EDITABLE),
         "platforms": view.platform_options(model),
+        # 提成基数的下拉选项。由模型说哪几行能选，界面不写死节点 id——换一家公司
+        # 换一套损益表，这个下拉自己就变了。
+        "commission_bases": [{"id": n.id, "name": n.name} for n in model.commission_bases()],
     }
 
 
@@ -370,6 +376,10 @@ class StorePatch(BaseModel):
     entity_tax_id: str | None = None
     archived: bool | None = None
     aliases: list[str] | None = None
+    #: 提成按损益表哪一行算，以及亏损订单倒扣还是不算。两者都逐店配——
+    #: 实测同一家公司三家店就是两套政策。
+    commission_base: str | None = None
+    commission_on_loss: Literal["deduct", "skip"] | None = None
     note: str | None = None
 
 
@@ -451,12 +461,17 @@ def commission_summary(period: str = "") -> dict:
             # 结果是 0」必须分开显示：都摆成 0.00 的话，一家还没算过的店看起来
             # 就像一家没赚到钱的店。
             "computed": "commission" in payload,
+            # 逐店记基数名，因为口径可以逐店配。整页共用一个表头的话，一家按毛利
+            # 提、一家按利润提的时候，其中一列的标题就是错的。
+            "base_name": c.get("base_name") or "",
             "base_total": c.get("base_total", 0.0),
             "total": c.get("total", 0.0),
             "unassigned_base": c.get("unassigned_base", 0.0),
             "fallback_base": c.get("fallback_base", 0.0),
             "negative_orders": c.get("negative_orders", 0),
             "negative_base": c.get("negative_base", 0.0),
+            "on_loss": c.get("on_loss", "deduct"),
+            "skipped_loss_base": c.get("skipped_loss_base", 0.0),
             "configured": bool(c.get("configured")),
             "notes": c.get("notes") or [],
             "people": c.get("people") or [],
@@ -477,10 +492,14 @@ def commission_summary(period: str = "") -> dict:
         p["amount"] = money_float(p["amount"])
         p["base"] = money_float(p["base"])
 
+    # 各店口径不一致时不给整页表头编一个名字。「毛利合计」这个标题底下加着几家
+    # 按利润算的钱，是那种看一年都看不出来的错。
+    names = sorted({s["base_name"] for s in stores if s["base_name"]})
     return {
         "period": chosen,
         "periods": periods,
-        "base_name": _base_name(model),
+        "base_name": names[0] if len(names) == 1 else _base_name(model),
+        "base_mixed": len(names) > 1,
         "people": ranked,
         "stores": sorted(stores, key=lambda s: -s["total"]),
         "total": money_float(sum(p["amount"] for p in ranked)),
@@ -489,8 +508,8 @@ def commission_summary(period: str = "") -> dict:
     }
 
 
-def _base_name(model: Model) -> str:
-    node = model.commission_base_node()
+def _base_name(model: Model, store_id: str = "") -> str:
+    node = model.commission_base_node(store_id)
     return node.name if node else ""
 
 

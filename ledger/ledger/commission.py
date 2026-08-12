@@ -107,9 +107,16 @@ class Commission:
     unassigned_base: float = 0.0
     #: 走店铺兜底的毛利。
     fallback_base: float = 0.0
-    #: 毛利为负的子订单数与金额。负毛利会算出负提成，得让人看见再决定怎么办。
+    #: 基数为负的子订单数与金额。看得见才谈得上决定怎么办。
     negative_orders: int = 0
     negative_base: float = 0.0
+    #: 亏损订单的处理方式：deduct 倒扣、skip 不计。
+    on_loss: str = "deduct"
+    #: 因为不计亏损而没有参与计算的基数（负数）。
+    #:
+    #: 单列出来是因为这时 `total` 不再等于 `base_total × 费率`，而两个数都长得像
+    #: 对的。有了这一栏，「合计比基数乘费率多出 35.19」这句话立刻有了出处。
+    skipped_loss_base: float = 0.0
     notes: tuple[str, ...] = ()
 
     @property
@@ -124,12 +131,12 @@ class Commission:
 
 def compute(result: RunResult, model: Model, store: str, period: str) -> Commission:
     """算一个店期的提成。"""
-    node = model.commission_base_node()
+    node = model.commission_base_node(store)
     if node is None:
         raise CommissionError(
             "模型里没有哪个损益表节点标了 commission_base，不知道提成该按什么算。"
         )
-    metrics = model.commission_base_metrics()
+    metrics = model.commission_base_metrics(node.id)
     empty = Commission(
         store=store, period=period, base_node=node.id, base_name=node.name,
         base_total=0.0, total=0.0,
@@ -143,6 +150,17 @@ def compute(result: RunResult, model: Model, store: str, period: str) -> Commiss
 
     base_total = money_float(float(orders["base"].sum()))
     negatives = orders.filter(pl.col("base") < 0)
+
+    # 亏损订单不计的店，把负基数抹平到 0 再往下算。抹的是参与分配的那一份，
+    # base_total 仍然是真实的基数合计——它必须等于损益表上那一行，不然报表和
+    # 提成页会给出两个都叫「利润」的数。
+    on_loss = _on_loss(model, store)
+    skipped = 0.0
+    if on_loss == "skip" and negatives.height:
+        skipped = money_float(float(negatives["base"].sum() or 0.0))
+        orders = orders.with_columns(
+            pl.when(pl.col("base") < 0).then(0.0).otherwise(pl.col("base")).alias("base")
+        )
 
     # 没有配置也照样往下走，不提前返回。一家店没配提成时，最该给人的东西恰恰是
     # 「这个月都有哪些商品、各自多少毛利」——那就是待配清单。提前返回省下的
@@ -177,8 +195,17 @@ def compute(result: RunResult, model: Model, store: str, period: str) -> Commiss
         ),
         negative_orders=negatives.height,
         negative_base=money_float(float(negatives["base"].sum() or 0.0)),
+        on_loss=on_loss,
+        skipped_loss_base=skipped,
         notes=notes,
     )
+
+
+def _on_loss(model: Model, store: str) -> str:
+    try:
+        return model.store(store).commission_on_loss
+    except Exception:
+        return "deduct"
 
 
 def _with_note(c: Commission, note: str) -> Commission:

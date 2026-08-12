@@ -36,7 +36,12 @@ from .transaction import locked_model
 #:
 #: id 不在里面：它是关联键，改了等于换一家店，历史账会对不上。name 也不在：
 #: 认文件靠它，要改名就加 aliases，把旧名留着，否则以前交过的文件立刻认不出。
-EDITABLE = ("entity", "entity_tax_id", "archived", "aliases", "note")
+#:
+#: 两个提成字段在里面，是因为口径本来就逐店不同（实测同一家公司三家店两套亏损政策）。
+#: 不让改的话，不一致的那几家只能靠人事后手改数，而手改的数没有留痕。填错值不会
+#: 落盘：写回后立刻重新加载校验，指向没标基数的行或者一个不认识的政策都会回滚。
+EDITABLE = ("entity", "entity_tax_id", "archived", "aliases",
+            "commission_base", "commission_on_loss", "note")
 
 
 def _yaml() -> YAML:
@@ -75,13 +80,24 @@ def update_store(model_dir: str | Path, store_id: str, changes: dict[str, Any]) 
     for key, value in changes.items():
         if value is None:
             entry.pop(key, None)
-        elif key == "aliases":
-            entry[key] = list(value)
         else:
-            entry[key] = value
+            _put(entry, key, list(value) if key == "aliases" else value)
 
     _write_back(root, path, doc, y)
     return load_model(root).store(store_id)
+
+
+def _put(entry: Any, key: str, value: Any) -> None:
+    """往一条店铺记录里写字段，新字段插在 note 前面。
+
+    直接赋值会把新字段追加到最后，而 note 往往是个折叠的多行块。追加的结果是
+    新字段孤零零地跟在几行缩进文字后面、和下一家店之间只隔一个空行——文件仍然
+    合法，但看的人会以为它属于下一家店。配置文件是给人读的，读错了就会改错。
+    """
+    if key in entry or "note" not in entry:
+        entry[key] = value
+        return
+    entry.insert(list(entry).index("note"), key, value)
 
 
 @locked_model

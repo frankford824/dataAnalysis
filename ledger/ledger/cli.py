@@ -312,7 +312,7 @@ def cmd_store_set(args: argparse.Namespace) -> int:
     要人去改 YAML 才能配，那是脚手架不是产品，所以命令行和界面都得能改。
     """
     changes: dict[str, object] = {}
-    for key in ("entity", "entity_tax_id", "note"):
+    for key in ("entity", "entity_tax_id", "commission_base", "commission_on_loss", "note"):
         value = getattr(args, key, None)
         if value is not None:
             changes[key] = value
@@ -323,10 +323,13 @@ def cmd_store_set(args: argparse.Namespace) -> int:
     if args.archive is not None:
         changes["archived"] = args.archive
     if not changes:
-        print("没说要改什么。可改：--entity --tax-id --alias --note --archive/--unarchive")
+        print("没说要改什么。可改：--entity --tax-id --alias --commission-base --on-loss "
+              "--note --archive/--unarchive")
         return 1
 
     store = update_store(args.model, args.store_id, changes)
+    model = load_model(args.model)
+    base = model.commission_base_node(store.id)
     print(f"{store.name} 已更新：")
     print(f"  平台      {store.platform}")
     print(f"  法人主体  {store.entity or '（未配置）'}")
@@ -334,6 +337,10 @@ def cmd_store_set(args: argparse.Namespace) -> int:
         print(f"  税号      {store.entity_tax_id}")
     if store.aliases:
         print(f"  别名      {'、'.join(store.aliases)}")
+    if base:
+        default = "" if store.commission_base else "（模型默认）"
+        loss = "亏损倒扣" if store.commission_on_loss == "deduct" else "亏损不计"
+        print(f"  提成      按{base.name}算{default}，{loss}")
     print(f"  状态      {'已归档' if store.archived else '在营'}")
     return 0
 
@@ -600,6 +607,10 @@ def build_parser() -> argparse.ArgumentParser:
     se.add_argument("--entity", help="法人主体全名")
     se.add_argument("--tax-id", dest="entity_tax_id", help="主体税号")
     se.add_argument("--alias", action="append", help="再认一个文件名里的别名，可重复")
+    se.add_argument("--commission-base", dest="commission_base",
+                    help="提成按损益表哪一行算。可选值见 ledger stores")
+    se.add_argument("--on-loss", dest="commission_on_loss", choices=["deduct", "skip"],
+                    help="亏损订单：deduct 倒扣提成，skip 不算")
     se.add_argument("--note", help="备注：这个值是从哪来的")
     se.add_argument("--archive", dest="archive", action="store_true", default=None,
                     help="归档：不参与新账期，历史账仍可查")

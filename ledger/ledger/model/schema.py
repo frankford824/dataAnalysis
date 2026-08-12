@@ -591,11 +591,14 @@ class StatementNode(Base):
     #: ——有的按销售收入、有的扣掉退款——所以由模型说，不由界面写死节点 id。
     #: 换一家公司只要改这个标记，总览页不用动一行代码。
     headline: Literal["", "revenue", "profit", "margin"] = ""
-    #: 提成按这一行的数算。
+    #: 这一行可以拿来当提成基数。
     #:
-    #: 提成基数是哪个数，是业务口径不是代码常量——这家公司按毛利，换一家可能按
-    #: 销售额、按净利。写死节点 id 的话，换一家公司要改引擎；标在这里，改口径就是
-    #: 把这个标记挪一行，而且损益表怎么改，提成基数跟着一起改，两处永远说的是同一个数。
+    #: 提成基数是哪个数，是业务口径不是代码常量——这家按毛利、那家按利润。写死节点 id
+    #: 的话换个口径要改引擎；标在这里，损益表怎么改提成基数跟着一起改，两处永远说的是
+    #: 同一个数。
+    #:
+    #: 可以标多个：口径未必全公司统一。标了只是「允许选」，具体哪家店用哪个由
+    #: `Store.commission_base` 定，没指定就用第一个标了的。
     #:
     #: 被标的节点必须整棵子树都是加法。比率行不能标：一个店的利润率没法拆成
     #: 每个子订单的利润率再相加，硬拆出来的数没有意义。
@@ -684,6 +687,24 @@ class Store(Base):
     archived: bool = False
     #: 文件名里认这家店的别名。改过名或简称都放这里。
     aliases: tuple[str, ...] = ()
+    #: 这家店的提成按损益表哪一行算。留空表示用模型的默认基数。
+    #:
+    #: 要逐店配是因为口径本来就不统一：同一家公司里，有的店按毛利提，有的按利润提。
+    #: 只能全局定一个的话，不一致的那几家就只能靠人事后手改数，改完没有留痕。
+    #:
+    #: 只能填被标了 `commission_base` 的节点 id，填别的加载就报错——提成基数悄悄
+    #: 落到一个比率行或者一个不存在的行上，算出来的数看着仍然像那么回事。
+    commission_base: str = ""
+    #: 亏损订单怎么算提成。deduct 倒扣（基数为负，提成也为负），skip 不算（当 0）。
+    #:
+    #: 这也是逐店的，因为实测三家店的做法就不一样：淘宝喜必顺 4,662 个亏损子订单
+    #: 逐笔倒扣，1688星泽和抖音浅花涧的亏损订单一律不计。三家的人工提成表都能按
+    #: 各自的规则精确复现到分位，所以这不是谁算错了，是两套并存的政策。
+    #:
+    #: 默认倒扣：它和「提成 = 基数 × 费率」自洽，店期合计对得上损益表那一行。
+    #: 不计则更宽松，赚的算、亏的不算，合计会大于基数乘费率——差多少必须看得见，
+    #: 所以结果里单列 `skipped_loss_base`。
+    commission_on_loss: Literal["deduct", "skip"] = "deduct"
     note: str = ""
 
     def owns(self, filename: str) -> bool:
@@ -1014,13 +1035,20 @@ class Model(Base):
                 errors.append(f"总览的「{slot}」位置被多个节点占了：{'、'.join(owners)}")
 
         bases = [n.id for n in self.statement if n.commission_base]
-        if len(bases) > 1:
-            errors.append(f"提成基数只能标一个节点，现在标了：{'、'.join(bases)}")
+        for store in self.stores:
+            if store.commission_base and store.commission_base not in bases:
+                errors.append(
+                    f"店铺 {store.id} 的提成基数指向 {store.commission_base}，"
+                    f"但这一行没有标 commission_base。可选的是：{'、'.join(bases) or '（一个都没标）'}"
+                )
         if bases and self.commission:
-            try:
-                self.commission_base_metrics()
-            except ValueError as exc:
-                errors.append(str(exc))
+            # 每个候选都要能拆到指标叶子。只校验默认的那个，等于让「换个店选另一个
+            # 基数」这件事变成一次没人预料的加载失败——而那时候人正在配提成。
+            for base in bases:
+                try:
+                    self.commission_base_metrics(base)
+                except ValueError as exc:
+                    errors.append(str(exc))
 
         if cycle := _find_cycle(self):
             errors.append("公式树存在环：" + " → ".join(cycle))
@@ -1093,17 +1121,36 @@ class Model(Base):
     def commission_for(self, store: str) -> tuple[CommissionRule, ...]:
         return tuple(r for r in self.commission if r.store == store)
 
-    def commission_base_node(self) -> StatementNode | None:
-        return next((n for n in self.statement if n.commission_base), None)
+    def commission_bases(self) -> tuple[StatementNode, ...]:
+        """所有可以拿来当提成基数的行。界面上那个下拉框就是它。"""
+        return tuple(n for n in self.statement if n.commission_base)
 
-    def commission_base_metrics(self) -> tuple[str, ...]:
-        """提成基数由哪些指标相加而成。
+    def commission_base_node(self, store: str = "") -> StatementNode | None:
+        """这家店的提成按哪一行算。不给店名就返回默认基数。
+
+        店铺没指定时落到第一个标了的节点，而不是报错：绝大多数公司口径是统一的，
+        让每家店都得显式选一次，等于把一个共识变成 N 处可以配错的地方。
+        """
+        bases = self.commission_bases()
+        if not bases:
+            return None
+        if store:
+            picked = next((s.commission_base for s in self.stores if s.id == store), "")
+            if picked:
+                return next((n for n in bases if n.id == picked), bases[0])
+        return bases[0]
+
+    def commission_base_metrics(self, base: str = "") -> tuple[str, ...]:
+        """提成基数由哪些指标相加而成。`base` 给节点 id，不给就用默认基数。
 
         从被标记的节点往下走到指标叶子。整棵子树必须都是加法——只有加法才能把
         店铺一个月的总数拆回每个子订单，拆完再加起来还等于原来那个数。这一条要是
         破了，提成基数和损益表上那一行就会对不上，而两个数都长得很像对的。
         """
-        node = self.commission_base_node()
+        if base:
+            node = next((n for n in self.statement if n.id == base), None)
+        else:
+            node = self.commission_base_node()
         if node is None:
             return ()
         metric_ids = {m.id for m in self.metrics}

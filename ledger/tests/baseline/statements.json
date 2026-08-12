@@ -1,10 +1,29 @@
 {
- "engine_version": "3f635cd",
- "note": "取消 token 登录；保证金锁定改判交易赔付；集运货值赔付改判交易赔付，平台物流费退出",
+ "engine_version": "cd34236-dirty",
+ "note": "",
  "stores": {
   "alibaba1688_xingze": {
    "2026-05": {
     "can_close": true,
+    "commission": {
+     "base_node": "net_profit",
+     "base_total": 30781.67,
+     "fallback_base": 31490.23,
+     "negative_base": -708.56,
+     "negative_orders": 125,
+     "on_loss": "skip",
+     "people": [
+      {
+       "amount": 1574.51,
+       "base": 31490.23,
+       "person": "姜惠卉",
+       "products": 342
+      }
+     ],
+     "skipped_loss_base": -708.56,
+     "total": 1574.51,
+     "unassigned_base": 0.0
+    },
     "entity": "义乌星泽天成供应链管理有限公司",
     "findings": [
      {
@@ -345,6 +364,25 @@
   "douyin_qianhuajian": {
    "2026-05": {
     "can_close": true,
+    "commission": {
+     "base_node": "net_profit",
+     "base_total": 984.92,
+     "fallback_base": 1253.07,
+     "negative_base": -268.14,
+     "negative_orders": 75,
+     "on_loss": "skip",
+     "people": [
+      {
+       "amount": 62.65,
+       "base": 1253.07,
+       "person": "蔡果",
+       "products": 30
+      }
+     ],
+     "skipped_loss_base": -268.14,
+     "total": 62.65,
+     "unassigned_base": 0.0
+    },
     "entity": "义乌星泽天成供应链管理有限公司",
     "findings": [
      {
@@ -710,6 +748,31 @@
   "taobao_xibishun": {
    "2026-05": {
     "can_close": true,
+    "commission": {
+     "base_node": "net_profit",
+     "base_total": 152392.6,
+     "fallback_base": 152392.6,
+     "negative_base": -30940.45,
+     "negative_orders": 4664,
+     "on_loss": "deduct",
+     "people": [
+      {
+       "amount": 5333.74,
+       "base": 152392.6,
+       "person": "汪学成",
+       "products": 722
+      },
+      {
+       "amount": 2285.89,
+       "base": 152392.6,
+       "person": "李秋雨",
+       "products": 722
+      }
+     ],
+     "skipped_loss_base": 0.0,
+     "total": 7619.63,
+     "unassigned_base": 0.0
+    },
     "entity": "",
     "findings": [
      {

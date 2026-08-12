@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from . import commission
 from .engine.runtime import ingest, run
 from .model.schema import Model
 from .version import engine_version
@@ -180,12 +181,43 @@ def snapshot(model: Model, corpus: Path, store_ids: Iterable[str] | None = None)
             continue
         result = run(ingest([str(p) for p in files], model, [store.name]), store.platform)
         periods = {
-            sl.period: _strip(slice_dict(sl, store, model))
+            sl.period: _strip(slice_dict(sl, store, model)
+                              | {"commission": _commission(result, model, store.id, sl.period)})
             for sl in result.slices.values()
         }
         if periods:
             out[store_id] = dict(sorted(periods.items()))
     return dict(sorted(out.items()))
+
+
+def _commission(result: Any, model: Model, store_id: str, period: str) -> dict[str, Any]:
+    """这个店期的提成，进基线一起比。
+
+    提成本来不在 `slice_dict` 里——它算在 Slice 外面。于是回放门这道「改引擎不能
+    悄悄挪动钱」的闸门，唯一漏掉的恰好是真正发到人手里的那笔钱：改一条归类规则、
+    动一处符号，损益表纹丝不动而某个人的提成变了，基线一片绿。
+
+    逐商品那几百行不进基线：它们随商品清单每月变，进来只会让基线天天在变，
+    没人再看得动 diff。按人的金额和几个合计足以钉住结果——分配逻辑要是错了，
+    一定会落在某个人的数上。
+    """
+    try:
+        c = commission.compute(result, model, store_id, period)
+    except commission.CommissionError as exc:
+        return {"error": str(exc)}
+    return {
+        "base_node": c.base_node,
+        "base_total": c.base_total,
+        "total": c.total,
+        "on_loss": c.on_loss,
+        "skipped_loss_base": c.skipped_loss_base,
+        "unassigned_base": c.unassigned_base,
+        "fallback_base": c.fallback_base,
+        "negative_orders": c.negative_orders,
+        "negative_base": c.negative_base,
+        "people": [{"person": p.person, "amount": p.amount, "base": p.base,
+                    "products": p.products} for p in c.people],
+    }
 
 
 def compare(current: dict[str, dict[str, Any]], baseline: dict[str, Any]) -> Replay:
@@ -344,7 +376,7 @@ def _key(item: Any) -> str:
     """列表项的配对标识。取 id 优先于名字：改中文显示名不该被当成换了一项。"""
     if not isinstance(item, dict):
         return ""
-    for name in ("id", "node_id", "metric", "name", "label"):
+    for name in ("id", "node_id", "metric", "person", "name", "label"):
         value = item.get(name)
         if isinstance(value, str) and value:
             return value
@@ -355,11 +387,12 @@ def _label(item: Any) -> str:
     """列表项的人话标识，拼进路径。
 
     没有它，报告里出现的是 `statement[19].value` —— 要人去数模型文件的第 19 行
-    才知道说的是净利润。
+    才知道说的是净利润。提成那几行同理：`commission.people[0]` 得写成人名，
+    「谁的钱变了」正是这份报告要回答的问题。
     """
     if not isinstance(item, dict):
         return ""
-    for key in ("name", "label", "id"):
+    for key in ("person", "name", "label", "id"):
         value = item.get(key)
         if isinstance(value, str) and value:
             return f" {value}"

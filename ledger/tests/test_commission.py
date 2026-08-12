@@ -37,12 +37,15 @@ from ledger.model.schema import (
 
 
 def _model(rules: list[CommissionRule] | None = None, **kw) -> Model:
-    """一个刚好够算提成的最小模型：一家店、两条指标、毛利 = 收入 + 成本。"""
+    """一个刚好够算提成的最小模型：一家店、两条指标、毛利 = 收入 + 成本。
+
+    `stores` 和 `statement` 可以覆盖——提成基数和亏损政策都配在这两处。
+    """
+    kw.setdefault("stores", (Store(id="s1", name="测试店", platform="taobao"),))
     return Model(
         id="t",
         name="测试",
         platforms=(Platform(id="taobao", name="淘宝"),),
-        stores=(Store(id="s1", name="测试店", platform="taobao"),),
         sources=(
             SourceContract(id="order", name="订单明细", owner_role="shop_owner",
                            cadence="daily", provides=["receipt"]),
@@ -67,7 +70,7 @@ def _model(rules: list[CommissionRule] | None = None, **kw) -> Model:
                    value=ValueExpr(op="sum", of=["amount"]),
                    link=LinkRule(key="sub_order_id", to="order.sub_order_id", grain="order")),
         ),
-        statement=(
+        statement=kw.pop("statement", (
             StatementNode(id="n_receipt", name="销售收入", level=2,
                           formula={"op": "add", "of": ["receipt"]}),
             StatementNode(id="n_goods", name="商品成本", level=2,
@@ -77,7 +80,7 @@ def _model(rules: list[CommissionRule] | None = None, **kw) -> Model:
                           formula={"op": "add", "of": ["n_receipt", "n_goods"]}),
             StatementNode(id="margin", name="毛利率", level=1, display="percent",
                           formula={"op": "ratio", "of": ["gross", "n_receipt"]}),
-        ),
+        )),
         commission=tuple(rules or ()),
         **kw,
     )
@@ -164,17 +167,104 @@ class TestTheBaseIsTheStatement:
                 commission=(_rule("2026-01-01", "p1", "张三", 0.05, 0.05),),
             )
 
-    def test_only_one_node_can_be_the_base(self):
-        with pytest.raises(ValueError, match="提成基数只能标一个节点"):
-            Model(
-                id="t", name="测试",
-                statement=(
-                    StatementNode(id="a", name="甲", commission_base=True,
-                                  formula={"op": "constant", "of": [], "value": 0.0}),
-                    StatementNode(id="b", name="乙", commission_base=True,
-                                  formula={"op": "constant", "of": [], "value": 0.0}),
-                ),
-            )
+    def test_a_store_can_be_paid_on_a_different_line(self):
+        """口径逐店配。实测这家公司三家店按利润提，另有店按毛利——只能全局定一个的话，
+        不一致的那几家就只能靠人事后手改数，而手改的数没有留痕。
+        """
+        m = _model(
+            stores=(Store(id="s1", name="测试店", platform="taobao",
+                          commission_base="n_receipt"),),
+            statement=(
+                StatementNode(id="n_receipt", name="销售收入", level=2, commission_base=True,
+                              formula={"op": "add", "of": ["receipt"]}),
+                StatementNode(id="n_goods", name="商品成本", level=2,
+                              formula={"op": "add", "of": ["goods"]}),
+                StatementNode(id="gross", name="毛利", level=1, commission_base=True,
+                              formula={"op": "add", "of": ["n_receipt", "n_goods"]}),
+            ),
+        )
+        assert m.commission_base_node("s1").id == "n_receipt"
+        assert m.commission_base_metrics("n_receipt") == ("receipt",)
+
+    def test_a_store_that_says_nothing_gets_the_default(self):
+        """绝大多数公司口径统一。让每家店都显式选一次，是把一个共识变成 N 处能配错的地方。"""
+        assert _model().commission_base_node("s1").id == "gross"
+
+    def test_a_store_cannot_point_at_a_line_that_is_not_a_base(self):
+        """指向一个没标基数的行要在加载时就拦住。
+
+        拦不住的话它会静默落到默认基数上——算出来的钱完全合法，只是按错的口径算的。
+        """
+        with pytest.raises(ValueError, match="没有标 commission_base"):
+            _model(stores=(
+                Store(id="s1", name="测试店", platform="taobao", commission_base="margin"),
+            ))
+
+    def test_every_candidate_base_is_checked_not_just_the_default(self):
+        """比率行标成候选也要当场报错，不能等到哪家店选了它才炸。
+
+        等到那时候人正在配提成，看到的是一个加载失败，而不是一句「这一行不能当基数」。
+        """
+        with pytest.raises(ValueError, match="不是加法"):
+            _model([_rule("2026-01-01", "p1", "张三", 0.05, 0.05)], statement=(
+                StatementNode(id="n_receipt", name="销售收入", level=2,
+                              formula={"op": "add", "of": ["receipt"]}),
+                StatementNode(id="n_goods", name="商品成本", level=2,
+                              formula={"op": "add", "of": ["goods"]}),
+                StatementNode(id="gross", name="毛利", level=1, commission_base=True,
+                              formula={"op": "add", "of": ["n_receipt", "n_goods"]}),
+                StatementNode(id="margin", name="毛利率", level=1, commission_base=True,
+                              formula={"op": "ratio", "of": ["gross", "n_receipt"]}),
+            ))
+
+
+class TestLossOrders:
+    """亏损订单倒扣还是不算。实测两套政策并存，而且各自都精确到分。"""
+
+    ORDERS = [("win", "p1", "2026-05-02", 1000.0), ("lose", "p1", "2026-05-03", -200.0)]
+
+    def _at(self, policy: str):
+        m = _model(
+            [_rule("2026-01-01", "p1", "张三", 0.05, 0.05)],
+            stores=(Store(id="s1", name="测试店", platform="taobao",
+                          commission_on_loss=policy),),
+        )
+        return commission.compute(_run(self.ORDERS), m, "s1", "2026-05")
+
+    def test_deduct_charges_the_loss_back(self):
+        """淘宝喜必顺的做法：4,662 个亏损子订单逐笔倒扣。提成 = 基数合计 × 费率。"""
+        c = self._at("deduct")
+        assert c.total == pytest.approx(40.0)
+        assert c.base_total == 800.0
+
+    def test_skip_pays_only_on_the_winners(self):
+        """1688星泽和抖音浅花涧的做法：亏损订单提成为 0。"""
+        c = self._at("skip")
+        assert c.total == pytest.approx(50.0)
+
+    def test_skip_still_reports_the_real_base(self):
+        """不计亏损时基数合计仍然是真实的那个数，必须等于损益表上那一行。
+
+        为了让提成页好看而把基数也改成 800 的话，同一个「利润」在两个页面上是两个数。
+        """
+        c = self._at("skip")
+        assert c.base_total == 800.0
+
+    def test_skip_says_how_much_it_left_out(self):
+        """这时候合计不再等于基数乘费率，差额必须有出处，否则两个数都长得像对的。"""
+        c = self._at("skip")
+        assert c.skipped_loss_base == pytest.approx(-200.0)
+        assert c.total == pytest.approx(c.base_total * 0.05 - c.skipped_loss_base * 0.05)
+
+    def test_the_loss_is_visible_either_way(self):
+        """倒扣的店也要能看见亏了多少单。看得见才谈得上决定改不改政策。"""
+        for policy in ("deduct", "skip"):
+            c = self._at(policy)
+            assert (c.negative_orders, c.negative_base) == (1, -200.0)
+
+    def test_deducting_is_the_default(self):
+        """默认倒扣：它和「提成 = 基数 × 费率」自洽，也是改这个功能之前的行为。"""
+        assert self._at("deduct").on_loss == _model().store("s1").commission_on_loss
 
 
 class TestTheChangeDateDecidesWhichRulesApply:

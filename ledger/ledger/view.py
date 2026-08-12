@@ -51,7 +51,9 @@ def store_dict(s: Store) -> dict[str, Any]:
     return {
         "id": s.id, "name": s.name, "platform": s.platform,
         "entity": s.entity, "entity_tax_id": s.entity_tax_id,
-        "archived": s.archived, "aliases": list(s.aliases), "note": s.note,
+        "archived": s.archived, "aliases": list(s.aliases),
+        "commission_base": s.commission_base, "commission_on_loss": s.commission_on_loss,
+        "note": s.note,
     }
 
 
@@ -120,6 +122,8 @@ def commission_dict(c: Commission) -> dict[str, Any]:
         "fallback_base": c.fallback_base,
         "negative_orders": c.negative_orders,
         "negative_base": c.negative_base,
+        "on_loss": c.on_loss,
+        "skipped_loss_base": c.skipped_loss_base,
         "notes": list(c.notes),
         "people": [
             {"person": p.person, "amount": p.amount, "base": p.base, "products": p.products}

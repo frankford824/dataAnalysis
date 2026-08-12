@@ -49,6 +49,20 @@ def test_baseline_exists_and_is_readable() -> None:
     assert payload.get("engine_version"), "基线没记引擎版本，将来说不清是哪一版录的"
 
 
+def test_baseline_covers_the_commission() -> None:
+    """提成也得进基线。
+
+    提成算在 Slice 外面，所以它一度不在回放范围内——那道「改引擎不能悄悄挪动钱」
+    的闸门，唯一漏掉的恰好是真正发到人手里的那笔钱。改一条归类规则、动一处符号，
+    损益表纹丝不动而某个人的提成变了，基线仍然一片绿。
+    """
+    for store, periods in load_baseline().get("stores", {}).items():
+        for period, payload in periods.items():
+            assert "commission" in payload, (
+                f"{store} {period} 的基线里没有提成。跑 `ledger replay --record` 重录。"
+            )
+
+
 def test_baseline_covers_every_active_store() -> None:
     """在营的店都要在基线里。
 
@@ -142,6 +156,31 @@ class TestTheGateActuallyCatchesThings:
         a = {"id": "a", "name": "收入", "value": 1.0}
         b = {"id": "b", "name": "成本", "value": 2.0}
         assert self._pair({"statement": [a, b]}, {"statement": [b, a]})
+
+    def test_catches_money_moving_between_two_people(self) -> None:
+        """两个人之间挪钱，总额一分不变。
+
+        这是提成特有的一类错，也是最难发现的一类：店期合计对得上，损益表对得上，
+        自检全绿，只有少拿钱的那个人知道——而他看不到这个界面。
+        """
+        def payroll(a: float, b: float) -> dict:
+            return {"commission": {"total": a + b, "people": [
+                {"person": "汪学成", "amount": a}, {"person": "李秋雨", "amount": b}]}}
+
+        changes = self._pair(payroll(5333.74, 2285.89), payroll(5486.13, 2133.50))
+        assert sorted(c.delta for c in changes) == [pytest.approx(-152.39),
+                                                    pytest.approx(152.39)]
+        # 报告要说出是谁的钱变了，不能只给下标。
+        assert all("汪学成" in c.path or "李秋雨" in c.path for c in changes)
+
+    def test_catches_a_person_dropping_off_the_payroll(self) -> None:
+        """一个人整个从提成表上消失。金额变化里看不出来，得靠「少了一项」抓。"""
+        changes = self._pair(
+            {"commission": {"people": [{"person": "李秋雨", "amount": 2285.89}]}},
+            {"commission": {"people": []}},
+        )
+        assert [c.kind for c in changes] == ["removed"]
+        assert "李秋雨" in changes[0].path
 
     def test_reports_a_whole_period_going_missing(self) -> None:
         """整个账期算不出来了。这种情况下逐字段比是空的，得单独抓。"""
