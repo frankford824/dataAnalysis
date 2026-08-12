@@ -573,6 +573,15 @@ class StatementNode(Base):
     #: ——有的按销售收入、有的扣掉退款——所以由模型说，不由界面写死节点 id。
     #: 换一家公司只要改这个标记，总览页不用动一行代码。
     headline: Literal["", "revenue", "profit", "margin"] = ""
+    #: 提成按这一行的数算。
+    #:
+    #: 提成基数是哪个数，是业务口径不是代码常量——这家公司按毛利，换一家可能按
+    #: 销售额、按净利。写死节点 id 的话，换一家公司要改引擎；标在这里，改口径就是
+    #: 把这个标记挪一行，而且损益表怎么改，提成基数跟着一起改，两处永远说的是同一个数。
+    #:
+    #: 被标的节点必须整棵子树都是加法。比率行不能标：一个店的利润率没法拆成
+    #: 每个子订单的利润率再相加，硬拆出来的数没有意义。
+    commission_base: bool = False
     note: str = ""
 
     @model_validator(mode="after")
@@ -664,6 +673,76 @@ class Store(Base):
         return any(a and a in filename for a in (self.name, *self.aliases))
 
 
+class CommissionRule(Base):
+    """一条提成配置：某天起，某店某商品的毛利里，某人拿多少。
+
+    提成按毛利算，一个商品的总提成率是定死的，再分给几个人。所以一条规则只说
+    「谁拿多少」，而「这个商品一共给多少」记在同组每条上（`total_rate`），
+    加载时校验组内相加等于它。这一列是冗余的，冗余就是它的用处：少配一个人、
+    比例打错一位，加载就报错，而不是等到发钱时才发现少发了一个人。
+
+    生效靠日期，不靠改行
+    -------------------
+    改比例、换人、离职、继承，一律是加一条新生效日期的记录，旧记录原样留着。
+    算提成时按订单的**创建时间**去找「下单那一刻生效的那一版」，所以：
+
+        变更日之前下的单，永远按老规则算，重算一百遍也不变。
+
+    这条性质是白送的——只要不去改历史行。它也正是「入职离职继承」要的语义：
+    某人离职就是发一版不带他的配置，从那天起的新单不再分给他，他离职前的单
+    照旧算他的。不需要为人单独记起止日期，那样做反而会让几个人的比例加不起来。
+
+    一个生效日期是一次**完整重述**，不是打补丁
+    -------------------------------------
+    同一个（店铺, 商品, 生效日期）下的那几行，就是从那天起的全部分配方案。
+    要改张三的比例，得把李四王五也一起写上——听起来啰嗦，但换成打补丁的话，
+    「张三 3% 改 4%」这条记录单独看是合法的，合起来总数变成 6% 超了总提成率，
+    而这种错只有把历史所有补丁叠起来才看得出来。完整重述让每一版自己就能校验。
+
+    商品留空 = 这家店的兜底
+    --------------------
+    没给商品单独配人的订单走店铺这一版。业务上就是「这个店没细分到商品的，
+    归店长」。空商品和具体商品用同一张表、同一套生效逻辑，不另开一个概念。
+    """
+
+    #: 从这天起生效。取的是订单创建时间那一刻生效的版本。
+    effective_from: str
+    #: 店铺 id。
+    store: str
+    #: 商品 id。留空表示这家店的兜底规则。
+    product_id: str = ""
+    #: 商品名称。只为让人读得懂，不参与匹配——商品名会改，id 不会。
+    product_name: str = ""
+    person: str
+    #: 这个人从毛利里拿的比例。0.03 就是 3%。
+    share: float
+    #: 这个商品这一版的总提成率。同组每条都要写一样的值，且组内 share 相加等于它。
+    total_rate: float
+    note: str = ""
+
+    @field_validator("effective_from")
+    @classmethod
+    def _date_shape(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+            raise ValueError(f"生效日期要写成 2026-05-01 这样，收到的是 {v!r}")
+        return v
+
+    @field_validator("share", "total_rate")
+    @classmethod
+    def _rate_range(cls, v: float) -> float:
+        # 上限不设 1：毛利提成给到 100% 以上是荒唐的，但那是业务荒唐不是数据非法，
+        # 拦在这里只会让人没法录入他确实想录的东西。负数则一定是打错了。
+        if v < 0:
+            raise ValueError(f"提成率不能是负数，收到 {v}")
+        return v
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        """同一版配置的分组键。"""
+        return (self.store, self.product_id, self.effective_from)
+
+
 class Platform(Base):
     """一个平台。
 
@@ -707,6 +786,7 @@ class Model(Base):
     statement: tuple[StatementNode, ...] = ()
     dictionary: tuple[DictionaryEntry, ...] = ()
     checks: tuple[Check, ...] = ()
+    commission: tuple[CommissionRule, ...] = ()
 
     # -- 索引 ------------------------------------------------------------- #
 
@@ -915,12 +995,129 @@ class Model(Base):
             if len(owners) > 1:
                 errors.append(f"总览的「{slot}」位置被多个节点占了：{'、'.join(owners)}")
 
+        bases = [n.id for n in self.statement if n.commission_base]
+        if len(bases) > 1:
+            errors.append(f"提成基数只能标一个节点，现在标了：{'、'.join(bases)}")
+        if bases and self.commission:
+            try:
+                self.commission_base_metrics()
+            except ValueError as exc:
+                errors.append(str(exc))
+
         if cycle := _find_cycle(self):
             errors.append("公式树存在环：" + " → ".join(cycle))
+
+        errors.extend(self._commission_errors())
 
         if errors:
             raise ValueError("模型校验失败：\n  - " + "\n  - ".join(errors))
         return self
+
+    def _commission_errors(self) -> list[str]:
+        """提成配置的校验。
+
+        这一套校验的存在理由，是提成算错不会像账算错那样自己暴露。损益表有勾稽、
+        有覆盖率、有未归属金额，一处错了别处对不上。提成没有这种约束——少配一个人，
+        算出来的数完全合法，只是那个人一分钱没有，而他不看这个界面。所以能在加载时
+        查出来的，一条都不能放过。
+        """
+        errors: list[str] = []
+        if not self.commission:
+            return errors
+
+        store_ids = {s.id for s in self.stores}
+        groups: dict[tuple[str, str, str], list[CommissionRule]] = defaultdict(list)
+        for r in self.commission:
+            groups[r.key].append(r)
+
+        for r in self.commission:
+            if store_ids and r.store not in store_ids:
+                errors.append(
+                    f"提成配置 {r.effective_from} {r.store}/{r.product_id or '（店铺兜底）'} "
+                    f"指向没登记的店铺 {r.store!r}"
+                )
+            if not r.person.strip():
+                errors.append(f"提成配置 {r.effective_from} {r.store} 有一条没写人名")
+
+        for (store, product, day), rows in sorted(groups.items()):
+            what = f"{day} {store}/{product or '（店铺兜底）'}"
+
+            declared = {round(r.total_rate, 10) for r in rows}
+            if len(declared) > 1:
+                errors.append(
+                    f"提成配置 {what} 的总提成率写了 {len(declared)} 个不同的值："
+                    f"{'、'.join(f'{v:.4g}' for v in sorted(declared))}。"
+                    f"同一版只能有一个总提成率。"
+                )
+                continue
+
+            total = next(iter(declared))
+            got = sum(r.share for r in rows)
+            # 千万分之一。比例是人手输的两三位小数，浮点误差远小于这个；
+            # 而少配一个人造成的缺口至少是百分之一量级，不会被这个容差盖住。
+            if abs(got - total) > 1e-7:
+                who = "、".join(f"{r.person} {r.share:.4g}" for r in rows)
+                errors.append(
+                    f"提成配置 {what} 的子提成率加起来是 {got:.4g}，"
+                    f"但总提成率写的是 {total:.4g}，差 {got - total:+.4g}。"
+                    f"当前这一版是：{who}。"
+                    f"改配置要把这一版的人全写上，不能只改一个人。"
+                )
+
+            seen: set[str] = set()
+            for r in rows:
+                if r.person in seen:
+                    errors.append(f"提成配置 {what} 里 {r.person} 出现了两次")
+                seen.add(r.person)
+
+        return errors
+
+    def commission_for(self, store: str) -> tuple[CommissionRule, ...]:
+        return tuple(r for r in self.commission if r.store == store)
+
+    def commission_base_node(self) -> StatementNode | None:
+        return next((n for n in self.statement if n.commission_base), None)
+
+    def commission_base_metrics(self) -> tuple[str, ...]:
+        """提成基数由哪些指标相加而成。
+
+        从被标记的节点往下走到指标叶子。整棵子树必须都是加法——只有加法才能把
+        店铺一个月的总数拆回每个子订单，拆完再加起来还等于原来那个数。这一条要是
+        破了，提成基数和损益表上那一行就会对不上，而两个数都长得很像对的。
+        """
+        node = self.commission_base_node()
+        if node is None:
+            return ()
+        metric_ids = {m.id for m in self.metrics}
+        leaves: list[str] = []
+        seen: set[str] = set()
+
+        def walk(ref: str, path: tuple[str, ...]) -> None:
+            if ref in metric_ids:
+                if ref not in seen:
+                    seen.add(ref)
+                    leaves.append(ref)
+                return
+            if ref in path:
+                raise ValueError(f"提成基数 {node.id} 的公式树有环：{' → '.join((*path, ref))}")
+            spec = self.node(ref)
+            if spec.children:
+                refs, op = spec.children, "add"
+            elif spec.formula:
+                refs, op = spec.formula.of, spec.formula.op
+            else:
+                return
+            if op != "add":
+                raise ValueError(
+                    f"提成基数 {node.id} 底下的 {ref} 用的是 {op}，不是加法。"
+                    f"提成要按子订单摊到人头上，只有加法能拆开再合回原来那个数。"
+                    f"路径：{' → '.join((*path, ref))}"
+                )
+            for r in refs:
+                walk(r, (*path, ref))
+
+        walk(node.id, ())
+        return tuple(leaves)
 
 
 def _pick(items: tuple, key: str, label: str):

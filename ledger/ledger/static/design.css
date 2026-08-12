@@ -183,7 +183,9 @@ tr.quiet td { color: var(--n6); }
  * 按钮
  * -------------------------------------------------------------------------- */
 
-button {
+/* 下载是导航到一个 URL，语义上就是链接，不该为了长得像按钮而做成 button 再用
+   JS 改地址——那样中键新开、右键另存全没了。所以让 a.button 走同一套样式。 */
+button, a.button {
   font: 560 var(--t-sm)/1.4 var(--sans);
   padding: 7px 14px;
   border: 1px solid var(--n3);
@@ -193,12 +195,15 @@ button {
   cursor: pointer;
   transition: border-color .12s, background .12s, color .12s;
 }
-button:hover:not(:disabled) { border-color: var(--n4); background: var(--n1); }
+a.button { display: inline-block; text-decoration: none; }
+button:hover:not(:disabled), a.button:hover { border-color: var(--n4); background: var(--n1); }
 button:disabled { opacity: .5; cursor: default; }
-button.primary {
+button.primary, a.button.primary {
   background: var(--accent); border-color: var(--accent); color: #fff;
 }
-button.primary:hover:not(:disabled) { background: #1a52e0; border-color: #1a52e0; }
+button.primary:hover:not(:disabled), a.button.primary:hover {
+  background: #1a52e0; border-color: #1a52e0;
+}
 button.danger:hover:not(:disabled) { border-color: var(--bad); color: var(--bad); }
 button.link {
   border: 0; background: none; color: var(--accent); padding: 0 2px;

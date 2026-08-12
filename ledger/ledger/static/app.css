@@ -148,6 +148,20 @@ main > header .sub { color: var(--n6); font-size: var(--t-sm); margin-top: var(-
 .statement tr.drillable:hover td.name::after { color: var(--accent); }
 .statement tr.why td { font-size: var(--t-xs); color: var(--n6); padding-left: 18px; }
 
+/* --------------------------------------------------------------------------
+ * 提成
+ * -------------------------------------------------------------------------- */
+
+/* 提成表要能横着读一行：谁、多少钱、基数、分布。金额一律等宽数字右对齐——
+   一列钱如果宽窄不一，扫一眼看不出哪个大，得逐个读位数。 */
+table.grid td { padding: 7px 0; font-size: var(--t-md); vertical-align: baseline; }
+table.grid td + td, table.grid th + th { padding-left: var(--s4); }
+table.grid th.amt, table.grid td.amt { text-align: right; white-space: nowrap;
+  font-family: var(--num); font-variant-numeric: tabular-nums; }
+table.grid td.name { font-weight: 560; }
+table.grid tr.total td { border-top: 1px solid var(--n3); padding-top: 9px; font-weight: 640; }
+table.grid tbody tr:hover td { background: var(--n1); }
+
 .qbar { display: inline-block; width: 54px; height: 5px; border-radius: 3px;
   background: var(--n2); overflow: hidden; vertical-align: 1px; margin-right: 6px; }
 .qbar i { display: block; height: 100%; background: var(--ok); }

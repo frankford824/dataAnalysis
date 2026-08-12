@@ -12,17 +12,27 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import onboard, service, view
 from .model import propose
-from .model.config import EDITABLE, add_store, update_store
+from .model.config import (
+    COMMISSION_COLUMNS,
+    COMMISSION_HEADERS,
+    EDITABLE,
+    csv_cell,
+    add_store,
+    commission_column,
+    replace_commission,
+    update_store,
+)
 from .model.loader import ModelError, load_model
 from .model.schema import Model, SourceContract, Store, Template
 from .model.transaction import model_revision
@@ -423,6 +433,297 @@ def create_store(new: StoreNew) -> dict:
     except ModelError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"store": view.store_dict(store)}
+
+
+# --------------------------------------------------------------------------- #
+# 提成
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/api/commission")
+def commission_summary(period: str = "") -> dict:
+    """一个账期全部店铺的提成，按人汇总。这就是「这个月要发多少」那张表。
+
+    数从各店账期的快照里取，不重算：快照存的就是当时那份数据配那份规则算出来的
+    结果，账期一结账它就冻住了。汇总页只是把它们并起来，不会出现「总览上是一个数、
+    点进单店是另一个数」这种事。
+    """
+    model = _model()
+    ws = workspace()
+    by_id = {s.id: s for s in model.stores}
+
+    states = list(ws.overview())
+    periods = sorted({st.period for st in states}, reverse=True)
+    chosen = period or (periods[0] if periods else "")
+
+    people: dict[str, dict[str, Any]] = {}
+    stores: list[dict[str, Any]] = []
+    for st in states:
+        if st.period != chosen:
+            continue
+        payload = st.result or {}
+        c = payload.get("commission") or {}
+        store = by_id.get(st.store_id)
+        stores.append({
+            "store_id": st.store_id,
+            "store": store.name if store else st.store_id,
+            "platform": store.platform if store else "",
+            "state": st.state,
+            "stale": st.stale,
+            # 快照里根本没有提成这一段，说明它是加提成功能之前算的。这和「算过、
+            # 结果是 0」必须分开显示：都摆成 0.00 的话，一家还没算过的店看起来
+            # 就像一家没赚到钱的店。
+            "computed": "commission" in payload,
+            "base_total": c.get("base_total", 0.0),
+            "total": c.get("total", 0.0),
+            "unassigned_base": c.get("unassigned_base", 0.0),
+            "fallback_base": c.get("fallback_base", 0.0),
+            "negative_orders": c.get("negative_orders", 0),
+            "negative_base": c.get("negative_base", 0.0),
+            "configured": bool(c.get("configured")),
+            "notes": c.get("notes") or [],
+            "people": c.get("people") or [],
+        })
+        for p in c.get("people") or []:
+            slot = people.setdefault(p["person"], {"person": p["person"], "amount": 0.0,
+                                                   "base": 0.0, "stores": []})
+            slot["amount"] += p.get("amount") or 0.0
+            slot["base"] += p.get("base") or 0.0
+            slot["stores"].append({
+                "store": store.name if store else st.store_id,
+                "store_id": st.store_id,
+                "amount": p.get("amount") or 0.0,
+            })
+
+    ranked = sorted(people.values(), key=lambda p: -p["amount"])
+    for p in ranked:
+        p["amount"] = money_float(p["amount"])
+        p["base"] = money_float(p["base"])
+
+    return {
+        "period": chosen,
+        "periods": periods,
+        "base_name": _base_name(model),
+        "people": ranked,
+        "stores": sorted(stores, key=lambda s: -s["total"]),
+        "total": money_float(sum(p["amount"] for p in ranked)),
+        "unassigned_base": money_float(sum(s["unassigned_base"] for s in stores)),
+        "rules": len(model.commission),
+    }
+
+
+def _base_name(model: Model) -> str:
+    node = model.commission_base_node()
+    return node.name if node else ""
+
+
+@app.get("/api/commission/config")
+def commission_config(store_id: str = "") -> dict:
+    """当前的提成配置。界面上照原样列出来，也能导出去改。"""
+    model = _model()
+    if store_id:
+        _store(model, store_id)
+    return {
+        "columns": list(COMMISSION_COLUMNS),
+        "headers": dict(COMMISSION_HEADERS),
+        "rules": view.commission_rules(model, store_id),
+        "stores": [
+            {"id": s.id, "name": s.name, "platform": s.platform}
+            for s in model.active_stores()
+        ],
+    }
+
+
+@app.get("/api/commission/config.csv")
+def commission_export() -> PlainTextResponse:
+    """把配置导成 CSV，拿去 Excel 里改。
+
+    表头用英文列名而不是中文：导出来的这份改完要能原样传回来，两边同一套列名
+    才不会在中英之间来回翻译时丢字段。上传那头两种表头都认，所以人手写中文表头
+    也能传，但系统吐出来的永远是这一份。
+    """
+    rows = view.commission_rules(_model())
+    lines = [",".join(COMMISSION_COLUMNS)]
+    for r in rows:
+        lines.append(",".join(csv_cell(r.get(c, "")) for c in COMMISSION_COLUMNS))
+    # BOM 是给 Excel 的：没有它，双击打开中文全是乱码，人会以为系统坏了。
+    return PlainTextResponse(
+        "\ufeff" + "\n".join(lines) + "\n",
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="commission.csv"'},
+    )
+
+
+@app.get("/api/commission/products.csv")
+def commission_products(period: str = "", store_id: str = "", limit: int = 5000) -> PlainTextResponse:
+    """把这个账期出现过的商品导成一份待配表：商品和毛利已经填好，只等填人和比例。
+
+    这一个端点决定了提成功能能不能真正被用起来。系统这边已经知道每个商品今年
+    卖了多少、赚了多少；不给这份表，人就得自己去别处凑出商品清单，或者对着
+    七百多个商品 ID 手打——那样的话，配置提成这件事永远排不上队。
+
+    按毛利从大到小排。真要精细配的就是最上面那几十个，剩下的长尾丢给店铺兜底，
+    这份排序直接告诉人该在哪儿停手。
+    """
+    ws = workspace()
+    model = _model()
+    states = [st for st in ws.overview()
+              if (not period or st.period == period)
+              and (not store_id or st.store_id == store_id)]
+    if not states:
+        raise HTTPException(404, "这个账期还没有算过的店")
+
+    # 末尾两列不是配置项，是参考数据。加载器按列名取值，多出来的列它不看，
+    # 所以这份表填完能原样传回来，不用先删列——多一步就会有人漏做。
+    lines = [",".join((*COMMISSION_COLUMNS, "本期毛利", "本期子订单数"))]
+    items: list[tuple[float, str]] = []
+    for st in sorted(states, key=lambda s: s.store_id):
+        c = (st.result or {}).get("commission") or {}
+        # 生效日期给一个能直接用的默认值：这个账期的第一天。留空的话每一行都得
+        # 手填一遍日期，几百行里漏填一行，整份表就传不上去。
+        first_day = f"{st.period}-01" if len(st.period) == 7 else ""
+        for p in c.get("products") or []:
+            pid = p.get("product_id") or ""
+            base = float(p.get("base") or 0.0)
+            items.append((base, ",".join((
+                first_day, st.store_id,
+                # 商品 ID 是十二三位纯数字。Excel 会按数字读，再存回 CSV 时写成
+                # 1.04783E+12——一个被截过的 ID 传回来匹配不上任何订单，而且不报错，
+                # 只表现为「这个商品怎么没提成」。前导等号逼 Excel 当文本读，
+                # 上传那头再把它剥掉。
+                csv_cell(f'="{pid}"' if pid else ""),
+                csv_cell(p.get("product_name") or ""),
+                "", "", "",
+                csv_cell(f"{base:.2f}"),
+                csv_cell(str(p.get("sub_orders", 0))),
+            ))))
+    lines.extend(line for _base, line in sorted(items, key=lambda x: -x[0])[:limit])
+    return PlainTextResponse(
+        "\ufeff" + "\n".join(lines) + "\n",
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="commission-products.csv"'},
+    )
+
+
+@app.post("/api/commission/config")
+def commission_upload(
+    file: Annotated[UploadFile, File()],
+    recompute_stores: bool = True,
+) -> dict:
+    """传一份新的提成配置，整份替换。
+
+    整份替换而不是逐条改，因为提成配置的正确性是整份的：同一版里几个人的比例
+    加起来必须等于总提成率，单条改动没法校验这件事。传上来先整体校验，
+    有一条不对就整份退回，一个字节都不落盘——存进一份自相矛盾的配置，
+    下次加载模型会直接失败，整套系统起不来。
+
+    校验过了默认把涉及的店重算一遍。不重算的话，界面上配置已经变了、
+    账期里的提成数字还是旧的，两个数并排放着而人不知道该信哪个。
+    """
+    raw = file.file.read()
+    name = Path(file.filename or "").name
+    try:
+        rows = commission_rows(name, raw)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not rows:
+        raise HTTPException(400, "这份表里没有数据行")
+
+    before = {r["store"] for r in view.commission_rules(_model())}
+    try:
+        count = replace_commission(DEFAULT_MODEL, rows)
+    except (ModelError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    model = _model()
+    touched = sorted((before | {r.get("store", "") for r in rows}) & {s.id for s in model.stores})
+    periods: list[dict] = []
+    if recompute_stores:
+        ws = workspace()
+        for sid in touched:
+            periods.extend(service.recompute(ws, model, model.store(sid)).periods)
+    return {"count": count, "stores": touched, "periods": periods}
+
+
+def commission_rows(name: str, raw: bytes) -> list[dict[str, str]]:
+    """把上传的 CSV 或 Excel 读成配置行。
+
+    两种格式都收，因为业务维护提成用的是 Excel，而系统导出的是 CSV。
+    只收一种的话，等于要求他们每次改完都另存一次——多一步就会有人跳过，
+    跳过就会有人直接去改服务器上的文件。
+    """
+    suffix = Path(name).suffix.lower()
+    if suffix in (".xlsx", ".xlsm", ".xls", ".xlsb"):
+        table = _excel_rows(raw, name)
+    elif suffix == ".csv" or not suffix:
+        table = _csv_rows(raw)
+    else:
+        raise ValueError(f"读不了 {suffix} 这种文件，请传 CSV 或 Excel")
+    if not table:
+        raise ValueError("这份表是空的")
+
+    header, *body = table
+    mapping = {i: commission_column(h) for i, h in enumerate(header)}
+    known = {c for c in mapping.values() if c}
+    missing = [c for c in ("effective_from", "store", "person", "share", "total_rate")
+               if c not in known]
+    if missing:
+        raise ValueError(
+            "缺这几列：" + "、".join(COMMISSION_HEADERS[c] for c in missing) +
+            "。这份表的表头是：" + "、".join(h for h in header if h)
+        )
+
+    out: list[dict[str, str]] = []
+    for row in body:
+        rec = {mapping[i]: _unguard(str(v)) for i, v in enumerate(row)
+               if i in mapping and mapping[i] and v is not None}
+        if not any(rec.get(c) for c in ("store", "person")):
+            continue
+        out.append(rec)
+    return out
+
+
+def _unguard(cell: str) -> str:
+    """剥掉导出时给 Excel 加的 `="..."` 外壳。
+
+    直接在 Excel 里打开填完、另存为 xlsx 的话，calamine 读到的是公式算完的文本，
+    壳自己就没了。但有人会用文本编辑器改完 CSV 直接传回来，那时壳还在——
+    带着壳的商品 ID 匹配不上任何订单，而且不报错。
+    """
+    s = cell.strip()
+    if s.startswith('="') and s.endswith('"') and len(s) > 3:
+        return s[2:-1].strip()
+    return s
+
+
+def _csv_rows(raw: bytes) -> list[list[str]]:
+    import csv as _csv
+    import io as _io
+    text = raw.decode("utf-8-sig", errors="replace")
+    return [r for r in _csv.reader(_io.StringIO(text))]
+
+
+def _excel_rows(raw: bytes, name: str) -> list[list[str]]:
+    import io as _io
+
+    from python_calamine import CalamineWorkbook
+    try:
+        wb = CalamineWorkbook.from_filelike(_io.BytesIO(raw))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"{name} 打不开：{exc}") from exc
+    if not wb.sheet_names:
+        raise ValueError(f"{name} 里没有工作表")
+    rows = wb.get_sheet_by_name(wb.sheet_names[0]).to_python()
+    out = []
+    for r in rows:
+        cells = ["" if c is None else str(c).strip() for c in r]
+        # 日期被 Excel 存成 datetime，str() 出来带时分秒，规整成 2026-05-01
+        cells = [c.split(" ")[0] if _LOOKS_LIKE_TIMESTAMP.match(c) else c for c in cells]
+        out.append(cells)
+    return out
+
+
+_LOOKS_LIKE_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 
 # --------------------------------------------------------------------------- #

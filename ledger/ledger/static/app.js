@@ -105,6 +105,8 @@ function loginGate(message) {
 const routes = [
   [/^#\/$/, () => viewOverview()],
   [/^#\/deliver$/, () => viewDeliver()],
+  [/^#\/commission(?:\?period=(.*))?$/, period =>
+    viewCommission(period ? decodeURIComponent(period) : '')],
   [/^#\/stores$/, () => viewStores()],
   [/^#\/store\/([^/?]+)(?:\?period=(.*))?$/, (id, period) =>
     viewStore(decodeURIComponent(id), period ? decodeURIComponent(period) : '')],
@@ -122,6 +124,7 @@ async function route() {
     if (m) {
       const view = hash === '#/' ? 'overview'
         : hash.startsWith('#/deliver') ? 'deliver'
+        : hash.startsWith('#/commission') ? 'commission'
         : hash.startsWith('#/stores') ? 'stores' : '';
       document.querySelectorAll('#nav a').forEach(a =>
         a.classList.toggle('on', a.dataset.view === view));
@@ -392,6 +395,7 @@ async function viewStore(storeId, period) {
         ${verdict(snap)}
         ${closer(store.id, chosen.period, snap)}
         ${statement(snap)}
+        ${storeCommission(snap)}
         ${sources(snap)}
         ${unlinked(snap)}
         ${unclassified(snap)}
@@ -476,6 +480,39 @@ function statement(s) {
   }).join('');
   return `<div class="statement"><table><tbody>${rows}</tbody></table>
     <p class="xs muted" style="margin-top:10px">带 › 的行可以点开，看它由哪些原始行组成。</p></div>`;
+}
+
+/* 提成跟着损益表一起显示，而不是单开一页。它是从上面那张表的毛利派生出来的，
+   两个数放在一屏里，对不上一眼就看得出来；分开放，就得靠人记住上一页是多少。 */
+function storeCommission(s) {
+  const c = s.commission;
+  if (!c) return '';
+  if (!c.configured) {
+    return `<div class="panel"><h3>提成</h3>
+      <p class="muted small">${c.notes && c.notes.length ? esc(c.notes[0])
+        : '这家店还没配提成。'} <a href="#/commission">去配</a></p></div>`;
+  }
+  const rows = c.people.map(p => `<tr>
+    <td class="name">${esc(p.person)}</td>
+    <td class="amt">${money(p.amount)}</td>
+    <td class="amt muted">${money(p.base)}</td>
+    <td class="muted small">${count(p.products)} 个商品</td></tr>`).join('');
+  const flags = [];
+  if (c.unassigned_base) flags.push(
+    `${money(c.unassigned_base)} 的${esc(c.base_name)}没有分配对象`);
+  if (c.fallback_base) flags.push(`${money(c.fallback_base)} 走店铺兜底`);
+  if (c.negative_orders) flags.push(
+    `${count(c.negative_orders)} 单${esc(c.base_name)}为负，合计 ${money(c.negative_base)}，
+     按现行口径冲减了提成`);
+  return `<div class="panel"><h3>提成 ${money(c.total)}</h3>
+    <table class="grid" style="max-width:620px"><thead><tr>
+      <th>人员</th><th class="amt">提成</th><th class="amt">计提基数</th><th></th>
+    </tr></thead><tbody>${rows}</tbody></table>
+    ${flags.length ? `<p class="small muted" style="margin-top:10px">${
+      flags.map(esc).join('；')}。</p>` : ''}
+    <p class="xs muted" style="margin-top:6px">
+    按${esc(c.base_name)} ${money(c.base_total)} 计提，取每单下单时生效的那一版比例。
+    <a href="#/commission">看配置</a></p></div>`;
 }
 
 function sources(s) {
@@ -725,6 +762,192 @@ function deliverCard(d) {
       两版都算就是双份成本。</p>`
       : '<div class="empty"><p>这家店还没交过表。</p></div>'}
   </div>`;
+}
+
+// --------------------------------------------------------------------------
+// 提成
+// --------------------------------------------------------------------------
+
+/* 「按人」那张表排在最前面，因为它是这一页唯一拿去做事的东西——按它发钱。
+   底下的按店、按配置都是用来解释它为什么是这个数的。 */
+
+async function viewCommission(period) {
+  const d = await api('/api/commission' + (period ? '?period=' + encodeURIComponent(period) : ''));
+  const cfg = await api('/api/commission/config');
+  $('c-comm').textContent = d.people.length || '';
+
+  main.innerHTML = `
+    <header><h1>提成</h1>
+      <div class="sub">按${esc(d.base_name || '毛利')}算。下单那一刻生效的比例是多少，
+      这一单就按多少算——之后再改配置，也不会动到已经下过的单。</div></header>
+    ${d.periods.length ? `<div class="periodbar">${d.periods.map(p =>
+      `<button class="${p === d.period ? 'on' : ''}" data-period="${esc(p)}">${esc(p)}</button>`
+    ).join('')}</div>` : ''}
+    ${commissionPeople(d)}
+    ${commissionStores(d)}
+    ${commissionConfig(cfg, d)}`;
+  wireCommission(d, cfg);
+}
+
+function commissionPeople(d) {
+  if (!d.people.length) {
+    /* 一家还没配提成的公司，打开这一页最需要的不是一句「还没配」，而是那份
+       待配清单：商品和毛利系统已经知道了，人只要填谁拿多少。 */
+    return `<div class="card"><div class="empty">
+      <h3>${d.period ? d.period + ' 还没有算出提成' : '还没有账期'}</h3>
+      <p>${d.rules ? '已经有 ' + d.rules + ' 条配置，但这个账期的账里没有匹配上的商品。'
+        : '系统已经知道每个商品这个月赚了多少，只差谁拿多少。'}</p>
+      ${d.period ? `<p style="margin-top:14px">
+        <a class="button primary" href="/api/commission/products.csv?period=${
+          encodeURIComponent(d.period)}">下载待配商品表</a></p>
+      <p class="small muted">商品和本期${esc(d.base_name || '毛利')}都填好了，按${
+        esc(d.base_name || '毛利')}从大到小排。填上人员和比例传回来即可，
+      长尾商品不用一个个配，配一条商品留空的店铺兜底就行。</p>` : ''}
+    </div></div>`;
+  }
+  const rows = d.people.map(p => `<tr>
+    <td class="name">${esc(p.person)}</td>
+    <td class="amt strong">${money(p.amount)}</td>
+    <td class="amt muted">${money(p.base)}</td>
+    <td class="muted small">${p.stores.map(s =>
+      esc(s.store) + ' ' + money(s.amount)).join('　')}</td></tr>`).join('');
+  return `<div class="card">
+    <header><h2>${esc(d.period)} 要发 ${money(d.total)}</h2>
+      <span class="sub">${d.people.length} 个人</span></header>
+    <table class="grid"><thead><tr>
+      <th>人员</th><th class="amt">提成</th><th class="amt">计提基数</th><th>分布</th>
+    </tr></thead><tbody>${rows}
+    <tr class="total"><td>合计</td><td class="amt strong">${money(d.total)}</td>
+      <td colspan="2"></td></tr></tbody></table>
+    <p class="xs muted" style="margin-top:10px">
+    这一栏的每个数都是各店金额相加，合计等于上面那些数逐个相加，不差分。</p>
+  </div>`;
+}
+
+function commissionStores(d) {
+  if (!d.stores.length) return '';
+  const rows = d.stores.map(s => {
+    const name = `<td class="name"><a href="#/store/${encodeURIComponent(s.store_id)}?period=${
+      encodeURIComponent(d.period)}">${esc(s.store)}</a>
+      <small class="muted"> ${esc(s.platform)}</small></td>`;
+    /* 没算过的店不摆 0.00。摆了就分不清「算过、这个月没提成」和「压根没算」，
+       而这两件事该做的下一步完全不同。 */
+    if (!s.computed) {
+      return `<tr class="quiet">${name}<td colspan="3" class="muted small">
+        这个账期是加提成功能之前算的，还没有提成数</td>
+        <td><button class="link tiny recomp" data-store="${esc(s.store_id)}">重算</button></td></tr>`;
+    }
+    const flags = [];
+    if (!s.configured) flags.push('<span class="pill warn"><span class="dot"></span>没配提成</span>');
+    if (s.unassigned_base) flags.push(
+      `<span class="pill warn"><span class="dot"></span>${money(s.unassigned_base)} 没人管</span>`);
+    if (s.negative_orders) flags.push(
+      `<span class="muted xs">${count(s.negative_orders)} 单亏损 ${money(s.negative_base)}</span>`);
+    if (s.state === 'closed') flags.push('<span class="pill ok"><span class="dot"></span>已结账</span>');
+    return `<tr>${name}
+      <td class="amt">${money(s.total)}</td>
+      <td class="amt muted">${money(s.base_total)}</td>
+      <td class="amt muted">${s.fallback_base ? money(s.fallback_base) : '<span class="na">—</span>'}</td>
+      <td>${flags.join(' ')}</td></tr>`;
+  }).join('');
+  return `<div class="card">
+    <header><h2>按店</h2><span class="sub">点店名去看这家店的账</span></header>
+    <table class="grid"><thead><tr>
+      <th>店铺</th><th class="amt">提成</th><th class="amt">${esc(d.base_name || '毛利')}</th>
+      <th class="amt">走店铺兜底</th><th></th>
+    </tr></thead><tbody>${rows}</tbody></table>
+    ${d.unassigned_base ? `<div class="banner warn" style="margin-top:14px">
+      <strong>${money(d.unassigned_base)} 没有分配对象</strong>
+      这部分${esc(d.base_name || '毛利')}既没配商品负责人，也没有店铺兜底规则。
+      不是算错，是没人配——补一条商品为空的店铺兜底规则就能兜住。</div>` : ''}
+  </div>`;
+}
+
+function commissionConfig(cfg, d) {
+  const rows = cfg.rules.slice(0, 200).map(r => `<tr>
+    <td>${esc(r.effective_from)}</td>
+    <td class="muted">${esc(r.store)}</td>
+    <td>${r.product_id ? esc(r.product_id) : '<span class="pill">店铺兜底</span>'}
+      ${r.product_name ? '<small class="muted"> ' + esc(r.product_name) + '</small>' : ''}</td>
+    <td class="name">${esc(r.person)}</td>
+    <td class="amt">${(r.share * 100).toFixed(2)}%</td>
+    <td class="amt muted">${(r.total_rate * 100).toFixed(2)}%</td>
+    <td class="muted small">${esc(r.note || '')}</td></tr>`).join('');
+  return `<div class="card">
+    <header><h2>配置 ${cfg.rules.length} 条</h2>
+      <div class="row">
+        ${d && d.period ? `<a class="link" href="/api/commission/products.csv?period=${
+          encodeURIComponent(d.period)}">待配商品表</a>` : ''}
+        <a class="link" href="/api/commission/config.csv">导出当前配置</a>
+        <button class="primary" id="cfg-pick">传一份新的</button>
+      </div></header>
+    ${cfg.rules.length ? `<table class="grid"><thead><tr>
+      <th>生效日期</th><th>店铺</th><th>商品</th><th>人员</th>
+      <th class="amt">子提成率</th><th class="amt">总提成率</th><th>备注</th>
+    </tr></thead><tbody>${rows}</tbody></table>
+    ${cfg.rules.length > 200 ? `<p class="xs muted">只列了前 200 条，全部请导出看。</p>` : ''}`
+    : `<div class="empty"><h3>还没有配置</h3>
+       <p>导出会给你一份带表头的空表，照着填再传回来。</p></div>`}
+    <input type="file" id="cfg-file" accept=".csv,.xlsx,.xls,.xlsm" style="display:none">
+    <div class="panel" style="margin-top:20px"><h3>怎么填</h3>
+      <table style="max-width:760px"><tbody>
+        <tr><td style="width:1%;white-space:nowrap"><code>生效日期</code></td>
+          <td class="muted small">从这天起按这一版算。<strong>当天下的单算新的。</strong>
+          改比例、换人、离职、继承，一律是加一版新日期，旧的原样留着——
+          这样以前算过的单重算一百遍都不变。</td></tr>
+        <tr><td><code>店铺</code></td>
+          <td class="muted small">填店铺 id（${cfg.stores.slice(0, 4).map(s =>
+            '<code>' + esc(s.id) + '</code>').join('、')}${
+            cfg.stores.length > 4 ? ' 等 ' + cfg.stores.length + ' 家' : ''}）。</td></tr>
+        <tr><td><code>商品ID</code></td>
+          <td class="muted small">留空表示这家店的兜底：没单独配人的商品都归这一版。</td></tr>
+        <tr><td><code>子提成率</code></td>
+          <td class="muted small">这个人分到多少。写 <code>3%</code> 或 <code>0.03</code> 都行。</td></tr>
+        <tr><td><code>总提成率</code></td>
+          <td class="muted small">这个商品这一版一共给出去多少。
+          <strong>同一版里几个人的子提成率相加必须等于它</strong>，
+          差一点就整份退回不落盘——少配一个人算出来的数完全合法，只是那个人一分钱没有，
+          而他看不到这个界面。</td></tr>
+      </tbody></table>
+      <p class="small muted" style="margin-top:12px">
+      传上来是整份替换，先整体校验，有一条不对就全退回。校验过了会把涉及的店重算一遍，
+      免得配置已经变了、账期里的数字还是旧的。</p>
+    </div>
+  </div>`;
+}
+
+function wireCommission(d, cfg) {
+  document.querySelectorAll('.periodbar button').forEach(b => {
+    b.onclick = () => { location.hash = '#/commission?period=' + encodeURIComponent(b.dataset.period); };
+  });
+  document.querySelectorAll('.recomp').forEach(b => {
+    b.onclick = async () => {
+      b.disabled = true; b.textContent = '算着……';
+      $('progress').className = 'on';
+      try {
+        await api('/api/stores/' + encodeURIComponent(b.dataset.store) + '/recompute',
+          {method: 'POST'});
+        route();
+      } catch (err) { toast(err.message, true); b.disabled = false; b.textContent = '重算'; }
+      finally { $('progress').className = ''; }
+    };
+  });
+  const file = $('cfg-file');
+  $('cfg-pick').onclick = () => file.click();
+  file.onchange = async () => {
+    if (!file.files.length) return;
+    const body = new FormData();
+    body.append('file', file.files[0], file.files[0].name);
+    file.value = '';
+    $('progress').className = 'on';
+    try {
+      const r = await api('/api/commission/config', {method: 'POST', body});
+      toast(`存下 ${r.count} 条，重算了 ${r.stores.length} 家店`);
+      route();
+    } catch (err) {
+      toast(err.message, true);
+    } finally { $('progress').className = ''; }
+  };
 }
 
 // --------------------------------------------------------------------------

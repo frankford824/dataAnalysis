@@ -211,6 +211,89 @@ def drop_template(model_dir: str | Path, template_id: str, *, source: str = "") 
         _write_all(root, writes, y)
 
 
+#: 提成配置的列。顺序就是导出和模板文件里的顺序。
+COMMISSION_COLUMNS = (
+    "effective_from", "store", "product_id", "product_name",
+    "person", "share", "total_rate", "note",
+)
+
+#: 中文表头。业务在 Excel 里维护，让他们对着中文填，别背英文列名。
+COMMISSION_HEADERS = {
+    "effective_from": "生效日期", "store": "店铺", "product_id": "商品ID",
+    "product_name": "商品名称", "person": "人员", "share": "子提成率",
+    "total_rate": "总提成率", "note": "备注",
+}
+
+#: 中文表头反查。上传的表两种表头都认。
+_ALIASES = {
+    "生效日期": "effective_from", "新增日期": "effective_from", "变更日期": "effective_from",
+    "店铺": "store", "店铺id": "store", "归属店铺": "store", "店铺编号": "store",
+    "商品id": "product_id", "商品编号": "product_id",
+    "商品名称": "product_name", "商品名": "product_name",
+    "人员": "person", "人名": "person", "姓名": "person", "负责人": "person",
+    "子提成率": "share", "提成比例": "share", "个人提成率": "share",
+    "总提成率": "total_rate", "商品总提成率": "total_rate",
+    "备注": "note",
+}
+
+
+def commission_column(header: str) -> str:
+    """把一个表头翻成配置列名。认不出来返回空串。"""
+    key = (header or "").strip().lower().replace(" ", "").replace("　", "")
+    if key in COMMISSION_COLUMNS:
+        return key
+    return _ALIASES.get(key, "")
+
+
+@locked_model
+def replace_commission(model_dir: str | Path, rows: list[dict[str, str]]) -> int:
+    """整份换掉提成配置。返回写进去的条数。
+
+    为什么是整份换而不是增量改
+    ------------------------
+    提成配置的正确性是**整份**的：同一版里几个人的比例加起来要等于总提成率。
+    单条改动没法校验这件事——「张三 3% 改 4%」这一条自己看永远合法。所以界面上
+    的动作就是「传一份新的」，传上来先整体校验，过了才落盘。
+
+    历史不会因此丢失：生效制下改配置本来就是往表里加行，旧行原样留着，
+    所以「整份」里包含全部历史版本。真正被这个函数保护的是「不能存进一份
+    自相矛盾的配置」。
+
+    写不成功就还原成原样，一个字节都不留下——校验不过的配置一旦落盘，
+    下次加载模型会直接失败，整个系统起不来。
+
+    这里不记「谁改的」。CSV 没有注释语法，落款只能挤进数据行里去污染业务数据；
+    而改店铺、接模板同样没记，单给这一处加一套半吊子的留痕，只会让人以为
+    配置改动是有审计的。要记就该整套配置变更一起记，那是另一件事。
+    """
+    root = Path(model_dir)
+    path = root / "commission.csv"
+    before = {path: (path.read_bytes() if path.exists() else None)}
+    text = _commission_text(rows)
+    try:
+        _atomic_text(path, text)
+        model = load_model(root)
+    except BaseException:
+        _restore(before)
+        raise
+    return len(model.commission)
+
+
+def _commission_text(rows: list[dict[str, str]]) -> str:
+    out = io.StringIO()
+    out.write(",".join(COMMISSION_COLUMNS) + "\n")
+    for r in rows:
+        out.write(",".join(csv_cell(r.get(c, "")) for c in COMMISSION_COLUMNS) + "\n")
+    return out.getvalue()
+
+
+def csv_cell(value: Any) -> str:
+    s = "" if value is None else str(value).strip()
+    if any(ch in s for ch in ',"\n\r'):
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
 def _source_entry(s: SourceContract) -> CommentedMap:
     m = CommentedMap()
     m["id"] = s.id

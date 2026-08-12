@@ -11,6 +11,7 @@
     statement.yaml   公式树
     checks.yaml      校验规则
     dictionary.csv   科目字典
+    commission.csv   提成配置（商品-人-比例，按生效日期）
 
 校验失败直接抛错。宁可启动不了，也不要带着错模型算钱。
 """
@@ -26,6 +27,7 @@ from pydantic import ValidationError
 
 from .schema import (
     Check,
+    CommissionRule,
     DictionaryEntry,
     Metric,
     Model,
@@ -87,6 +89,7 @@ def load_model(directory: str | Path) -> Model:
         payload[field] = tuple(items)
 
     payload["dictionary"] = _read_dictionary(root / "dictionary.csv")
+    payload["commission"] = _read_commission(root / "commission.csv")
 
     try:
         return Model(**payload)
@@ -128,6 +131,55 @@ def _read_dictionary(path: Path) -> tuple[DictionaryEntry, ...]:
             except ValidationError as exc:
                 raise ModelError(f"{path} 第 {lineno} 行有问题：\n{_explain(exc)}") from exc
     return tuple(entries)
+
+
+def _read_commission(path: Path) -> tuple[CommissionRule, ...]:
+    """提成配置。用 CSV 的理由和科目字典一样：条数多、结构扁平，而且它本来就是
+    从表格里来的——业务改提成是在 Excel 里改，让他们改完直接存成 CSV 最省事。
+
+    比例允许写成 `3%` 或 `0.03`。这不是纵容随手写：两种写法在业务表格里都真实存在，
+    而 `3` 和 `0.03` 差一百倍，靠人在录入时记住该写哪种，早晚会错一次。宁可两种都认。
+    """
+    if not path.exists():
+        return ()
+    rules: list[CommissionRule] = []
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        for lineno, row in enumerate(csv.DictReader(fh), start=2):
+            person = (row.get("person") or "").strip()
+            store = (row.get("store") or "").strip()
+            if not person and not store:
+                continue
+            try:
+                rules.append(
+                    CommissionRule(
+                        effective_from=(row.get("effective_from") or "").strip(),
+                        store=store,
+                        product_id=(row.get("product_id") or "").strip(),
+                        product_name=(row.get("product_name") or "").strip(),
+                        person=person,
+                        share=_rate(row.get("share"), path, lineno, "share"),
+                        total_rate=_rate(row.get("total_rate"), path, lineno, "total_rate"),
+                        note=(row.get("note") or "").strip(),
+                    )
+                )
+            except ValidationError as exc:
+                raise ModelError(f"{path} 第 {lineno} 行有问题：\n{_explain(exc)}") from exc
+    return tuple(rules)
+
+
+def _rate(value: Any, path: Path, lineno: int, column: str) -> float:
+    text = str(value or "").strip()
+    if not text:
+        raise ModelError(f"{path} 第 {lineno} 行的 {column} 是空的")
+    percent = text.endswith("%")
+    try:
+        num = float(text.rstrip("%").strip())
+    except ValueError:
+        raise ModelError(
+            f"{path} 第 {lineno} 行的 {column} 不是数字：{text!r}。"
+            f"写成 0.03 或 3% 都行。"
+        ) from None
+    return num / 100 if percent else num
 
 
 def _truthy(v: Any) -> bool:

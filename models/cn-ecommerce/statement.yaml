@@ -67,10 +67,15 @@
   name: 毛利
   level: 1
   is_total: true
+  commission_base: true
   formula: {op: add, of: [n_receipt, g_goods]}
   note: >
     照现行口径：销售收入减商品成本，不含销售退款。
     三个平台这条公式一致，21,989 / 3,086 / 255 行逐行验证残差为 0。
+
+    提成按这一行算（commission_base）。标在这里而不是写死在提成代码里，
+    是为了让两个数永远同源：哪天毛利口径改了，提成基数跟着改，不会出现
+    「损益表上的毛利」和「算提成用的毛利」是两个数这种事。
 
 - id: net_profit
   name: 利润

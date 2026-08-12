@@ -25,6 +25,7 @@ from .model.propose import Draft, role_facts
 from .model.schema import Model, Store
 
 if TYPE_CHECKING:  # 只为类型标注；运行时导入会让 view 依赖向导层，方向反了
+    from .commission import Commission
     from .onboard import Assisted, DryRun
 
 
@@ -100,6 +101,55 @@ def slice_dict(sl: Slice, store: Store, model: Model) -> dict[str, Any]:
         ],
         "rows": int(sl.facts.height),
     }
+
+
+def commission_dict(c: Commission) -> dict[str, Any]:
+    """提成结果的对外结构。
+
+    「按人」在前、「按商品」在后，是有意的：拿去发钱的是按人那一栏，它的合计
+    等于各人金额相加，一分不差。按商品那一栏是用来查问题的（谁没配、哪些走了兜底），
+    行是四舍五入过的，几百行加起来会和总额差几毛——所以界面上不给它出合计行。
+    """
+    return {
+        "base_node": c.base_node,
+        "base_name": c.base_name,
+        "base_total": c.base_total,
+        "total": c.total,
+        "configured": c.configured,
+        "unassigned_base": c.unassigned_base,
+        "fallback_base": c.fallback_base,
+        "negative_orders": c.negative_orders,
+        "negative_base": c.negative_base,
+        "notes": list(c.notes),
+        "people": [
+            {"person": p.person, "amount": p.amount, "base": p.base, "products": p.products}
+            for p in c.people
+        ],
+        "products": [
+            {
+                "product_id": p.product_id, "product_name": p.product_name,
+                "base": p.base, "total_rate": p.total_rate, "amount": p.amount,
+                "sub_orders": p.sub_orders, "fallback": p.fallback,
+                "unassigned": p.unassigned, "effective_from": p.effective_from,
+                "people": [{"person": n, "amount": a} for n, a in p.people],
+            }
+            for p in c.products
+        ],
+    }
+
+
+def commission_rules(model: Model, store_id: str = "") -> list[dict[str, Any]]:
+    """当前生效的提成配置，给界面展示和导出用。"""
+    rules = model.commission_for(store_id) if store_id else model.commission
+    return [
+        {
+            "effective_from": r.effective_from, "store": r.store,
+            "product_id": r.product_id, "product_name": r.product_name,
+            "person": r.person, "share": r.share, "total_rate": r.total_rate,
+            "note": r.note,
+        }
+        for r in sorted(rules, key=lambda r: (r.store, r.product_id, r.effective_from, r.person))
+    ]
 
 
 def statement_order(model: Model) -> list[Any]:

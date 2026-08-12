@@ -16,9 +16,10 @@ from typing import IO, Any, Iterable
 
 import polars as pl
 
-from .engine.runtime import Ingestion, Slice, ingest, run
+from . import commission as comm
+from .engine.runtime import Ingestion, RunResult, Slice, ingest, run
 from .model.schema import Model, Store
-from .view import slice_dict
+from .view import commission_dict, slice_dict
 from .workspace import Kept, Workspace
 
 #: 能解析的文件后缀。别的一律不碰，也不假装能读。
@@ -120,6 +121,29 @@ class Recomputed:
     failure: dict[str, Any] | None = None
 
 
+def _commission(result: RunResult, model: Model, store: Store, period: str) -> dict[str, Any]:
+    """提成算完跟着损益一起进快照。
+
+    为什么存快照而不是每次现算：现算要重新解析这家店全部文件，三十秒起步，
+    点开一个页面等半分钟没人会用。更要紧的是，存进快照它就跟着账期一起冻结——
+    账报出去之后，提成数字不会因为有人后来改了一条配置就悄悄变了。
+    改了配置想让新数生效，走重算，和改字典、改模板是同一条路。
+
+    算不出来不能让整个重算失败：提成是这套账的附加视图，配置写错了该说清楚
+    是提成配置写错了，而不是让这家店连损益表都出不来。
+    """
+    try:
+        return commission_dict(comm.compute(result, model, store.id, period))
+    except Exception as exc:  # noqa: BLE001 — 什么都不该让重算倒下
+        return {
+            "base_node": "", "base_name": "", "base_total": 0.0, "total": 0.0,
+            "configured": False, "unassigned_base": 0.0, "fallback_base": 0.0,
+            "negative_orders": 0, "negative_base": 0.0,
+            "people": [], "products": [],
+            "notes": [f"提成算不出来：{exc}"],
+        }
+
+
 def recompute(ws: Workspace, model: Model, store: Store) -> Recomputed:
     """拿这家店当前生效的全部文件重算，把每个账期的结果存成快照。
 
@@ -149,6 +173,7 @@ def recompute(ws: Workspace, model: Model, store: Store) -> Recomputed:
     shas = [i.ref.sha256 for i in ing.items]
     for (_s, _p), sl in sorted(result.slices.items(), key=lambda kv: (kv[0][1] or "")):
         payload = slice_dict(sl, store, model)
+        payload["commission"] = _commission(result, model, store, sl.period)
         run_id = ws.record(store.id, sl.period, payload, shas, evidence_ready=False)
         _keep_facts(ws, run_id, sl)
         state = ws.state(store.id, sl.period)
