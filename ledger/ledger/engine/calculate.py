@@ -29,6 +29,8 @@ FACT_COLUMNS = (
     "metric_id", "source_id", "template_id", "store", "period", "grain",
     "link_key", "linked", "amount", "subject", "major", "minor",
     "file_sha", "file_name", "sheet", "row_no",
+    # 投影之后才知道，见 runtime._mark_counted：这一行有没有算进损益表、算进去多少。
+    "counted", "contribution",
 )
 
 
@@ -95,21 +97,36 @@ def evaluate_metric(
 
     frame = frame.with_columns(amount.fill_null(0.0).alias(AMOUNT))
 
+    # 挂上订单的行，归属跟着订单走；挂不上的才退回表格自己报的店名和日期。
+    #
+    # 反过来（先信表格）会把证据链切掉一大块：聚水潭把这家店写成「喜必顺旗舰店」，
+    # 而店铺档案里叫「淘宝喜必顺」，于是这批行在每个切片里都对不上号，一条都不留档。
+    # 表现是商品成本、代发成本、补发成本、客服打款、本金佣金五项报表上有数、点开
+    # 一片空白——十七万的商品成本没有一行证据。钱落在谁的订单上是确定的，
+    # 表格自己报的名字不是。
     slot = str(metric.time_basis)
-    period = (
+    own_period = (
         pl.col(slot).dt.strftime("%Y-%m")
         if slot in frame.columns
         else pl.lit(None, dtype=pl.Utf8)
     )
-    if "__spine_period__" in frame.columns:
-        period = pl.coalesce(period, pl.col("__spine_period__"))
+    period = (
+        pl.coalesce(pl.col("__spine_period__"), own_period)
+        if "__spine_period__" in frame.columns
+        else own_period
+    )
     period = pl.coalesce(period, pl.lit(period_hint or None, dtype=pl.Utf8))
 
-    store = pl.lit(None, dtype=pl.Utf8)
-    if "store_name" in frame.columns:
-        store = pl.col("store_name").cast(pl.Utf8)
-    if "__spine_store__" in frame.columns:
-        store = pl.coalesce(store, pl.col("__spine_store__"))
+    own_store = (
+        pl.col("store_name").cast(pl.Utf8)
+        if "store_name" in frame.columns
+        else pl.lit(None, dtype=pl.Utf8)
+    )
+    store = (
+        pl.coalesce(pl.col("__spine_store__"), own_store)
+        if "__spine_store__" in frame.columns
+        else own_store
+    )
     store = pl.coalesce(store, pl.lit(store_hint or None, dtype=pl.Utf8))
 
     grain = metric.link.grain if metric.link else "period"
@@ -142,6 +159,7 @@ def _empty_facts() -> pl.DataFrame:
         "link_key": pl.Utf8, "linked": pl.Boolean, "amount": pl.Float64,
         "subject": pl.Utf8, "major": pl.Utf8, "minor": pl.Utf8,
         "file_sha": pl.Utf8, "file_name": pl.Utf8, "sheet": pl.Utf8, "row_no": pl.Int64,
+        "counted": pl.Boolean, "contribution": pl.Float64,
     }
     return pl.DataFrame(schema=schema)
 

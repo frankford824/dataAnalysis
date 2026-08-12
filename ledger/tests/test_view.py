@@ -133,12 +133,101 @@ def test_real_model_leaf_nodes_are_all_drillable(real):
 def _facts(rows: list[dict]) -> pl.DataFrame:
     schema = {
         "metric_id": pl.Utf8, "amount": pl.Float64, "subject": pl.Utf8, "minor": pl.Utf8,
-        "link_key": pl.Utf8, "linked": pl.Boolean, "file_name": pl.Utf8,
+        "major": pl.Utf8, "link_key": pl.Utf8, "linked": pl.Boolean, "file_name": pl.Utf8,
         "sheet": pl.Utf8, "row_no": pl.Int64,
     }
-    base = {"subject": None, "minor": None, "link_key": None, "linked": True,
+    base = {"subject": None, "minor": None, "major": None, "link_key": None, "linked": True,
             "file_name": "x.xlsx", "sheet": "Sheet1", "row_no": 2}
     return pl.DataFrame([{**base, **r} for r in rows], schema=schema)
+
+
+def _classified() -> Model:
+    """两个指标共用一个来源，各自只认自己那个大类。
+
+    这就是真实模型里对账表的样子：五个指标读同一张表，谁认领哪一行由归类结果定。
+    """
+    return Model(
+        id="t", name="测试",
+        sources=(SourceContract(id="s", name="对账", owner_role="shop_owner",
+                                cadence="monthly"),),
+        metrics=(
+            Metric(id="fee", name="服务费", source="s", major="fee",
+                   value=ValueExpr(op="sum", of=("a",))),
+            Metric(id="mkt", name="营销费", source="s", major="mkt",
+                   value=ValueExpr(op="sum", of=("a",))),
+        ),
+        statement=(
+            StatementNode(id="n_fee", name="服务费", level=2,
+                          formula={"op": "add", "of": ["fee"]}),
+            StatementNode(id="n_mkt", name="营销费", level=2,
+                          formula={"op": "add", "of": ["mkt"]}),
+        ),
+    )
+
+
+#: 引擎产出的事实行长这样：同一张表的每一行，在每个读这张表的指标名下各出现一次。
+#: 真正算进哪个指标，由 major 决定。
+_CROSS = [
+    {"metric_id": "fee", "amount": -10.0, "major": "fee", "row_no": 2},
+    {"metric_id": "fee", "amount": -99.0, "major": "mkt", "row_no": 3},
+    {"metric_id": "mkt", "amount": -10.0, "major": "fee", "row_no": 2},
+    {"metric_id": "mkt", "amount": -99.0, "major": "mkt", "row_no": 3},
+]
+
+
+def test_drill_only_counts_the_rows_the_metric_claimed():
+    """事实表里存的是「指标看过的行」，不是「指标算进去的行」。
+
+    不补这一层过滤，五个读同一张对账表的指标会下钻出同一个数。实测淘宝那家店
+    「平台服务费」下钻出 -3,258.99、报表上是 -42,236.94，而「平台营销费用」
+    下钻出的也是 -3,258.99——三个数没一个对得上，而它们看着都像那么回事。
+    """
+    fee = drill(_facts(_CROSS), _classified(), "n_fee")
+    mkt = drill(_facts(_CROSS), _classified(), "n_mkt")
+    assert fee["source_total"] == pytest.approx(-10.0)
+    assert mkt["source_total"] == pytest.approx(-99.0)
+
+
+def test_drill_does_not_show_rows_that_belong_to_a_sibling():
+    """行号也不能串。人点开是要去源文件那一行核对的，指错行比不给行更糟。"""
+    d = drill(_facts(_CROSS), _classified(), "n_fee")
+    assert [r["row_no"] for r in d["sample"]] == [2]
+
+
+def test_drill_keeps_every_row_when_the_source_has_no_categories():
+    """推广扣费、运费这类表源头就不分科目，指标也不声明大类。
+
+    对它们照样要求 major 相等的话，整张表会被筛空——下钻出一个 0，
+    而报表上明明写着 -88,091.88。
+    """
+    model = Model(
+        id="t", name="测试",
+        sources=(SourceContract(id="s", name="推广", owner_role="shop_owner",
+                                cadence="monthly"),),
+        metrics=(Metric(id="ad", name="推广费", source="s",
+                        value=ValueExpr(op="sum", of=("a",))),),
+        statement=(StatementNode(id="n_ad", name="推广费", level=2,
+                                 formula={"op": "add", "of": ["ad"]}),),
+    )
+    d = drill(_facts([{"metric_id": "ad", "amount": -7.0},
+                      {"metric_id": "ad", "amount": -3.0}]), model, "n_ad")
+    assert d["source_total"] == pytest.approx(-10.0)
+
+
+def test_drill_reports_the_statement_number_next_to_the_source_total():
+    """原始行合计不等于报表数字——中间隔着分摊、账期归属和孤儿行。
+
+    只给一个对不上的数，人会以为报表算错了。两个数一起给，差额才有出处。
+    """
+    d = drill(_facts([{"metric_id": "fee", "amount": -10.0, "major": "fee"}]),
+              _classified(), "n_fee", value=-8.0)
+    assert (d["source_total"], d["value"]) == (pytest.approx(-10.0), -8.0)
+
+
+def test_drill_says_it_does_not_know_the_statement_number():
+    """给不出报表数字时给 None，不能拿原始行合计冒充。"""
+    assert drill(_facts([{"metric_id": "fee", "amount": -10.0, "major": "fee"}]),
+                 _classified(), "n_fee")["value"] is None
 
 
 def test_drill_carries_row_level_evidence():
@@ -189,6 +278,239 @@ def test_drill_says_when_it_truncated():
 def test_drill_on_empty_facts_is_not_an_error():
     d = drill(pl.DataFrame(), _tree(), "d1")
     assert d["rows"] == 0 and d["total"] == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# 下钻：翻页与筛选
+#
+# 淘宝那家店一个月的推广扣费六千多行。只给头 200 行、不给筛选，等于没给：
+# 人要找的那一行大概率不在这 200 行里。
+# --------------------------------------------------------------------------- #
+
+
+def _many() -> pl.DataFrame:
+    """六行明细，两个科目、两个来源文件。"""
+    return _facts([
+        {"metric_id": "m1", "amount": -60.0, "minor": "快递费", "row_no": 2,
+         "file_name": "运费.xlsx", "link_key": "A1"},
+        {"metric_id": "m1", "amount": -50.0, "minor": "快递费", "row_no": 3,
+         "file_name": "运费.xlsx", "link_key": "A2"},
+        {"metric_id": "m1", "amount": -40.0, "minor": "赔付", "row_no": 4,
+         "file_name": "运费.xlsx", "link_key": "A3"},
+        {"metric_id": "m1", "amount": -30.0, "minor": "赔付", "row_no": 5,
+         "file_name": "对账.xlsx", "link_key": "B1"},
+        {"metric_id": "m1", "amount": -20.0, "minor": "快递费", "row_no": 6,
+         "file_name": "对账.xlsx", "link_key": "B2"},
+        {"metric_id": "m1", "amount": -10.0, "minor": "赔付", "row_no": 7,
+         "file_name": "对账.xlsx", "link_key": "B3"},
+    ])
+
+
+def test_drill_pages_through_the_rows():
+    first = drill(_many(), _tree(), "d1", limit=2)
+    second = drill(_many(), _tree(), "d1", limit=2, offset=2)
+    assert [r["row_no"] for r in first["sample"]] == [2, 3]
+    assert [r["row_no"] for r in second["sample"]] == [4, 5]
+
+
+def test_paging_does_not_skip_rows_that_tie():
+    """并列的行必须有稳定次序。次序不稳，两次请求之间同一行会换页——
+    翻页时漏掉的那行不会有任何提示，人只会以为它不存在。
+    """
+    same = _facts([
+        {"metric_id": "m1", "amount": -5.0, "row_no": i, "file_name": "a.xlsx"}
+        for i in range(1, 8)
+    ])
+    seen = []
+    for off in range(0, 7, 2):
+        seen += [r["row_no"] for r in
+                 drill(same, _tree(), "d1", limit=2, offset=off)["sample"]]
+    assert seen == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_row_order_follows_the_source_file():
+    """按金额排是为了找异常，按行号排是为了对着源文件逐行核。两件事都要做。"""
+    d = drill(_many(), _tree(), "d1", order="row")
+    assert [(r["file_name"], r["row_no"]) for r in d["sample"]][:2] == [
+        ("对账.xlsx", 5), ("对账.xlsx", 6)
+    ]
+
+
+def test_filter_by_subject_narrows_the_rows():
+    d = drill(_many(), _tree(), "d1", subject="赔付")
+    assert {r["minor"] for r in d["sample"]} == {"赔付"}
+    assert d["selection"]["rows"] == 3
+    assert d["selection"]["amount"] == pytest.approx(-80.0)
+
+
+def test_filter_by_file_narrows_the_rows():
+    d = drill(_many(), _tree(), "d1", file="对账.xlsx")
+    assert {r["file_name"] for r in d["sample"]} == {"对账.xlsx"}
+    assert d["selection"]["rows"] == 3
+
+
+def test_filters_stack():
+    d = drill(_many(), _tree(), "d1", subject="赔付", file="对账.xlsx")
+    assert [r["row_no"] for r in d["sample"]] == [5, 7]
+
+
+def test_keyword_searches_the_order_id():
+    """人手里往往只有一个订单号，而它不在这一页上。"""
+    d = drill(_many(), _tree(), "d1", q="B2")
+    assert [r["row_no"] for r in d["sample"]] == [6]
+
+
+def test_keyword_is_taken_literally():
+    """科目名里带括号、加号的多得是。当成正则不是报错就是撞出一堆无关的行。"""
+    d = drill(_facts([
+        {"metric_id": "m1", "amount": -1.0, "minor": "保证金-天猫-扣除转移"},
+        {"metric_id": "m1", "amount": -2.0, "minor": "保证金X天猫X扣除转移"},
+    ]), _tree(), "d1", q="保证金-天猫")
+    assert d["selection"]["rows"] == 1
+
+
+def test_the_headline_numbers_do_not_move_when_you_filter():
+    """人下钻就是为了拿这两个数跟报表核对。核对基准跟着筛选变，这事就没法做了。"""
+    whole = drill(_many(), _tree(), "d1", value=-200.0)
+    part = drill(_many(), _tree(), "d1", value=-200.0, subject="赔付")
+    assert part["source_total"] == whole["source_total"] == pytest.approx(-210.0)
+    assert part["rows"] == whole["rows"] == 6
+    assert part["value"] == -200.0
+
+
+def test_the_summaries_stay_whole_so_you_can_switch_filters():
+    """按科目汇总是导航入口。点了「赔付」就把它自己筛成一行，人就回不去了。"""
+    d = drill(_many(), _tree(), "d1", subject="赔付")
+    assert {x["subject"] for x in d["by_subject"]} == {"赔付", "快递费"}
+    assert {x["file"] for x in d["by_file"]} == {"运费.xlsx", "对账.xlsx"}
+
+
+def test_selection_says_whether_there_is_a_next_page():
+    d = drill(_many(), _tree(), "d1", limit=2)
+    assert (d["selection"]["has_more"], d["truncated"]) == (True, True)
+    last = drill(_many(), _tree(), "d1", limit=2, offset=4)
+    assert (last["selection"]["has_more"], last["truncated"]) == (False, False)
+
+
+def test_selection_repeats_the_filters_back():
+    """界面照着这个渲染筛选状态，不用自己记——记岔了会出现「看着筛了、其实没筛」。"""
+    sel = drill(_many(), _tree(), "d1", subject="赔付", q=" B1 ")["selection"]
+    assert (sel["subject"], sel["q"], sel["filtered"]) == ("赔付", "B1", True)
+    assert drill(_many(), _tree(), "d1")["selection"]["filtered"] is False
+
+
+def test_a_filter_that_matches_nothing_is_not_an_error():
+    d = drill(_many(), _tree(), "d1", q="根本没有这个词")
+    assert (d["sample"], d["selection"]["rows"]) == ([], 0)
+    assert d["rows"] == 6, "筛没了不代表这个节点没数"
+
+
+def test_empty_drill_still_describes_the_page():
+    """空结果也要带 selection，界面才不用为「有没有这个字段」写两套分支。"""
+    assert drill(pl.DataFrame(), _tree(), "d1")["selection"]["rows"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# 下钻：进账的和没进账的
+#
+# 源表里的行不是都进损益表。运费表是全公司的运单，淘宝那家店 29.9 万行里只有
+# 1.4 万行挂得上自己的订单，其余五十三万块钱属于别的店铺。全摆出来的话，点开
+# 「发货运费」看到的是 -550,944，而报表上写着 -20,294。
+# --------------------------------------------------------------------------- #
+
+
+def _graded(rows: list[dict]) -> pl.DataFrame:
+    """带进账标记的事实行。counted 是进没进账，contribution 是实际算进去多少。"""
+    out = _facts([{k: v for k, v in r.items()
+                   if k not in ("counted", "contribution")} for r in rows])
+    return out.with_columns(
+        pl.Series("counted", [bool(r.get("counted", True)) for r in rows]),
+        pl.Series("contribution", [
+            float(r.get("contribution", r["amount"] if r.get("counted", True) else 0.0))
+            for r in rows
+        ]),
+    )
+
+
+_MIXED = [
+    {"metric_id": "m1", "amount": -20.0, "row_no": 2, "counted": True},
+    {"metric_id": "m1", "amount": -30.0, "row_no": 3, "counted": True},
+    {"metric_id": "m1", "amount": -530.0, "row_no": 4, "counted": False},
+]
+
+
+def test_drill_shows_the_money_that_actually_landed():
+    """默认只给进了账的部分，加起来正好是报表数字。"""
+    d = drill(_graded(_MIXED), _tree(), "d1", value=-50.0)
+    assert d["source_total"] == pytest.approx(-50.0) == pytest.approx(d["value"])
+    assert [r["row_no"] for r in d["sample"]] == [3, 2], "金额大的排前面"
+
+
+def test_drill_reports_the_money_that_did_not_land():
+    """不能悄悄丢掉。「这笔钱去哪了」每个月都会被问到。"""
+    u = drill(_graded(_MIXED), _tree(), "d1")["uncounted"]
+    assert (u["rows"], u["amount"]) == (1, pytest.approx(-530.0))
+
+
+def test_drill_can_go_look_at_what_did_not_land():
+    d = drill(_graded(_MIXED), _tree(), "d1", only="uncounted")
+    assert [r["row_no"] for r in d["sample"]] == [4]
+    assert d["source_total"] == pytest.approx(-530.0)
+
+
+def test_drill_can_show_both_at_once():
+    d = drill(_graded(_MIXED), _tree(), "d1", only="all")
+    assert d["rows"] == 3
+    assert d["source_total"] == pytest.approx(-580.0), "两边一起看时对不上报表，正常"
+
+
+def test_the_uncounted_summary_is_there_whichever_view_you_are_in():
+    """切到「没进账」那一档时，这个数不能跟着变成 0——它是导航回来的路标。"""
+    for only in ("counted", "uncounted", "all"):
+        d = drill(_graded(_MIXED), _tree(), "d1", only=only)
+        assert d["uncounted"]["rows"] == 1
+
+
+def test_counted_rows_use_the_allocated_amount_not_the_raw_one():
+    """一笔主订单级的钱按比例摊到子订单上。报原始金额的话，
+    下钻永远比报表多一截，而多出来的那截没有出处。"""
+    d = drill(_graded([{"metric_id": "m1", "amount": -100.0, "counted": True,
+                        "contribution": -75.0}]), _tree(), "d1")
+    assert d["source_total"] == pytest.approx(-75.0)
+    assert d["sample"][0]["amount"] == pytest.approx(-100.0), "原始金额照样给，核对源文件要用"
+
+
+def test_the_summaries_follow_the_same_number():
+    """按科目、按文件的汇总必须和顶上那个合计同口径，否则两处数加起来对不上。"""
+    d = drill(_graded([{"metric_id": "m1", "amount": -100.0, "minor": "快递费",
+                        "counted": True, "contribution": -75.0}]), _tree(), "d1")
+    assert d["by_subject"][0]["amount"] == pytest.approx(-75.0)
+    assert d["by_file"][0]["amount"] == pytest.approx(-75.0)
+
+
+def test_an_old_archive_without_the_mark_still_opens():
+    """进账标记是后加的。老快照没有这两列，退回全部显示并标出来，
+    界面照着提示重算一次——总比点开一片空白强。"""
+    d = drill(_facts([{"metric_id": "m1", "amount": -10.0}]), _tree(), "d1")
+    assert d["graded"] is False
+    assert (d["only"], d["rows"]) == ("all", 1)
+
+
+def test_a_fresh_archive_says_it_is_graded():
+    assert drill(_graded(_MIXED), _tree(), "d1")["graded"] is True
+
+
+def test_nothing_landed_at_all():
+    """整项都没进账时给 0 和一句说明，不是一个空壳。"""
+    d = drill(_graded([{"metric_id": "m1", "amount": -530.0, "counted": False}]),
+              _tree(), "d1")
+    assert (d["source_total"], d["sample"]) == (0.0, [])
+    assert d["uncounted"]["amount"] == pytest.approx(-530.0)
+
+
+def test_an_unknown_view_falls_back_to_the_safe_one():
+    """界面传错值时给进了账的那部分。多给一屏别家店铺的行是误导，少给不是。"""
+    assert drill(_graded(_MIXED), _tree(), "d1", only="乱写")["only"] == "counted"
 
 
 # --------------------------------------------------------------------------- #

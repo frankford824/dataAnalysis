@@ -1,5 +1,5 @@
 {
- "engine_version": "f5df545",
+ "engine_version": "70cc745-dirty",
  "note": "",
  "stores": {
   "alibaba1688_xingze": {
@@ -149,7 +149,7 @@
       "spine_total": 1516
      }
     ],
-    "rows": 302206,
+    "rows": 309001,
     "sources": [
      {
       "arrived": true,
@@ -538,7 +538,7 @@
       "spine_total": 241
      }
     ],
-    "rows": 299778,
+    "rows": 300342,
     "sources": [
      {
       "arrived": true,
@@ -1003,7 +1003,7 @@
       "spine_total": 15219
      }
     ],
-    "rows": 771759,
+    "rows": 927752,
     "sources": [
      {
       "arrived": true,

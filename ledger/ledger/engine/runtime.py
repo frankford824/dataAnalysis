@@ -441,6 +441,7 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
     spine_facts = (
         pl.concat(spine_parts, how="vertical_relaxed") if spine_parts else _empty_spine_facts()
     )
+    facts = _mark_counted(facts, spine_facts)
 
     result = RunResult(
         model=model, ingestion=ingestion, facts=facts, notes=notes, spine_rows=spine.size,
@@ -454,6 +455,41 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
             link_reports, classify_report, platform,
         )
     return result
+
+
+def _mark_counted(facts: pl.DataFrame, spine_facts: pl.DataFrame) -> pl.DataFrame:
+    """给每条源记录标上：它进没进损益表，进了多少。
+
+    源事实是「这张表里有这么一行」，脊柱事实是「这笔钱算进了账」。两者差得很远，
+    而且差多少完全看不出来：淘宝那家店的运费表是全公司的运单，29.9 万行里只有
+    1.4 万行挂得上这家店的订单，其余 28.5 万行属于别的店铺。不标出来，点开「发货运费」
+    看到的是 -550,944，而报表上写着 -20,294——人只会认为报表算错了。
+
+    进账金额不等于原始金额，因为粗粒度的钱要按比例摊到脊柱行上。这里按
+    「这个键在脊柱上分到的比例之和」折算，所以逐行加总恰好等于报表数字，
+    不是一个差不多的估计。
+
+    挂不上的行照样留档，只是标成没进账。它们是真实存在的记录，删掉就没法回答
+    「这笔钱到底去哪了」——而这个问题每个月都会被问到。
+    """
+    if "counted" in facts.columns:
+        return facts
+    if spine_facts.is_empty() or facts.is_empty():
+        return facts.with_columns(
+            pl.lit(False, dtype=pl.Boolean).alias("counted"),
+            pl.lit(0.0, dtype=pl.Float64).alias("contribution"),
+        )
+    weights = spine_facts.group_by("metric_id", "store", "period", "link_key").agg(
+        pl.col("factor").sum().alias("__share__")
+    )
+    return (
+        facts.join(weights, on=["metric_id", "store", "period", "link_key"], how="left")
+        .with_columns(
+            pl.col("__share__").is_not_null().alias("counted"),
+            (pl.col("amount") * pl.col("__share__").fill_null(0.0)).alias("contribution"),
+        )
+        .drop("__share__")
+    )
 
 
 def _empty_spine_facts() -> pl.DataFrame:

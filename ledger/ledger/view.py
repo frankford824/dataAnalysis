@@ -327,11 +327,69 @@ def node_metrics(model: Model, node_id: str) -> list[str]:
     return out
 
 
-#: 一次下钻最多返回多少行明细。再多人也看不完，而且会把浏览器拖死。
+#: 一页下钻明细的行数。再多人也看不完，而且会把浏览器拖死。
 DRILL_LIMIT = 200
 
 
-def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LIMIT) -> dict[str, Any]:
+def _claimed_by(model: Model, metrics: list[str]) -> pl.Expr:
+    """挑出真正算进这些指标的事实行。
+
+    指标声明了 `major` 就只认归到这个大类的行——这和投影时的过滤是同一条规则
+    （`engine/project.py` 里那句 `filter(major == metric.major)`）。两处必须一致，
+    不一致的表现是下钻和报表各说各话，而且两个数看着都像对的。
+
+    没声明 `major` 的指标（推广扣费、运费这类源头就不分科目的表）不加这一层：
+    它们的每一行都算数，硬要求 major 相等会把整张表筛空。
+    """
+    by_id = {m.id: m for m in model.metrics}
+    parts: list[pl.Expr] = []
+    for mid in metrics:
+        metric = by_id.get(mid)
+        hit = pl.col("metric_id") == mid
+        major = getattr(metric, "major", None) if metric else None
+        if major:
+            hit = hit & (pl.col("major") == major)
+        parts.append(hit)
+    if not parts:
+        return pl.lit(False)
+    out = parts[0]
+    for p in parts[1:]:
+        out = out | p
+    return out
+
+
+def _selected(
+    facts: pl.DataFrame, *, subject: str | None, file: str | None, q: str | None
+) -> pl.DataFrame:
+    """按界面上点的那几个条件收窄明细。
+
+    科目和文件是从汇总区点进来的，所以按原样精确比对——汇总区显示的 `subject`
+    是归一化后的 `minor`（没有才退回原始科目名），这里的比对必须用同一个口径，
+    不然点了没反应。
+
+    关键词是人自己敲的，一律当字面量：科目名里带括号和加号的多得是
+    （「保证金-天猫-扣除转移」「交易收款-交易收款」），当成正则不是报错就是撞出
+    一堆无关的行。
+    """
+    if subject:
+        shown = pl.coalesce(pl.col("minor"), pl.col("subject"))
+        facts = facts.filter(shown == subject)
+    if file:
+        facts = facts.filter(pl.col("file_name") == file)
+    if q and q.strip():
+        text = q.strip()
+        hit = pl.lit(False)
+        for col in ("link_key", "subject", "minor", "file_name", "sheet"):
+            hit = hit | pl.col(col).cast(pl.Utf8).str.contains(text, literal=True)
+        facts = facts.filter(hit.fill_null(False))
+    return facts
+
+
+def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LIMIT,
+          value: float | None = None, *, offset: int = 0,
+          subject: str | None = None, file: str | None = None,
+          q: str | None = None, order: str = "amount",
+          only: str = "counted") -> dict[str, Any]:
     """一个报表数字是怎么来的。
 
     分两层给：先按科目和来源文件汇总，让人一眼看出钱主要压在哪；再给若干行原始
@@ -339,52 +397,127 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
 
     吃的是事实表而不是 Slice，因为下钻多半发生在算完之后——人看完报表才想点开。
     那时候内存里的 Slice 早没了，只有留档的事实行。
+
+    只认这个指标真正认领的行
+    ------------------------
+    事实表里存的是「每个指标看过的每一行」，而不是「每个指标算进去的行」——同一张
+    对账表的一行会在五个指标名下各出现一次，最后由归类结果（`major`）决定它属于谁。
+    这是引擎的设计：投影时才做这一层过滤。
+
+    所以这里必须自己补上同一个过滤，否则五个指标下钻出来是同一个数。实测淘宝那家店
+    「平台服务费」下钻出 -3,258.99，报表上写着 -42,236.94，而且「平台营销费用」
+    下钻出的也是 -3,258.99。
+
+    默认只看进了账的行
+    ------------------
+    源表里的行不是都进损益表的。运费表是全公司的运单，淘宝那家店 29.9 万行里只有
+    1.4 万行挂得上自己的订单；其余 28.5 万行、五十多万块钱属于别的店铺。全摆出来的话，
+    点开「发货运费」看到的是 -550,944，而报表上写着 -20,294——人只会认为报表算错了。
+
+    所以默认给进了账的那部分，按 `contribution`（这一行实际算进去多少，已折算分摊
+    比例）加总，逐行加起来就是报表数字。没进账的行不删，收在 `uncounted` 里说明
+    有多少行、多少钱、为什么没进——「这笔钱去哪了」每个月都会被问到。
+
+    `only="uncounted"` 就是去看那部分；`only="all"` 是两边一起看，此时合计
+    对不上报表，属于正常。
+
+    筛选和翻页只动明细
+    ------------------
+    `subject` / `file` / `q` 收窄的是 `sample` 那部分，`selection` 说明这一页是从
+    多少行里取的、这些行合计多少。汇总区（`by_subject`、`by_file`）和顶上那两个数
+    （`source_total`、`value`）始终是整个节点的全貌，不随筛选变。
+
+    汇总区是导航入口：点科目就把它筛掉的话，剩一行、也回不去了。顶上两个数不变则是
+    因为人下钻的目的就是拿它跟报表核对——核对基准在翻页过程中变来变去，这事就没法做了。
     """
     metrics = node_metrics(model, node_id)
     node = next((n for n in model.statement if n.id == node_id), None)
+    only = only if only in ("counted", "uncounted", "all") else "counted"
     empty = {
         "node": node_id, "name": node.name if node else node_id,
-        "metrics": [], "total": 0.0, "rows": 0, "by_subject": [], "by_file": [], "sample": [],
+        "metrics": [], "total": 0.0, "source_total": 0.0, "value": value,
+        "rows": 0, "by_subject": [], "by_file": [], "sample": [],
+        "selection": _selection(0, 0.0, offset, limit, subject, file, q),
+        "only": only, "graded": True, "uncounted": _uncounted(0, 0.0),
+        "truncated": False,
     }
     if not metrics or facts.is_empty():
         return empty
 
-    facts = facts.filter(pl.col("metric_id").is_in(metrics))
+    facts = facts.filter(_claimed_by(model, metrics))
     if facts.is_empty():
         return empty
 
+    # 老的留档没有进账标记（`counted` 是后加的）。这种情况下退回「全都算进账」，
+    # 数字会对不上报表，但至少不会一行都不显示。界面照着 graded 提示重算一次。
+    graded = "counted" in facts.columns
+    if not graded:
+        only = "all"
+        facts = facts.with_columns(
+            pl.lit(True).alias("counted"), pl.col("amount").alias("contribution")
+        )
+
+    out_rows = int(facts.filter(~pl.col("counted")).height)
+    out_amount = float(facts.filter(~pl.col("counted")).get_column("amount").sum() or 0.0)
+
+    scope = {
+        "counted": facts.filter(pl.col("counted")),
+        "uncounted": facts.filter(~pl.col("counted")),
+    }.get(only, facts)
+    if scope.is_empty():
+        return {**empty, "graded": graded,
+                "uncounted": _uncounted(out_rows, out_amount)}
+
+    # 进了账的那部分要按实际算进去的金额报，否则跟报表差一个分摊比例。
+    money = pl.col("contribution") if only == "counted" else pl.col("amount")
+
     # 有科目列才按科目分。推广扣费那张表根本没有科目这一列，硬分出来是一行
     #「未分类 6,324 行」——看着像 6,324 行漏了归类，实际是这项本来就不分科目。
-    named = facts.filter(
+    named = scope.filter(
         pl.col("minor").is_not_null() | pl.col("subject").is_not_null()
     )
     by_subject = (
         named.group_by("minor", "subject")
-        .agg(pl.len().alias("count"), pl.col("amount").sum().alias("amount"))
+        .agg(pl.len().alias("count"), money.sum().alias("amount"))
         .sort("amount")
         if not named.is_empty()
         else named
     )
     by_file = (
-        facts.group_by("file_name", "sheet")
-        .agg(pl.len().alias("count"), pl.col("amount").sum().alias("amount"))
+        scope.group_by("file_name", "sheet")
+        .agg(pl.len().alias("count"), money.sum().alias("amount"))
         .sort("amount")
     )
+    picked = _selected(scope, subject=subject, file=file, q=q)
+    by, descending = _ORDERS.get(order, _ORDERS["amount"])
     sample = (
-        facts.select(
-            "metric_id", "link_key", "linked", "amount", "subject", "minor",
-            "file_name", "sheet", "row_no",
+        picked.select(
+            "metric_id", "link_key", "linked", "counted", "contribution",
+            "amount", "subject", "minor", "file_name", "sheet", "row_no",
         )
-        # 先看金额大的那几行，异常基本都在两端。
-        .sort(pl.col("amount").abs(), descending=True)
-        .head(limit)
+        .sort(by, descending=descending)
+        .slice(max(offset, 0), limit)
     )
+    source_total = float(scope.select(money.sum()).item() or 0.0)
+    picked_total = float(picked.select(money.sum()).item() or 0.0)
     return {
         "node": node_id,
         "name": node.name if node else node_id,
         "metrics": [{"id": m, "name": metric_name(model, m)} for m in metrics],
-        "total": float(facts.get_column("amount").sum() or 0.0),
-        "rows": int(facts.height),
+        #: 当前这一档行的合计。默认这一档是「进了账的」，逐行加起来就是报表数字。
+        "source_total": source_total,
+        #: 报表上那个数。调用方给得出就给，给不出是 None——界面上宁可不显示，
+        #: 也不要摆一个自己算的近似值冒充报表数字。
+        "value": value,
+        # 老字段，留着不动界面。含义就是 source_total。
+        "total": source_total,
+        "rows": int(scope.height),
+        "only": only,
+        #: 这次留档有没有记进账标记。没有就说明是旧快照，数字对不上报表。
+        "graded": graded,
+        #: 没进账的那部分。运费表是全公司的运单，这里会是绝大多数行——
+        #: 它们不进这家店的账，但删掉就没法回答「这笔钱去哪了」。
+        "uncounted": _uncounted(out_rows, out_amount),
         "by_subject": [
             {"subject": r["minor"] or r["subject"],
              "raw": r["subject"], "count": r["count"], "amount": r["amount"]}
@@ -399,7 +532,43 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
             {**r, "metric": metric_name(model, r.pop("metric_id"))}
             for r in sample.to_dicts()
         ],
-        "truncated": int(facts.height) > limit,
+        #: 这一页是从哪些行里取的。筛选条件原样带回去，界面照着它渲染筛选状态，
+        #: 不用自己记——记岔了会出现「显示按科目筛着、其实没筛」这种最难查的错。
+        "selection": _selection(int(picked.height), picked_total, offset, limit,
+                                subject, file, q),
+        # 老字段，留着不动界面。现在的含义是「还有下一页」。
+        "truncated": max(offset, 0) + limit < int(picked.height),
+    }
+
+
+def _uncounted(rows: int, amount: float) -> dict[str, Any]:
+    return {"rows": rows, "amount": amount}
+
+
+#: 明细的排序。金额序看异常（大额都在两端），行号序对着源文件逐行核。
+#: 两种都补上文件、工作表、行号做次序兜底：并列的行在两页之间跳来跳去的话，
+#: 翻页会漏行，而且漏得不留痕迹。
+_ORDERS: dict[str, tuple[list[pl.Expr], list[bool]]] = {
+    "amount": ([pl.col("amount").abs(), pl.col("file_name"), pl.col("sheet"),
+                pl.col("row_no")], [True, False, False, False]),
+    "row": ([pl.col("file_name"), pl.col("sheet"), pl.col("row_no")],
+            [False, False, False]),
+}
+
+
+def _selection(rows: int, amount: float, offset: int, limit: int,
+               subject: str | None, file: str | None, q: str | None) -> dict[str, Any]:
+    offset = max(offset, 0)
+    return {
+        "rows": rows,
+        "amount": amount,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + limit < rows,
+        "filtered": bool(subject or file or (q or "").strip()),
+        "subject": subject or "",
+        "file": file or "",
+        "q": (q or "").strip(),
     }
 
 

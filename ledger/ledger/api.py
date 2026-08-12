@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import onboard, ownership, service, view
+from . import search as search_mod
 from .model import propose
 from .model.config import (
     COMMISSION_COLUMNS,
@@ -339,16 +340,70 @@ def reopen_period(store_id: str, period: str, action: PeriodAction) -> dict:
 # --------------------------------------------------------------------------- #
 
 
+@app.get("/api/search")
+def search(q: str, store_id: str = "", period: str = "", platform: str = "",
+           limit: int = search_mod.LIMIT) -> dict:
+    """按订单号、金额、科目名找到具体是哪个文件第几行。
+
+    对不上账的时候人手里只有一个数或者一个订单号。在这之前，答案要靠在几十兆的
+    工作簿里按 Ctrl+F 一张表一张表翻——所以实际上没人查，对不上就手改一个数。
+    """
+    if not q.strip():
+        raise HTTPException(400, "要给一个订单号、金额或者科目名")
+    model = _model()
+    by_id = {s.id: s for s in model.stores}
+    states = [
+        st for st in workspace().overview()
+        if (not store_id or st.store_id == store_id)
+        and (not period or st.period == period)
+        and (not platform or getattr(by_id.get(st.store_id), "platform", "") == platform)
+        and st.run_id
+    ]
+    # 从新到旧翻。查的多半是最近的账，而翻到上限就停——这个顺序决定了那句
+    #「还有 N 个店期没翻」出现时，没翻的是最旧的那几个。
+    states.sort(key=lambda s: (s.period, s.store_id), reverse=True)
+    res = search_mod.search(
+        states, lambda rid: _facts_path(rid), model, q, limit=min(limit, 1000)
+    )
+    return search_mod.to_dict(res)
+
+
+def _facts_path(run_id: int) -> Path | None:
+    path = workspace().facts_path(run_id)
+    return path if path.exists() else None
+
+
 @app.get("/api/runs/{run_id}/drill/{node_id}")
-def drill(run_id: int, node_id: str, limit: int = view.DRILL_LIMIT) -> dict:
+def drill(run_id: int, node_id: str, limit: int = view.DRILL_LIMIT,
+          offset: int = 0, subject: str = "", file: str = "", q: str = "",
+          order: str = "amount", only: str = "counted") -> dict:
     """一个报表数字是怎么来的：按科目、按文件、以及带行号的原始明细。
 
     只报总数不给行号的话，对不上账时没人查得动，整套系统就退化成又一个看不懂的报表。
+
+    明细可以按科目、来源文件、关键词收窄，并翻页。淘宝那家店一个月的推广扣费就有
+    六千多行，只给头 200 行等于没给。
     """
     facts = service.facts_of(workspace(), run_id)
     if facts is None:
         raise HTTPException(404, "这次算账没留明细，重算一次就有了")
-    return view.drill(facts, _model(), node_id, limit=min(limit, 2000))
+    return view.drill(facts, _model(), node_id, limit=min(limit, 2000),
+                      value=_node_value(run_id, node_id), offset=offset,
+                      subject=subject or None, file=file or None,
+                      q=q or None, order=order, only=only)
+
+
+def _node_value(run_id: int, node_id: str) -> float | None:
+    """报表上那个数。从快照里取，而不是让下钻自己再算一遍。
+
+    自己算一遍就会有两个「平台服务费」，而它们必然会在某天分叉。分叉的那天没人
+    会发现，因为两个数都长得像对的。
+    """
+    state = next((s for s in workspace().overview() if s.run_id == run_id), None)
+    for line in ((state.result or {}).get("statement") or []) if state else []:
+        if line.get("id") == node_id:
+            return line.get("value")
+    return None
 
 
 # --------------------------------------------------------------------------- #
