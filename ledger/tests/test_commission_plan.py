@@ -1,0 +1,218 @@
+"""提成配置的自动带出：从「谁拿几个点」到逐商品的配置表。
+
+配置提成这件事以前要人对着几百个商品 id 打人名，所以它永远排不上队，提成表
+一直是空的。这两个接口把它变成「系统猜、人否决」。
+
+猜错的代价必须是「人改一行」，不能是「钱算错」。所以这里盯三件事：
+建议只是建议（不进计算）、展开出来的配置和人心里想的那份等价、
+以及重复展开不会把旧的生效版本冲掉。
+"""
+
+from __future__ import annotations
+
+import shutil
+from dataclasses import dataclass
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+import ledger.api as api
+from ledger import ownership
+
+STORE = "taobao_xibishun"
+
+
+@dataclass
+class _State:
+    """工作区里一条算完的店期。只带这几个接口会看的字段。"""
+
+    store_id: str
+    period: str
+    result: dict[str, Any]
+
+
+class _Workspace:
+    def __init__(self, states: list[_State]) -> None:
+        self._states = states
+
+    def overview(self) -> list[_State]:
+        return self._states
+
+
+def _product(pid: str, base: float, **kw) -> dict:
+    return {"product_id": pid, "product_name": "", "base": base, "sub_orders": 1,
+            "amount": 0.0, "total_rate": 0.0, "fallback": False, "unassigned": True,
+            **kw}
+
+
+@pytest.fixture
+def model(tmp_path, monkeypatch):
+    """模型副本 + 一份小的归属表。
+
+    仓库里那份真的归属表两千四百万字节，每条测试拷一遍太贵；而且拿真数据当断言
+    的依据，数据一更新测试就红，红了还看不出是代码错还是数据变了。
+    """
+    target = tmp_path / "cn-ecommerce"
+    shutil.copytree(api.DEFAULT_MODEL, target)
+    (target / ownership.FILENAME).write_text(
+        "product_id,period,owner,store\n"
+        "P1,2026-03,汪学成,喜必顺\n"
+        "P2,2026-03,汪学成,喜必顺\n"
+        "P3,2026-03,张三,喜必顺\n",
+        encoding="utf-8",
+    )
+    ownership._cache.pop(target, None)
+    monkeypatch.setattr(api, "DEFAULT_MODEL", target)
+    return target
+
+
+@pytest.fixture
+def client(model, monkeypatch):
+    """接口跑在假工作区上：四个商品，三个查得到归属，一个查不到。"""
+    products = [_product("P1", 1000.0), _product("P2", 500.0),
+                _product("P3", 300.0), _product("P9", 200.0)]
+    ws = _Workspace([_State(STORE, "2026-05",
+                            {"commission": {"products": products, "base_total": 2000.0}})])
+    monkeypatch.setattr(api, "workspace", lambda: ws)
+    with TestClient(api.app) as c:
+        yield c
+
+
+# --------------------------------------------------------------------------- #
+# 建议
+# --------------------------------------------------------------------------- #
+
+class TestWhatTheSystemSuggests:
+    def test_fills_in_the_owner_it_knows(self, client) -> None:
+        got = client.get(f"/api/commission/products?store_id={STORE}").json()
+        by_id = {p["product_id"]: p for p in got["products"]}
+        assert by_id["P1"]["suggest_person"] == "汪学成"
+        assert by_id["P3"]["suggest_person"] == "张三"
+
+    def test_leaves_the_ones_it_does_not_know_blank(self, client) -> None:
+        """猜不到就空着。这一格宁可让人填，也不能填一个看起来像那么回事的名字。"""
+        got = client.get(f"/api/commission/products?store_id={STORE}").json()
+        by_id = {p["product_id"]: p for p in got["products"]}
+        assert by_id["P9"]["suggest_person"] == ""
+
+    def test_says_how_old_the_suggestion_is(self, client) -> None:
+        """建议要带出处。归属数据停在三月，账期是五月，界面上得说得出这是沿用的。"""
+        got = client.get(f"/api/commission/products?store_id={STORE}").json()
+        assert got["ownership_latest"] == "2026-03"
+        assert all(p["suggest_since"] == "2026-03"
+                   for p in got["products"] if p["suggest_person"])
+
+    def test_sorts_by_money_not_by_id(self, client) -> None:
+        """按毛利从大到小。人的时间有限，先看的那几行该是钱最多的那几行。"""
+        got = client.get(f"/api/commission/products?store_id={STORE}").json()
+        assert [p["product_id"] for p in got["products"]] == ["P1", "P2", "P3", "P9"]
+
+    def test_groups_the_money_by_person(self, client) -> None:
+        """按人汇总毛利，让人一眼看出这份建议把多少钱分给了谁。"""
+        store = client.get(f"/api/commission/products?store_id={STORE}").json()["stores"][0]
+        assert {o["person"]: o["base"] for o in store["owners"]} == {
+            "汪学成": 1500.0, "张三": 300.0, "": 200.0}
+
+
+# --------------------------------------------------------------------------- #
+# 展开
+# --------------------------------------------------------------------------- #
+
+def _plan(client, *, apply: bool = False, **body) -> dict:
+    body.setdefault("store_id", STORE)
+    body.setdefault("period", "2026-05")
+    r = client.post(f"/api/commission/plan?apply={str(apply).lower()}", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+class TestExpandingAPlan:
+    def test_one_rate_per_person_becomes_one_row_per_product(self, client) -> None:
+        got = _plan(client, rates={"汪学成": 0.03, "张三": 0.05})
+        assert got["coverage"] == {"by_product": 3, "by_store": 0, "nobody": 1}
+        assert {(r["product_id"], r["person"], r["share"]) for r in got["preview"]} == {
+            ("P1", "汪学成", "0.03"), ("P2", "汪学成", "0.03"), ("P3", "张三", "0.05")}
+
+    def test_collapses_products_that_the_store_row_already_covers(self, client) -> None:
+        """负责人和兜底同人同率时不单独出行，交给店铺那一行盖住。
+
+        算出来的钱一分不差，但配置从几百行变成一行。淘宝那家店 722 个商品全归
+        一个人，不压缩就是 722 行——那张表没人看得懂，也就没人会去审。
+        """
+        got = _plan(client, rates={"汪学成": 0.03},
+                    fallback_person="汪学成", fallback_rate=0.03)
+        assert got["generated"] == 1
+        assert got["preview"][0]["product_id"] == ""
+        assert got["coverage"]["by_store"] == 4
+
+    def test_a_person_on_a_different_rate_still_gets_their_own_row(self, client) -> None:
+        """费率和兜底不一样的人必须单独出行，不能被压掉。"""
+        got = _plan(client, rates={"汪学成": 0.03, "张三": 0.05},
+                    fallback_person="汪学成", fallback_rate=0.03)
+        assert [(r["product_id"], r["person"]) for r in got["preview"]] == [
+            ("P3", "张三"), ("", "汪学成")]
+
+    def test_no_fallback_means_unowned_products_pay_nobody(self, client) -> None:
+        """不设兜底，查不到归属的商品就是不给人——不能悄悄挂到别人名下。"""
+        got = _plan(client, rates={"汪学成": 0.03, "张三": 0.05})
+        assert got["coverage"]["nobody"] == 1
+        assert all(r["product_id"] != "P9" for r in got["preview"])
+
+    def test_a_person_with_no_rate_is_not_paid(self, client) -> None:
+        """建议里有这个人，但没给他定率，就不该生成配置。
+
+        这种商品和「压根查不到归属」一起计入 nobody：两者对钱的影响一样，
+        都是这份毛利不产生提成，界面上要提醒的也是同一句话。
+        """
+        got = _plan(client, rates={"汪学成": 0.03})
+        assert all(r["person"] != "张三" for r in got["preview"])
+        assert got["coverage"]["nobody"] == 2
+
+
+class TestPreviewDoesNotTouchAnything:
+    def test_preview_writes_no_config(self, client, model) -> None:
+        before = (model / "commission.csv").read_bytes()
+        _plan(client, rates={"汪学成": 0.03})
+        assert (model / "commission.csv").read_bytes() == before
+
+    def test_preview_says_it_did_not_apply(self, client) -> None:
+        assert _plan(client, rates={"汪学成": 0.03})["applied"] is False
+
+
+class TestApplying:
+    @pytest.fixture(autouse=True)
+    def _no_recompute(self, monkeypatch):
+        """落盘要测，重算不测——重算有它自己的测试，在这里跑只是让每条慢二十秒。"""
+        monkeypatch.setattr(api.service, "recompute",
+                            lambda *a, **k: type("R", (), {"periods": ["2026-05"]})())
+
+    def test_written_rules_come_back_from_the_config(self, client, model) -> None:
+        got = _plan(client, rates={"汪学成": 0.03}, apply=True)
+        assert got["applied"] is True
+        text = (model / "commission.csv").read_text(encoding="utf-8")
+        assert "P1" in text and "汪学成" in text
+
+    def test_running_it_twice_replaces_instead_of_doubling(self, client, model) -> None:
+        """同一个生效日期重复展开是改主意，不是加一份。"""
+        _plan(client, rates={"汪学成": 0.03}, apply=True)
+        _plan(client, rates={"汪学成": 0.08}, apply=True)
+        text = (model / "commission.csv").read_text(encoding="utf-8")
+        assert text.count("P1") == 1
+        assert "0.08" in text and "0.03" not in text
+
+    def test_a_different_effective_date_is_kept_as_a_new_version(self, client, model) -> None:
+        """提成是生效制的。改配置是往表里加一个新版本，旧版本必须留着——
+        不然上个月的账重算一遍会套上这个月的规则，已经发过的钱对不上。
+        """
+        _plan(client, rates={"汪学成": 0.03}, effective_from="2026-01-01", apply=True)
+        _plan(client, rates={"汪学成": 0.08}, effective_from="2026-05-01", apply=True)
+        text = (model / "commission.csv").read_text(encoding="utf-8")
+        assert "2026-01-01" in text and "2026-05-01" in text
+        assert "0.03" in text and "0.08" in text
+
+    def test_the_effective_date_is_required(self, client) -> None:
+        """没有生效日期就不知道这份配置从哪天算起，宁可拒绝也不能默认成今天。"""
+        r = client.post("/api/commission/plan",
+                        json={"store_id": STORE, "rates": {"汪学成": 0.03}})
+        assert r.status_code == 400

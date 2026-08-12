@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import onboard, service, view
+from . import onboard, ownership, service, view
 from .model import propose
 from .model.config import (
     COMMISSION_COLUMNS,
@@ -580,6 +580,175 @@ def commission_products(period: str = "", store_id: str = "", limit: int = 5000)
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="commission-products.csv"'},
     )
+
+
+@app.get("/api/commission/products")
+def commission_product_list(period: str = "", store_id: str = "") -> dict:
+    """这个账期卖过的商品，每个带上毛利和「系统猜它归谁」。
+
+    这一个端点决定了提成配置是一张空表还是一张填好八成的表。运营归属那份历史
+    数据里有五万三千个商品的负责人，淘宝那家店当期七百多个商品能对上八成七。
+    让人对着几百个商品 ID 手打人名，这件事永远排不上队；把猜测摆出来让人否决，
+    十分钟就配完了。
+
+    猜测只是猜测：它不进计算，进计算的永远是 commission.csv。这里返回的
+    `suggest_person` 旁边一定带 `suggest_since`（这条归属记于哪个月），
+    因为归属数据可能比当前账期旧好几个月，人有权知道自己在沿用多久前的安排。
+    """
+    ws = workspace()
+    model = _model()
+    states = [st for st in ws.overview()
+              if (not period or st.period == period)
+              and (not store_id or st.store_id == store_id)]
+    if not states:
+        raise HTTPException(404, "这个账期还没有算过的店")
+    chosen = period or max(st.period for st in states)
+    states = [st for st in states if st.period == chosen]
+
+    by_id = {s.id: s for s in model.stores}
+    products: list[dict[str, Any]] = []
+    stores: list[dict[str, Any]] = []
+    for st in sorted(states, key=lambda s: s.store_id):
+        c = (st.result or {}).get("commission") or {}
+        items = c.get("products") or []
+        ids = [str(p.get("product_id") or "") for p in items]
+        owners = ownership.owners_at(DEFAULT_MODEL, chosen, ids)
+        store = by_id.get(st.store_id)
+        per_person: dict[str, dict[str, Any]] = {}
+        for p in items:
+            pid = str(p.get("product_id") or "")
+            owner = owners.get(pid)
+            base = float(p.get("base") or 0.0)
+            products.append({
+                "store_id": st.store_id,
+                "store": store.name if store else st.store_id,
+                "product_id": pid,
+                "product_name": p.get("product_name") or "",
+                "base": base,
+                "sub_orders": p.get("sub_orders", 0),
+                "amount": p.get("amount", 0.0),
+                "total_rate": p.get("total_rate", 0.0),
+                "configured": not (p.get("fallback") or p.get("unassigned")),
+                "fallback": bool(p.get("fallback")),
+                "suggest_person": owner.person if owner else "",
+                "suggest_since": owner.since if owner else "",
+                "suggest_store": owner.store if owner else "",
+            })
+            key = owner.person if owner else ""
+            slot = per_person.setdefault(key, {"person": key, "products": 0, "base": 0.0})
+            slot["products"] += 1
+            slot["base"] += base
+        for slot in per_person.values():
+            slot["base"] = money_float(slot["base"])
+        stores.append({
+            "store_id": st.store_id,
+            "store": store.name if store else st.store_id,
+            "platform": store.platform if store else "",
+            "products": len(items),
+            "base_total": c.get("base_total", 0.0),
+            "owners": sorted(per_person.values(), key=lambda d: -d["base"]),
+        })
+
+    return {
+        "period": chosen,
+        "stores": stores,
+        "products": sorted(products, key=lambda d: -d["base"]),
+        # 归属数据截止到哪个月。比当前账期旧就说明界面上那些建议是沿用来的。
+        "ownership_latest": ownership.coverage(DEFAULT_MODEL, chosen, [])["latest_period"],
+    }
+
+
+class RatePlan(BaseModel):
+    """按人定提成率，由系统展开成逐商品的配置。
+
+    人只需要回答「谁拿几个点」，商品归谁是系统已经知道的。反过来让人逐商品填，
+    七百行里填错一行没人看得出来。
+    """
+
+    store_id: str
+    period: str = ""
+    effective_from: str = ""
+    #: 人员 → 提成率。写 0.03 或 3 都按 3% 理解不了，所以这里只收小数，
+    #: 界面上负责把「3%」翻成 0.03——翻译放在离人最近的地方。
+    rates: dict[str, float] = {}
+    #: 没有归属的商品归谁、拿几个点。人名留空表示不给任何人。
+    fallback_person: str = ""
+    fallback_rate: float = 0.0
+    note: str = ""
+
+
+@app.post("/api/commission/plan")
+def commission_plan(plan: RatePlan, apply: bool = False) -> dict:
+    """把「谁拿几个点」展开成提成配置。`apply=false` 只预览，不落盘。
+
+    展开的时候会做一次压缩：负责人和兜底是同一个人、同一个费率的商品不单独出行，
+    交给店铺兜底那一行盖住。淘宝那家店七百多个商品全归一个人，压缩前是七百多行
+    配置，压缩后是一行——两者算出来的钱一分不差，但后者是人看得懂的。
+
+    同一个（生效日期，店铺）重复展开会覆盖上一次的结果，不会叠加。别的生效日期
+    原样留着：提成是生效制的，改配置就是往表里加一个新版本，旧版本得留下来，
+    不然上个月的账重算一遍会变成这个月的规则。
+    """
+    model = _model()
+    store = _store(model, plan.store_id)
+    effective = plan.effective_from or (f"{plan.period}-01" if len(plan.period) == 7 else "")
+    if not effective:
+        raise HTTPException(400, "要给生效日期，不然不知道这份配置从哪天开始算")
+
+    listing = commission_product_list(period=plan.period, store_id=plan.store_id)
+    items = [p for p in listing["products"] if p["store_id"] == plan.store_id]
+
+    generated: list[dict[str, str]] = []
+    covered = {"by_product": 0, "by_store": 0, "nobody": 0}
+    for p in items:
+        person = p["suggest_person"]
+        rate = plan.rates.get(person, 0.0) if person else 0.0
+        if not person or not rate:
+            covered["by_store" if plan.fallback_person else "nobody"] += 1
+            continue
+        if person == plan.fallback_person and rate == plan.fallback_rate:
+            covered["by_store"] += 1
+            continue
+        covered["by_product"] += 1
+        generated.append({
+            "effective_from": effective, "store": store.id,
+            "product_id": p["product_id"], "product_name": p["product_name"],
+            "person": person, "share": str(rate), "total_rate": str(rate),
+            "note": plan.note or f"按运营归属展开（{p['suggest_since'] or '无出处'}）",
+        })
+    if plan.fallback_person and plan.fallback_rate:
+        generated.append({
+            "effective_from": effective, "store": store.id,
+            "product_id": "", "product_name": "",
+            "person": plan.fallback_person, "share": str(plan.fallback_rate),
+            "total_rate": str(plan.fallback_rate),
+            "note": plan.note or "店铺兜底：没有单独归属的商品",
+        })
+
+    kept = [r for r in view.commission_rules(model)
+            if not (r["store"] == store.id and r["effective_from"] == effective)]
+    merged = [{k: str(r.get(k, "")) for k in COMMISSION_COLUMNS} for r in kept] + generated
+
+    result = {
+        "effective_from": effective,
+        "store_id": store.id,
+        "generated": len(generated),
+        "kept": len(kept),
+        "coverage": covered,
+        "preview": generated[:50],
+        "applied": False,
+        "periods": [],
+    }
+    if not apply:
+        return result
+
+    try:
+        replace_commission(DEFAULT_MODEL, merged)
+    except (ModelError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    result["applied"] = True
+    result["periods"] = service.recompute(workspace(), _model(), store).periods
+    return result
 
 
 @app.post("/api/commission/config")
