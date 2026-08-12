@@ -1,6 +1,6 @@
 {
- "engine_version": "71bd7c3-dirty",
- "note": "取消 token 登录；保证金解冻费项为空、保证金锁定改判交易赔付；商家集运物流责任货值赔付改判交易赔付，平台物流费一行随之退出",
+ "engine_version": "3f635cd",
+ "note": "取消 token 登录；保证金锁定改判交易赔付；集运货值赔付改判交易赔付，平台物流费退出",
  "stores": {
   "alibaba1688_xingze": {
    "2026-05": {
