@@ -153,7 +153,7 @@ taobao,超过消费券封顶金额的平台出资合作费用,超过消费券封
 taobao,0070002|其他支出-交易赔付（保证金扣款）,交易赔付（保证金扣款）,trade_compensation,0
 taobao,008000200001|保证金-天猫-缴存,保证金-天猫-缴存,trade_compensation,0
 taobao,008000200002|保证金-天猫-解冻,保证金-天猫-解冻,trade_compensation,0
-taobao,008000200003|保证金-天猫-扣除转移,保证金-天猫-扣除转移,trade_compensation,0
+taobao,008000200003|保证金-天猫-扣除转移,保证金-天猫-扣除转移,deposit,0
 taobao,008002800001|保证金-淘宝-缴存（退款锁定）,保证金-淘宝-缴存（退款锁定）,trade_compensation,0
 taobao,008002800002|保证金-淘宝-解冻（退款锁定）,保证金-淘宝-解冻（退款锁定）,trade_compensation,0
 taobao,008002800006|保证金-淘宝-缴存,保证金-淘宝-缴存,trade_compensation,0

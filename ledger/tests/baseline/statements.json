@@ -1,6 +1,6 @@
 {
- "engine_version": "a755b8c-dirty",
- "note": "接入回放门槛时录的第一份基线，此时 accept.py 三家店未解释差异为 0",
+ "engine_version": "8818a7c-dirty",
+ "note": "业务确认物流运费口径：该列保留、源数据为正数、减号有意，撤掉 chk_logistics_sign；保证金-天猫-扣除转移 按业务口径改为不计费项(deposit)，该 255 行原本已被备注规则排除，金额零变动",
  "stores": {
   "alibaba1688_xingze": {
    "2026-05": {
@@ -47,13 +47,6 @@
       "id": "chk_unlinked_disclosed",
       "message": "有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。",
       "name": "未归属金额已呈现",
-      "passed": true
-     },
-     {
-      "blocking": false,
-      "id": "chk_logistics_sign",
-      "message": "平台物流费在源数据里是正数（平台赔付给商家），但现行口径把它当费用扣减。经济含义上说不通，需要业务确认是口径故意如此还是历史遗留。",
-      "name": "平台物流费方向复核",
       "passed": true
      }
     ],
@@ -394,13 +387,6 @@
       "id": "chk_unlinked_disclosed",
       "message": "有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。",
       "name": "未归属金额已呈现",
-      "passed": true
-     },
-     {
-      "blocking": false,
-      "id": "chk_logistics_sign",
-      "message": "平台物流费在源数据里是正数（平台赔付给商家），但现行口径把它当费用扣减。经济含义上说不通，需要业务确认是口径故意如此还是历史遗留。",
-      "name": "平台物流费方向复核",
       "passed": true
      }
     ],
@@ -766,13 +752,6 @@
       "id": "chk_unlinked_disclosed",
       "message": "有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。",
       "name": "未归属金额已呈现",
-      "passed": true
-     },
-     {
-      "blocking": false,
-      "id": "chk_logistics_sign",
-      "message": "平台物流费在源数据里是正数（平台赔付给商家），但现行口径把它当费用扣减。经济含义上说不通，需要业务确认是口径故意如此还是历史遗留。",
-      "name": "平台物流费方向复核",
       "passed": true
      }
     ],
