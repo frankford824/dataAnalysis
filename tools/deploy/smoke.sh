@@ -8,8 +8,6 @@ set -euo pipefail
 
 B=${B:-http://192.168.0.155:8000}
 CORPUS=${CORPUS:-/home/wsfwk/data/platform}
-TOKENS=$(dirname "$0")/.tokens.local.txt
-ADMIN=$(awk -F'\t' '$2=="admin"{print $3}' "$TOKENS")
 
 args=()
 n=0
@@ -22,14 +20,14 @@ echo "交 $n 个文件，共 $(du -shc $(find "$CORPUS" -type f -name '*.xlsx') 
 out=$(mktemp)
 start=$(date +%s)
 curl -s -o "$out" -w '%{http_code} %{time_total}' \
-  -H "Authorization: Bearer $ADMIN" "${args[@]}" "$B/api/upload" > /tmp/upload_meta & 
+  "${args[@]}" "$B/api/upload" > /tmp/upload_meta & 
 up=$!
 
 echo
 echo "上传在跑，期间每 2 秒打一次总览接口："
 slow=0
 while kill -0 $up 2>/dev/null; do
-  t=$(curl -s -o /dev/null -w '%{time_total}' -H "Authorization: Bearer $ADMIN" "$B/api/overview" || echo 999)
+  t=$(curl -s -o /dev/null -w '%{time_total}' "$B/api/overview" || echo 999)
   ms=$(python3 -c "print(int(float('$t')*1000))")
   mark=''
   if [ "$ms" -gt 2000 ]; then mark='  <- 卡了'; slow=$((slow + 1)); fi

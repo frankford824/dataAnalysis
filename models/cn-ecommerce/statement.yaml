@@ -20,7 +20,14 @@
 - {id: n_refund, name: 销售退款, level: 2, formula: {op: add, of: [trade_refund]}}
 - {id: n_expense, name: 平台综合支出, level: 2, formula: {op: add, of: [trade_expense_1688]}}
 - {id: n_software, name: 平台服务费, level: 2, formula: {op: add, of: [software_fee]}}
-- {id: n_logistics, name: 平台物流费, level: 2, formula: {op: add, of: [logistics_fee]}}
+# 这里原先有一行 n_logistics「平台物流费」，删掉了。理由见 metrics.yaml 里
+# logistics_fee 那一段：费项分类对照表五个平台加起来没有「物流运费」这个业务大类，
+# 唯一撑着它的集运货值赔付已经被业务改判成交易赔付，这一行没有来源了。
+#
+# 不留成一个恒为 0 的常量行，是因为这套东西的三条底线都不允许：指标不能指向
+# 没人产出的口径项、每个明细行都要点得开、报表行按平台适用性显隐。常量行
+# 三条全破——它会在 1688 和抖音的损益表上也冒出来，那两个平台根本没有这个概念。
+# 将来真有来源接进来，把指标和这一行一起加回去。
 - {id: n_compensation, name: 交易赔付, level: 2, formula: {op: add, of: [trade_compensation]}}
 - {id: n_marketing, name: 平台营销费用, level: 2, formula: {op: add, of: [marketing_fee]}}
 - {id: n_goods, name: 商品成本, level: 2, formula: {op: add, of: [goods_cost]}}
@@ -40,10 +47,10 @@
 - id: g_platform
   name: 平台费用
   level: 1
-  children: [n_software, n_logistics, n_compensation, n_marketing, n_expense]
+  children: [n_software, n_compensation, n_marketing, n_expense]
   note: >
     平台从货款里扣走的钱。这一组全是负数。
-    淘宝拆成四项，1688 不拆、全部落在「平台综合支出」——它自己的订单明细表就只有
+    淘宝拆成三项，1688 不拆、全部落在「平台综合支出」——它自己的订单明细表就只有
     「销售支出」一列。抖音一项都没有：它的动账金额本身就是扣完各项费用后的净额。
 
 - id: g_goods

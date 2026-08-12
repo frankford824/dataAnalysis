@@ -52,6 +52,23 @@ _TAOBAO_STALE = (
     "抽查的两笔在交付的源表里根本查不到。详见 _TAOBAO_STALE 上方的取证过程。"
 )
 
+#: 业务改口径造成的差异。和数据版本无关，是有意的，人工表还停在老口径上。
+#:
+#: 改了三条：保证金解冻的费项为空（不进损益，和原先一致）、保证金锁定改判交易赔付
+#: （原先当纯划转排除）、商家集运物流责任货值赔付改判交易赔付（原先是物流运费）。
+#:
+#: 影响算得清，两条加起来正好对上：
+#:   交易赔付 -1,036.86 —— 锁定那 107 行进账，集运货值赔付那 31 行搬过来且不再取反；
+#:   利润     -717.45   —— 就是上面的 1,036.86，减去物流运费那一行退出带来的 319.41。
+#: 各自叠上原有的数据版本差异（交易赔付 +39.11、利润 +339.81），就是登记的这两个数。
+#:
+#: 人工表里还有一列物流运费 -363.79，引擎不再出这一项：费项分类对照表五个平台
+#: 加起来没有「物流运费」这个业务大类，唯一撑着它的费项已经改判走了。
+_TAOBAO_RECLASSIFIED = (
+    "业务在 2026-08 改了保证金锁定和集运货值赔付的费项归属，人工表还是老口径。"
+    "详见 _TAOBAO_RECLASSIFIED 上方的逐笔拆解。"
+)
+
 #: 三家店的成本侧列名一致，抽出来复用。
 _COST_COLUMNS = {
     "聚水潭成本": "n_goods",
@@ -103,15 +120,14 @@ CASES = {
         },
         explained={
             "软件服务费": (52.38, _TAOBAO_STALE),
-            "物流运费": (44.38, _TAOBAO_STALE),
-            "交易赔付": (39.11, _TAOBAO_STALE),
             "营销费用": (27.66, _TAOBAO_STALE),
             "销售退款": (-12.91, _TAOBAO_STALE),
             "发货运费": (27.41, _TAOBAO_STALE),
             "客服打款": (10.00, _TAOBAO_STALE),
             "刷单/本金佣金": (37.20, _TAOBAO_STALE),
             "毛利": (114.58, _TAOBAO_STALE),
-            "利润": (339.81, _TAOBAO_STALE),
+            "交易赔付": (-997.75, _TAOBAO_RECLASSIFIED),
+            "利润": (-377.64, _TAOBAO_RECLASSIFIED),
             "聚水潭成本": (675.85,
                       "人工表的公式引用外部工作簿 '[7]聚水潭订单5+6月'，和交上来的"
                       "「聚水潭成本-淘宝喜必顺.xlsx」不是同一份。逐子订单比对：21,988 行里"
@@ -287,10 +303,15 @@ def run_case(case: Case) -> float:
         if name in STORED_POSITIVE_COSTS:
             h = -h
         nv = target.nodes.get(node_id)
-        e = nv.value if nv is not None and nv.available else None
-        if e is None:
-            print(f"  {name:<16}{h:>16,.2f}{'未出数':>16}")
+        if nv is None:
+            # 人工表有这一列、模型里没有这一行。和「缺数据源」是两回事，
+            # 前者是口径决定，后者是数据没交齐，混在一句话里会让人去找不存在的表。
+            print(f"  {name:<16}{h:>16,.2f}{'本模型不出这一项':>16}")
             continue
+        if not nv.available:
+            print(f"  {name:<16}{h:>16,.2f}{'未出数（缺数据源）':>16}")
+            continue
+        e = nv.value
         gap = e - h
         known = case.explained.get(name)
         if known is not None and abs(gap - known[0]) < 0.02:

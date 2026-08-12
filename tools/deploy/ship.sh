@@ -7,7 +7,6 @@
 #   D:\ledger\home      工作区：留档的原始表、sqlite、llm.json（不动）
 #   D:\ledger\secrets   模型密钥（不动）
 #   D:\ledger\logs      日志（不动）
-#   D:\ledger\auth.json 鉴权（不存在才生成）
 #
 # 机器上其他任何路径——尤其 D:\财务 的 65 GB 业务数据和 D:\software\finance-agent
 # 的 2.9 GB 历史结果——一个字节都不碰。
@@ -120,32 +119,11 @@ print(f"  模型 {out['model']}，密钥指向 {out['api_key_file']}")
 PY
 put "$stage/llm.json" "$ROOT_SCP/home/llm.json"
 
-step '鉴权'
-if ssh_ "if exist \"$ROOT_WIN\\auth.json\" (echo yes) else (echo no)" | grep -q yes; then
-  echo '  auth.json 已存在，不动它（换 token 请手动删掉再跑一次）'
-else
-  python3 - "$stage" <<'PY'
-import hashlib, json, pathlib, secrets, sys
-stage = pathlib.Path(sys.argv[1])
-people = [("管理员", "admin"), ("财务", "finance"), ("店长", "operator")]
-users, plain = [], []
-for name, role in people:
-    tok = secrets.token_urlsafe(24)
-    users.append({"name": name, "role": role,
-                  "token_sha256": hashlib.sha256(tok.encode()).hexdigest()})
-    plain.append((name, role, tok))
-(stage / 'auth.json').write_text(
-    json.dumps({"users": users}, ensure_ascii=False, indent=2), encoding='utf-8')
-(stage / 'tokens.txt').write_text(
-    "\n".join(f"{n}\t{r}\t{t}" for n, r, t in plain), encoding='utf-8')
-for n, r, t in plain:
-    print(f"  {n}({r})\t{t}")
-PY
-  put "$stage/auth.json" "$ROOT_SCP/auth.json"
-  cp "$stage/tokens.txt" "$REPO/tools/deploy/.tokens.local.txt"
-  chmod 600 "$REPO/tools/deploy/.tokens.local.txt"
-  echo '  服务器上只存 sha256，明文只在上面这几行和 tools/deploy/.tokens.local.txt'
-fi
+step '清掉旧鉴权'
+# 登录机制已经撤了，服务也不再读 auth.json。留着一个没人读的密钥文件比删掉更糟：
+# 下次有人看到它会以为访问还需要 token，照着它去查为什么自己的 token 不管用。
+ssh_ "if exist \"$ROOT_WIN\\auth.json\" (del /q \"$ROOT_WIN\\auth.json\" & echo   删掉了 auth.json) else (echo   没有遗留的 auth.json)"
+rm -f "$REPO/tools/deploy/.tokens.local.txt"
 
 step '装依赖'
 pwsh_ install.ps1

@@ -1,6 +1,6 @@
 {
- "engine_version": "8818a7c-dirty",
- "note": "业务确认物流运费口径：该列保留、源数据为正数、减号有意，撤掉 chk_logistics_sign；保证金-天猫-扣除转移 按业务口径改为不计费项(deposit)，该 255 行原本已被备注规则排除，金额零变动",
+ "engine_version": "71bd7c3-dirty",
+ "note": "取消 token 登录；保证金解冻费项为空、保证金锁定改判交易赔付；商家集运物流责任货值赔付改判交易赔付，平台物流费一行随之退出",
  "stores": {
   "alibaba1688_xingze": {
    "2026-05": {
@@ -843,21 +843,6 @@
       "expected": 15219,
       "hit_rate": 0.3637065337380985,
       "linked": 84345,
-      "metric": "logistics_fee",
-      "name": "平台物流费",
-      "occasional": true,
-      "rows": 231904,
-      "spine_total": 15219
-     },
-     {
-      "company_wide": false,
-      "coverage": null,
-      "covered": 13083,
-      "excluded": 194,
-      "expect_label": "",
-      "expected": 15219,
-      "hit_rate": 0.3637065337380985,
-      "linked": 84345,
       "metric": "trade_compensation",
       "name": "交易赔付",
       "occasional": true,
@@ -955,7 +940,7 @@
       "spine_total": 15219
      }
     ],
-    "rows": 864933,
+    "rows": 771759,
     "sources": [
      {
       "arrived": true,
@@ -1025,7 +1010,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "平台费用",
-      "value": -51696.05
+      "value": -52413.5
      },
      {
       "available": true,
@@ -1042,23 +1027,12 @@
       "available": true,
       "display": "amount",
       "drillable": true,
-      "id": "n_logistics",
-      "is_total": false,
-      "level": 2,
-      "missing_sources": [],
-      "name": "平台物流费",
-      "value": -319.41
-     },
-     {
-      "available": true,
-      "display": "amount",
-      "drillable": true,
       "id": "n_compensation",
       "is_total": false,
       "level": 2,
       "missing_sources": [],
       "name": "交易赔付",
-      "value": -122.6
+      "value": -1159.46
      },
      {
       "available": true,
@@ -1201,7 +1175,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润",
-      "value": 153110.06
+      "value": 152392.61
      },
      {
       "available": true,
@@ -1212,7 +1186,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润率",
-      "value": 0.31084721129596926
+      "value": 0.3093906294636305
      }
     ],
     "store": "淘宝喜必顺",
@@ -1220,7 +1194,7 @@
     "unclassified": [],
     "unlinked_buckets": [
      {
-      "amount": -308.31,
+      "amount": 308.31,
       "count": 5,
       "label": "取不出订单号，要查归属"
      },
@@ -1240,7 +1214,7 @@
       "label": "其他账期的订单"
      }
     ],
-    "unlinked_total": -308.31
+    "unlinked_total": 308.31
    }
   }
  }

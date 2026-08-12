@@ -49,8 +49,8 @@ $n = (Get-NetFirewallRule -DisplayName $Rule | Measure-Object).Count
 Write-Output ('  ' + $Rule + '：' + $n + ' 条（就该是 1 条）')
 
 Write-Output ''
-Write-Output '== 收紧密钥与鉴权文件权限 =='
-foreach ($p in @((Join-Path $Root 'secrets'), (Join-Path $Root 'auth.json'))) {
+Write-Output '== 收紧密钥权限 =='
+foreach ($p in @((Join-Path $Root 'secrets'))) {
   if (-not (Test-Path $p)) { Write-Output ('  跳过（不存在）：' + $p); continue }
   $acl = Get-Acl $p
   $acl.SetAccessRuleProtection($true, $false)   # 断掉继承，父目录的 Users 读权限不再生效

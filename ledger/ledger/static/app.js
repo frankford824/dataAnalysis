@@ -64,9 +64,6 @@ function toast(text, bad) {
 
 /** 接口调用。失败一律把后端那句人话原样抛出来，别自己编。 */
 async function api(path, opts) {
-  opts = opts ? {...opts, headers: {...(opts.headers || {})}} : {headers: {}};
-  const token = sessionStorage.getItem('ledger-token');
-  if (token) opts.headers.Authorization = 'Bearer ' + token;
   const res = await fetch(path, opts);
   if (!res.ok) {
     let detail = res.status + '';
@@ -83,20 +80,6 @@ function json(method, body) {
 }
 
 const S = {boot: null, overview: null};
-
-function loginGate(message) {
-  main.innerHTML = `<div class="card"><header><h1>身份验证</h1></header>
-    <p class="muted">${esc(message)}</p>
-    <div class="row wrap"><label class="fld">访问 token
-      <input id="auth-token" type="password" autocomplete="current-password"></label>
-      <button class="primary" id="auth-go">登录</button></div></div>`;
-  $('auth-go').onclick = () => {
-    const token = $('auth-token').value.trim();
-    if (!token) return;
-    sessionStorage.setItem('ledger-token', token);
-    location.reload();
-  };
-}
 
 // --------------------------------------------------------------------------
 // 路由
@@ -1443,10 +1426,6 @@ function tryResult(r) {
     S.boot = await api('/api/bootstrap');
     $('c-stores').textContent = S.boot.stores.length || '';
   } catch (err) {
-    if (err.status === 401) {
-      loginGate(err.message);
-      return;
-    }
     main.innerHTML = fail(err.message);
     return;
   }

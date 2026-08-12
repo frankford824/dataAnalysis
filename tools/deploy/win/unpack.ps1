@@ -2,7 +2,7 @@
 #
 # 为什么先删再解：旧版本删掉的模块如果留在盘上，import 照样能找到它，
 # 于是线上跑的是一份仓库里已经不存在的代码——这种问题查起来要命。
-# 只删 app 一个目录，工作区、密钥、日志、鉴权都在它外面，动不到。
+# 只删 app 一个目录，工作区、密钥、日志都在它外面，动不到。
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8

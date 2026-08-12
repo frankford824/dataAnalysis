@@ -25,7 +25,7 @@
   owner_role: shop_owner
   cadence: daily
   required_for_close: true
-  provides: [trade_receipt, trade_refund, software_fee, logistics_fee, trade_compensation, marketing_fee]
+  provides: [trade_receipt, trade_refund, software_fee, trade_compensation, marketing_fee]
   note: >
     平台资金账户的逐笔流水，销售收入与各项平台费用都出自这里。
     淘宝有支付宝和微信两个资金渠道，是两张表头不同的表，都要交。

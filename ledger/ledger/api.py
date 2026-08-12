@@ -16,8 +16,8 @@ import re
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -37,31 +37,19 @@ from .model.loader import ModelError, load_model
 from .model.schema import Model, SourceContract, Store, Template
 from .model.transaction import model_revision
 from .money import decimal_amount, money_float
-from .security import SecurityError, authenticate, authorize
 from .web import STATIC, page
 from .workspace import Workspace, WorkspaceError, default_root
 
 app = FastAPI(title="记账", docs_url="/api/docs")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
-
-@app.middleware("http")
-async def api_security(request: Request, call_next):
-    if request.url.path.startswith("/api"):
-        try:
-            principal = authenticate(
-                request.client.host if request.client else "",
-                request.headers.get("authorization", ""),
-            )
-            authorize(principal, request.method, request.url.path)
-            request.state.principal = principal
-        except SecurityError as exc:
-            headers = {"WWW-Authenticate": "Bearer"} if exc.status == 401 else None
-            return JSONResponse({"detail": str(exc)}, status_code=exc.status, headers=headers)
-    return await call_next(request)
-
 #: 仓库自带的模型。
 DEFAULT_MODEL = Path(__file__).resolve().parents[2] / "models" / "cn-ecommerce"
+
+#: 从网页做的操作记不到人头上。登录撤掉之后浏览器不带身份，与其编一个「本机操作员」
+#: 让留痕看起来有据，不如留空——界面上空的显示成破折号，一眼看得出这条没人签字。
+#: 需要签字的场合走命令行，`ledger submit --by` 还在。
+ANONYMOUS = ""
 
 #: 工作区。测试里换成临时目录。
 WORKSPACE_ROOT: Path | None = None
@@ -110,7 +98,7 @@ def index() -> HTMLResponse:
 
 
 @app.get("/api/bootstrap")
-def bootstrap(request: Request) -> dict:
+def bootstrap() -> dict:
     """界面启动拉一次就够。店铺、平台、可改字段、报表骨架都在里面。
 
     合成一个端点而不是让前端连打四枪，是因为这四样东西必须来自同一次模型加载：
@@ -129,10 +117,6 @@ def bootstrap(request: Request) -> dict:
         "sources": [{"id": s.id, "name": s.name} for s in model.sources],
         "accepts": sorted(service.SUFFIXES),
         "model_revision": model_revision(DEFAULT_MODEL),
-        "principal": {
-            "name": request.state.principal.name,
-            "role": request.state.principal.role,
-        },
     }
 
 
@@ -142,10 +126,7 @@ def bootstrap(request: Request) -> dict:
 
 
 @app.post("/api/upload")
-def upload(
-    request: Request,
-    files: Annotated[list[UploadFile], File()],
-) -> dict:
+def upload(files: Annotated[list[UploadFile], File()]) -> dict:
     """收一批表，留档，把受影响的店重算。
 
     重算整家店而不是这一批文件：损益要靠订单明细做脊柱，单独一张运费表算不出账。
@@ -162,7 +143,7 @@ def upload(
     uploads = [(Path(f.filename or "").name, f.file) for f in files if f.filename]
     if not uploads:
         raise HTTPException(400, "没有文件")
-    result = service.intake(ws, model, uploads, by=request.state.principal.name)
+    result = service.intake(ws, model, uploads, by=ANONYMOUS)
     return {
         "summary": result.summary(),
         "kept": [
@@ -329,26 +310,22 @@ class PeriodAction(BaseModel):
 
 
 @app.post("/api/stores/{store_id}/periods/{period}/close")
-def close_period(store_id: str, period: str, action: PeriodAction, request: Request) -> dict:
+def close_period(store_id: str, period: str, action: PeriodAction) -> dict:
     """结账。自检层不放行就结不了，这是整套东西存在的意义。"""
     _store(_model(), store_id)
     try:
-        st = workspace().close_period(
-            store_id, period, by=request.state.principal.name, note=action.note,
-        )
+        st = workspace().close_period(store_id, period, by=ANONYMOUS, note=action.note)
     except WorkspaceError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"state": st.state, "at": st.at, "run_id": st.run_id}
 
 
 @app.post("/api/stores/{store_id}/periods/{period}/reopen")
-def reopen_period(store_id: str, period: str, action: PeriodAction, request: Request) -> dict:
-    """反结账。谁反的、为什么反，必须留痕。"""
+def reopen_period(store_id: str, period: str, action: PeriodAction) -> dict:
+    """反结账。为什么反必须留痕——理由这一栏是必填的。"""
     _store(_model(), store_id)
     try:
-        st = workspace().reopen_period(
-            store_id, period, by=request.state.principal.name, note=action.note,
-        )
+        st = workspace().reopen_period(store_id, period, by=ANONYMOUS, note=action.note)
     except WorkspaceError as exc:
         raise HTTPException(409, str(exc)) from exc
     return {"state": st.state, "note": st.note}
@@ -841,7 +818,7 @@ def onboard_try(commit: OnboardCommit) -> dict:
 
 
 @app.post("/api/onboard")
-def onboard_commit(commit: OnboardCommit, request: Request) -> dict:
+def onboard_commit(commit: OnboardCommit) -> dict:
     """确认落库：写进模型，然后把用得上它的店重算。
 
     先试跑一遍，没过就不写。也会在写完之后验证引擎还能算完账，算不出就退回去——
@@ -856,8 +833,7 @@ def onboard_commit(commit: OnboardCommit, request: Request) -> dict:
         source = SourceContract(**commit.new_source) if commit.new_source else None
         landed = onboard.land(
             DEFAULT_MODEL, workspace(), template, source=source,
-            by=request.state.principal.name,
-            expected_revision=commit.model_revision,
+            by=ANONYMOUS, expected_revision=commit.model_revision,
         )
     except (ModelError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc

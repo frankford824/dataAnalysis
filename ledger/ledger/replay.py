@@ -47,6 +47,10 @@ BASELINE = Path(__file__).resolve().parent.parent / "tests" / "baseline" / "stat
 #: 每次都对不上，然后人就开始习惯性地重录基线，门槛当天就废了。
 VOLATILE: frozenset[str] = frozenset()
 
+#: 哪些字段存的是钱。其余的数字是行数、笔数、覆盖率，变了同样要报，
+#: 但不能和金额加在一起——那个合计是用来回答「这次改动动了多少钱」的。
+MONEY_FIELDS = frozenset({"value", "amount", "unlinked_total", "base_total", "total"})
+
 
 @dataclass(frozen=True, slots=True)
 class Change:
@@ -61,12 +65,22 @@ class Change:
     kind: str = "changed"
 
     @property
-    def money(self) -> bool:
+    def numeric(self) -> bool:
         return isinstance(self.before, (int, float)) and isinstance(self.after, (int, float))
 
     @property
+    def money(self) -> bool:
+        """是钱，不是行数也不是比率。
+
+        分开是因为报告要给一个「绝对值合计」。把行数混进去，删掉一条指标就会
+        看到「金额变化合计 96,879」，其中 93,174 是那条指标扫过的行数——一个
+        本该回答「这次改动动了多少钱」的数字，变成了没有单位的加总。
+        """
+        return self.numeric and self.path.rsplit(".", 1)[-1] in MONEY_FIELDS
+
+    @property
     def delta(self) -> float:
-        return float(self.after) - float(self.before) if self.money else 0.0
+        return float(self.after) - float(self.before) if self.numeric else 0.0
 
     def line(self) -> str:
         where = f"{self.store} {self.period} {self.path}"
@@ -74,7 +88,7 @@ class Change:
             return f"  新增   {where} = {_short(self.after)}"
         if self.kind == "removed":
             return f"  消失   {where}（原为 {_short(self.before)}）"
-        if self.money:
+        if self.numeric:
             return (
                 f"  变化   {where}\n"
                 f"         {self.before:,.2f} → {self.after:,.2f}"
@@ -106,6 +120,11 @@ class Replay:
         """金额变了的部分。这是最要紧的一类，单独拎出来。"""
         return [c for c in self.changes if c.money and abs(c.delta) >= TOLERANCE]
 
+    @property
+    def count_changes(self) -> list[Change]:
+        """行数、笔数、覆盖率。不是钱，但覆盖率掉了往往是金额出问题的前兆。"""
+        return [c for c in self.changes if c.numeric and not c.money]
+
     def report(self) -> str:
         head = f"引擎 {self.version}"
         if self.baseline_version and self.baseline_version != self.version:
@@ -129,13 +148,18 @@ class Replay:
             out.append(f"金额变化 {len(money)} 处，绝对值合计 {total:,.2f}：")
             out += [c.line() for c in money]
             out.append("")
-        other = [c for c in self.changes if c not in money]
+        counts = self.count_changes
+        if counts:
+            out.append(f"行数与覆盖变化 {len(counts)} 处：")
+            out += [c.line() for c in counts]
+            out.append("")
+        other = [c for c in self.changes if c not in money and c not in counts]
         if other:
             out.append(f"结论与文本变化 {len(other)} 处：")
             out += [c.line() for c in other]
             out.append("")
         out.append(
-            "这些变化如果是这次改动想要的，跑 `python -m ledger.replay --record` 重录基线，"
+            "这些变化如果是这次改动想要的，跑 `python -m ledger.cli replay --record` 重录基线，"
             "把上面的 diff 一起提交；如果不是，改动碰坏了东西。"
         )
         return "\n".join(out)
@@ -216,10 +240,14 @@ def _strip(payload: dict[str, Any]) -> Any:
 
 
 def _walk(store: str, period: str, path: str, before: Any, after: Any) -> list[Change]:
-    """递归比两份结构。列表按下标比，字典按键比。
+    """递归比两份结构。字典按键比，列表优先按名字配对、配不上才退回按下标。
 
-    列表按下标而不是按内容配对，是故意的：报表行的顺序本身就是产品的一部分，
-    顺序变了要报出来。乱序对齐会把「科目顺序被改了」这种变化悄悄吃掉。
+    报表行、自检项、分桶都是有名字的列表。按下标比会在增删一项时把后面全部错位：
+    删掉「平台物流费」那一行，损益表 14 项里有 13 项报「变了」，实际动的只有一项。
+    这种报告没法看，而回放门的全部价值就在于让人一眼看出动了什么。
+
+    顺序仍然要盯。按名字配对之后，如果两边共有项的先后次序不一样，单独报一条
+    「顺序」变化——一条，而不是把顺序变化伪装成十几条金额变化。
     """
     if isinstance(before, dict) and isinstance(after, dict):
         out: list[Change] = []
@@ -234,6 +262,9 @@ def _walk(store: str, period: str, path: str, before: Any, after: Any) -> list[C
         return out
 
     if isinstance(before, list) and isinstance(after, list):
+        keyed = _pair_by_name(store, period, path, before, after)
+        if keyed is not None:
+            return keyed
         out = []
         for i in range(max(len(before), len(after))):
             item = before[i] if i < len(before) else after[i]
@@ -261,11 +292,70 @@ def _walk(store: str, period: str, path: str, before: Any, after: Any) -> list[C
     return [] if before == after else [Change(store, period, path, before, after)]
 
 
+def _pair_by_name(
+    store: str, period: str, path: str, before: list[Any], after: list[Any]
+) -> list[Change] | None:
+    """两个列表按项目名配对着比。配不上返回 None，由调用方退回按下标比。
+
+    要求两边每一项都有名字、而且名字在各自列表里唯一。差一点都不行：名字有重复
+    就没法确定谁对谁，硬配会把两个同名项的数字张冠李戴——那比错位更糟，错位起码
+    看得出来不对劲。
+    """
+    keys_before = [_key(x) for x in before]
+    keys_after = [_key(x) for x in after]
+    for keys in (keys_before, keys_after):
+        if not all(keys) or len(set(keys)) != len(keys):
+            return None
+
+    by_before = dict(zip(keys_before, before))
+    by_after = dict(zip(keys_after, after))
+    # 配对认 id，显示认中文名——报告是给人看的，`statement[n_compensation]` 要人
+    # 回模型文件里查那是哪一行。名字有重的时候退回用 id，宁可难读也不能有两条
+    # 路径长得一模一样。
+    shown = {k: _label(v).strip() or k for k, v in (*by_before.items(), *by_after.items())}
+    dupes = {n for n in shown.values() if list(shown.values()).count(n) > 1}
+    shown = {k: (f"{n} {k}" if n in dupes else n) for k, n in shown.items()}
+
+    out: list[Change] = []
+    for key in keys_before:
+        sub = f"{path}[{shown[key]}]"
+        if key in by_after:
+            out.extend(_walk(store, period, sub, by_before[key], by_after[key]))
+        else:
+            out.append(Change(store, period, sub, by_before[key], None, "removed"))
+    for key in keys_after:
+        if key not in by_before:
+            out.append(Change(store, period, f"{path}[{shown[key]}]", None, by_after[key], "added"))
+
+    # 只看共有项之间的先后。新增和删除已经各自报过了，把它们算进顺序里，
+    # 每次增删一项都会附带一条没有信息量的「顺序变了」。
+    common_before = [k for k in keys_before if k in by_after]
+    common_after = [k for k in keys_after if k in by_before]
+    if common_before != common_after:
+        out.append(Change(
+            store, period, f"{path} 顺序",
+            "、".join(shown[k] for k in common_before),
+            "、".join(shown[k] for k in common_after),
+        ))
+    return out
+
+
+def _key(item: Any) -> str:
+    """列表项的配对标识。取 id 优先于名字：改中文显示名不该被当成换了一项。"""
+    if not isinstance(item, dict):
+        return ""
+    for name in ("id", "node_id", "metric", "name", "label"):
+        value = item.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 def _label(item: Any) -> str:
     """列表项的人话标识，拼进路径。
 
     没有它，报告里出现的是 `statement[19].value` —— 要人去数模型文件的第 19 行
-    才知道说的是净利润。下标得留着（顺序变了要能看出来），但光有下标读不了。
+    才知道说的是净利润。
     """
     if not isinstance(item, dict):
         return ""
