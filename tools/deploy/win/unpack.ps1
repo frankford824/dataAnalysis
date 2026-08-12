@@ -34,3 +34,16 @@ foreach ($rel in @('VERSION', 'ledger\ledger\api.py', 'ledger\requirements.txt',
 }
 
 Write-Output ("  这一版是 " + (Get-Content (Join-Path $App 'VERSION') -Raw).Trim())
+
+# 给模型目录留指纹。下次部署前 preserve.ps1 拿它比对，能认出「这个文件是有人在
+# 界面上改的」还是「本来就是这一版发出去的样子」。没有这份指纹，两者长得一样。
+$Models   = Join-Path $App 'models'
+$Manifest = Join-Path $Root 'shipped-model.sha256'
+if (Test-Path $Models) {
+  $lines = Get-ChildItem $Models -Recurse -File | ForEach-Object {
+    $rel = $_.FullName.Substring($Models.Length).TrimStart('\')
+    (Get-FileHash $_.FullName -Algorithm SHA256).Hash + '  ' + $rel
+  }
+  Set-Content -Path $Manifest -Value $lines -Encoding UTF8
+  Write-Output ("  给 " + $lines.Count + " 个模型文件留了指纹")
+}

@@ -483,3 +483,23 @@ class TestABadUploadLeavesTheOldConfigUntouched:
                  "product_id": "p1", "person": "张三", "share": "0.04", "total_rate": "0.06"},
             ])
         assert (root / "commission.csv").read_text(encoding="utf-8") == good
+
+    def test_the_file_keeps_its_line_endings(self, tmp_path):
+        """写回不能顺手把整份文件的换行符改掉。
+
+        Windows 上 Python 文本模式会把 \\n 换成 \\r\\n。实测线上就栽在这里：
+        在界面上改一个店铺主体，回写之后整份 stores.yaml 逐行都和仓库不同，
+        真正改的那一行反而淹在四十八行「差异」里。写回保住注释、不重排的功夫，
+        会被这一处全部抵消。
+        """
+        import shutil
+
+        from ledger.model.config import replace_commission
+        src = Path(__file__).resolve().parents[2] / "models" / "cn-ecommerce"
+        root = tmp_path / "model"
+        shutil.copytree(src, root)
+        replace_commission(root, [
+            {"effective_from": "2026-01-01", "store": "taobao_xibishun",
+             "product_id": "p1", "person": "张三", "share": "0.05", "total_rate": "0.05"},
+        ])
+        assert b"\r\n" not in (root / "commission.csv").read_bytes()

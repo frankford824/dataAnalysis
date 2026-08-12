@@ -35,8 +35,9 @@ put_ps1() {
   rm -f "$tmp"
 }
 
-pwsh_() {  # 在远端跑一个已经传上去的脚本
-  ssh_ "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"$ROOT_WIN\\bin\\$1\""
+pwsh_() {  # 在远端跑一个已经传上去的脚本，后面跟脚本自己的参数
+  local script=$1; shift
+  ssh_ "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"$ROOT_WIN\\bin\\$script\" $*"
 }
 
 stage=$(mktemp -d)
@@ -66,10 +67,21 @@ step '建目录'
 ssh_ "powershell -NoProfile -Command \"foreach (\$d in @('$ROOT_WIN','$ROOT_WIN\\app','$ROOT_WIN\\bin','$ROOT_WIN\\home','$ROOT_WIN\\logs','$ROOT_WIN\\secrets')) { New-Item -ItemType Directory -Force -Path \$d | Out-Null }; Write-Output ('  ok: ' + \$d)\""
 
 step '传运维脚本'
-for f in serve.ps1 install.ps1 register.ps1 status.ps1 unpack.ps1 stop.ps1 start.ps1 verify.ps1; do
+for f in serve.ps1 install.ps1 register.ps1 status.ps1 unpack.ps1 preserve.ps1 stop.ps1 start.ps1 verify.ps1; do
   put_ps1 "$REPO/tools/deploy/win/$f" "$ROOT_SCP/bin/$f"
   echo "  bin\\$f"
 done
+
+step '保住服务器上的模型配置'
+# 模型目录跟代码一起走 app\，而部署是整个删掉 app 再解包。可界面上登记店铺、
+# 配主体、接新表、传提成配置，写的都是这个目录——不先看一眼，这些配置会在
+# 下一次部署时一声不响地消失。带 FORCE=1 表示确认可以覆盖。
+if ! pwsh_ preserve.ps1 ${FORCE:+-Force}; then
+  echo
+  echo '  停在这里：服务器上的模型配置和上次部署时不一样了（详情见上）。'
+  echo '  把那些改动同步回仓库，或者确认可以丢弃之后 FORCE=1 重跑。'
+  exit 3
+fi
 
 step '传代码'
 put "$stage/app/payload.tar" "$ROOT_SCP/payload.tar"

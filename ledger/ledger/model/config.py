@@ -415,9 +415,7 @@ def _restore(before: dict[Path, bytes | None]) -> None:
 
 
 def _atomic_text(path: Path, text: str) -> None:
-    tmp = tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}-", suffix=".yaml", delete=False
-    )
+    tmp = _tempfile(path)
     try:
         with tmp:
             tmp.write(text)
@@ -425,6 +423,22 @@ def _atomic_text(path: Path, text: str) -> None:
     except BaseException:
         Path(tmp.name).unlink(missing_ok=True)
         raise
+
+
+def _tempfile(path: Path):
+    """写临时文件，写完改名。中途断电也不会剩下半个文件。
+
+    `newline=""` 是关键的一个字：不给它，Windows 上 Python 会把每个 `\\n` 换成
+    `\\r\\n`。于是在界面上改一个店铺主体，回写时整份 stores.yaml 的换行符全变了——
+    模型照样加载得了，但那份文件从此和仓库里的逐行不同。实测线上就是这样：
+    改了一个字段，比对下来「48 行全改过」，真正改的那一行反而看不出来。
+
+    要求写回不重排、保住注释，却在这里把整份文件的字节改一遍，前面的功夫就白做了。
+    """
+    return tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", newline="", dir=path.parent,
+        prefix=f".{path.stem}-", suffix=".yaml", delete=False,
+    )
 
 
 def _write_all(root: Path, writes: list[tuple[Path, Any]], y: YAML) -> None:
@@ -443,9 +457,7 @@ def _write_all(root: Path, writes: list[tuple[Path, Any]], y: YAML) -> None:
 
 
 def _atomic(path: Path, doc: Any, y: YAML) -> None:
-    tmp = tempfile.NamedTemporaryFile(
-        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}-", suffix=".yaml", delete=False
-    )
+    tmp = _tempfile(path)
     try:
         with tmp:
             y.dump(doc, tmp)
