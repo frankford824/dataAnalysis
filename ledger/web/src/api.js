@@ -57,12 +57,37 @@ export const api = {
       body: JSON.stringify({ note }),
     }),
 
-  upload: (files) => {
-    const form = new FormData()
-    // 文件名要原样带上：引擎靠它认店铺和账期。
-    for (const f of files) form.append('files', f, f.name)
-    return call('/api/upload', { method: 'POST', body: form })
-  },
+  /** 交表。
+   *
+   * 这里用 XHR 而不是 fetch，只为一件事：`upload.onprogress`。传一份两百兆的
+   * 订单明细要几十秒，fetch 给不出已经传了多少，界面就只能转圈——而转圈证明不了
+   * 它还活着。`token` 是这次交表的号，服务端拿它报解析到哪一步了。
+   */
+  upload: (files, { token = '', onSent } = {}) =>
+    new Promise((resolve, reject) => {
+      const form = new FormData()
+      // 文件名要原样带上：引擎靠它认店铺和账期。
+      for (const f of files) form.append('files', f, f.name)
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', `/api/upload${query({ token })}`)
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onSent) onSent(e.loaded, e.total)
+      }
+      xhr.onload = () => {
+        let body = null
+        try {
+          body = xhr.responseText ? JSON.parse(xhr.responseText) : null
+        } catch {
+          body = null
+        }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(body)
+        else reject(new Error(body?.detail || xhr.responseText || `请求失败（${xhr.status}）`))
+      }
+      xhr.onerror = () =>
+        reject(new Error('连不上服务。它可能没在跑，或者这台机器不在内网里。'))
+      xhr.send(form)
+    }),
+  uploadProgress: (token) => call(`/api/upload/progress/${encodeURIComponent(token)}`),
   dropFile: (storeId, name) =>
     call(`/api/stores/${encodeURIComponent(storeId)}/files${query({ name })}`, {
       method: 'DELETE',

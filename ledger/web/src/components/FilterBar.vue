@@ -8,13 +8,19 @@
  * 赶去另一个地方再回来。
  */
 import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
+import { canBack } from '../router'
 import { useApp } from '../store'
 import SearchPanel from './SearchPanel.vue'
 
 const app = useApp()
 const router = useRouter()
+const route = useRoute()
+
+//: 返回要回到刚才那个滚动位置，所以必须走浏览器的后退，不能 push 一个新地址。
+//: push 出去的是一次新的前进，位置记忆对它不生效。
+const backable = computed(() => canBack.value && route.name !== 'board')
 
 const searching = ref(false)
 const term = ref('')
@@ -47,6 +53,15 @@ function submit() {
 
 <template>
   <div class="row wrap" style="gap: var(--s2)">
+    <n-button
+      v-if="backable"
+      size="small"
+      quaternary
+      title="回到上一页，还停在你刚才看的位置"
+      @click="router.back()"
+    >
+      ← 返回
+    </n-button>
     <n-select
       :value="app.platform"
       :options="platformOptions"

@@ -7,9 +7,10 @@
 
 from __future__ import annotations
 
+import itertools
 import os
 from concurrent.futures import ThreadPoolExecutor
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -144,7 +145,12 @@ class RunResult:
 # --------------------------------------------------------------------------- #
 
 
-def ingest(paths: list[str | Path], model: Model, known_stores: list[str] | None = None) -> Ingestion:
+def ingest(
+    paths: list[str | Path],
+    model: Model,
+    known_stores: list[str] | None = None,
+    each: Callable[[int, int], None] | None = None,
+) -> Ingestion:
     """识别 + 解析 + 归一。一个文件里的每张工作表单独处理。
 
     文件之间互不相干，所以并行读。能并行是因为底下两层重活都不占着 Python 解释器：
@@ -158,17 +164,30 @@ def ingest(paths: list[str | Path], model: Model, known_stores: list[str] | None
     线程数压在 4：并行读意味着几个工作簿同时摊在内存里，对账表一份就一个多 G，
     放开了跑内存会先撑不住。真正的瓶颈也不在这儿——超过四个之后 GIL 争用就把
     收益吃掉了。
+
+    `each(读完几份, 一共几份)` 是给界面报进度的。这一段是交表里最慢的一截，几十秒
+    里界面一个数都不动的话，人分不出它是在读表还是已经死了。并行下报的是「读完
+    第几份」而不是「正在读哪一份」——同时有四份在读，说哪一份都是错的。
     """
     result = Ingestion(model=model)
     work = [Path(p) for p in paths]
     candidates = _header_row_candidates(model)
     stores = known_stores or []
+    done = itertools.count(1)
+
+    def one(p: Path) -> list[Ingested]:
+        got = _ingest_file(p, model, stores, candidates)
+        if each:
+            # count() 的自增是原子的（CPython 里由 C 层做完），几个读线程同时报
+            # 也不会数错。
+            each(next(done), len(work))
+        return got
 
     if len(work) > 1:
         with ThreadPoolExecutor(max_workers=min(len(work), _READERS)) as pool:
-            batches = list(pool.map(lambda p: _ingest_file(p, model, stores, candidates), work))
+            batches = list(pool.map(one, work))
     else:
-        batches = [_ingest_file(p, model, stores, candidates) for p in work]
+        batches = [one(p) for p in work]
 
     for batch in batches:
         result.items.extend(batch)

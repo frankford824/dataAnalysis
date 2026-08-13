@@ -1,14 +1,17 @@
 <script setup>
-/* 交表框。窗口任何位置都能拖，这个框是给没想到可以拖的人留的入口。 */
+/* 空空如也的地方摆的那个上传框。
+ *
+ * 只在「这儿本来该有数据但一份都没有」的时候出现。有数据的页面不再摆它：常驻的
+ * 上传入口在顶栏，位置固定，每页都一样；文件拖到窗口任何位置也收。上一版每页都
+ * 塞一个，有的在内容前面有的在后面，同一个动作在三个页面长在三个地方。
+ */
 import { useMessage } from 'naive-ui'
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
 
 import { useApp } from '../store'
 
 const app = useApp()
 const message = useMessage()
-const router = useRouter()
 const picker = ref(null)
 
 async function choose(e) {
@@ -16,17 +19,7 @@ async function choose(e) {
   e.target.value = ''
   if (!files.length) return
   try {
-    const res = await app.upload(files)
-    message.success(res.summary || '收下了')
-    await app.load(true)
-    const last = res.periods?.[res.periods.length - 1]
-    if (last?.store_id) {
-      router.push({
-        name: 'period',
-        params: { id: last.store_id },
-        query: { period: last.period },
-      })
-    }
+    await app.submit(files)
   } catch (err) {
     message.error(`没收下：${err.message}`, { duration: 6000 })
   }

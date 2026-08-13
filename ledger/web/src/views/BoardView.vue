@@ -83,7 +83,8 @@ function label(c) {
   return '进行中'
 }
 
-const tab = ref('here')
+//: 记住上次看的是哪个标签。切走再回来跳回默认，等于把人刚才翻到的地方扔了。
+const tab = app.noted('board.tab', 'here')
 
 /** 平台分组拉平成一张表。分组抬头留着，但不再各占一张卡。 */
 const rows = computed(() =>
@@ -222,8 +223,6 @@ function open(c) {
           </n-tab-pane>
         </n-tabs>
       </div>
-
-      <DropZone style="margin-top: var(--s4)" />
     </template>
   </n-spin>
 </template>

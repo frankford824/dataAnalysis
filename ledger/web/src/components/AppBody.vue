@@ -1,17 +1,16 @@
 <script setup>
 import { useMessage } from 'naive-ui'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 
 import { useApp } from '../store'
 import FilterBar from './FilterBar.vue'
+import IntakeResult from './IntakeResult.vue'
 
 const props = defineProps({ dropped: { type: Array, default: null } })
 const emit = defineEmits(['taken'])
 
 const app = useApp()
 const message = useMessage()
-const router = useRouter()
 const picker = ref(null)
 
 const openCount = computed(
@@ -35,17 +34,9 @@ onUnmounted(() => clearInterval(tick))
 async function take(files) {
   if (!files?.length) return
   try {
-    const res = await app.upload(files)
-    message.success(res.summary || '收下了')
-    await app.load(true)
-    const last = res.periods?.[res.periods.length - 1]
-    if (last?.store_id) {
-      router.push({
-        name: 'period',
-        params: { id: last.store_id },
-        query: { period: last.period },
-      })
-    }
+    // 收完不跳页：人正开着某一页交表，被甩到别处是最讨厌的一种「帮忙」。算出来的
+    // 账期在结果面板里列着，要去点一下就行。
+    await app.submit(files)
   } catch (e) {
     message.error(`没收下：${e.message}`, { duration: 6000 })
   }
@@ -91,13 +82,22 @@ defineExpose({ take })
         提成
       </router-link>
       <div class="grow" />
-      <n-button size="small" block @click="picker.click()">交表</n-button>
-      <input ref="picker" type="file" multiple hidden @change="choose" />
     </nav>
 
     <div class="body">
       <header class="topbar">
         <FilterBar />
+        <!-- 上传只有这一个固定入口，每一页都在同一个地方。上一版侧栏最下角那个
+             「交表」，位置和用词都在让人猜：交给谁、是不是报送、和结账什么关系。 -->
+        <n-button
+          size="small"
+          type="primary"
+          title="选平台导出的表，或者直接把文件拖到窗口里。店铺和账期从文件名认。"
+          @click="picker.click()"
+        >
+          上传表格
+        </n-button>
+        <input ref="picker" type="file" multiple hidden @change="choose" />
       </header>
       <main class="page">
         <router-view />
@@ -107,8 +107,14 @@ defineExpose({ take })
     <div v-if="app.busy" class="busy">
       <span class="spin" />
       <span>{{ app.busy.label }}</span>
+      <!-- 阶段和百分比是这条提示存在的理由：转圈只能证明「还没返回」，证明不了
+           「还在干活」。人分不出这两件事就会去刷新，一刷新这次交表的结果就没了。 -->
+      <span v-if="app.busy.phase" class="dim">{{ app.busy.phase }}</span>
+      <span v-if="app.busy.percent != null" class="num">{{ app.busy.percent }}%</span>
       <span class="num">{{ secs }}s</span>
       <span v-if="secs > 20" class="dim">别刷新</span>
     </div>
+
+    <IntakeResult />
   </div>
 </template>

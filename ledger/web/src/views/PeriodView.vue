@@ -315,8 +315,6 @@ watch(
       <n-empty v-else description="这家店还没有算出来的账期" style="padding: var(--s7) 0">
         <template #extra><DropZone /></template>
       </n-empty>
-
-      <DropZone style="margin-top: var(--s4)" />
     </template>
 
     <n-modal

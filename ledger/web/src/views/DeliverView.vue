@@ -31,7 +31,9 @@ const detail = ref({})
 const loading = ref(false)
 const adding = ref(false)
 const draft = ref({ name: '', platform: '' })
-const picked = ref('')
+//: 左栏选中的那家店记在全局里：切去别的页再回来，还停在刚才那家。每页各记各的
+//: 就是「回来又要重找一遍」，多店铺时这一步每天要重复十几次。
+const picked = app.noted('deliver.store', '')
 
 const shown = computed(() =>
   app.stores.filter(
@@ -145,8 +147,6 @@ function open(id) {
       <n-button size="small" @click="adding = true">登记新店</n-button>
     </div>
 
-    <DropZone style="margin-bottom: var(--s4)" />
-
     <div class="cols list">
       <div class="card" style="margin-top: 0; padding: var(--s3)">
         <template v-for="g in groups" :key="g.platform">
@@ -221,9 +221,7 @@ function open(id) {
             </tbody>
           </n-table>
         </div>
-        <p v-else class="xs muted">
-          还没交过表。把这家店的月度表拖进上面那个框就行。
-        </p>
+        <DropZone v-else />
 
         <div v-if="(detail[here.id]?.periods || []).length" class="panel">
           <h3>算过的账期</h3>

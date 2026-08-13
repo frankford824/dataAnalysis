@@ -17,6 +17,7 @@ from typing import IO, Any, Iterable
 import polars as pl
 
 from . import commission as comm
+from . import progress
 from .engine.runtime import Ingestion, RunResult, Slice, ingest, run
 from .model.schema import Model, Store
 from .view import commission_dict, slice_dict
@@ -69,17 +70,23 @@ def intake(
     model: Model,
     uploads: Iterable[tuple[str, IO[bytes] | Path]],
     by: str = "",
+    report: progress.Reporter = progress.SILENT,
 ) -> Intake:
     """收一批文件，留档，然后把受影响的店重算一遍。
 
     重算的是**整家店**而不是这一批文件：损益要靠订单明细做脊柱，单独拿一张运费表
     是算不出账的。留档的意义就在这里——上周交的订单明细还在，这周补一张运费表就能
     立刻出完整结果。
+
+    `report` 是给界面看的旁白。这件事在服务端要跑十几秒到几分钟，不报的话人只能
+    看着一个转圈猜它死没死。
     """
     out = Intake()
     touched: list[str] = []
+    files = list(uploads)
 
-    for name, src in uploads:
+    for i, (name, src) in enumerate(files, 1):
+        report("留档", i, len(files))
         name = Path(name).name
         if not name:
             continue
@@ -101,12 +108,17 @@ def intake(
             touched.append(store.id)
 
     out.stores = touched
-    for store_id in touched:
-        report = recompute(ws, model, model.store(store_id))
-        out.periods.extend(report.periods)
-        out.unknown_tables.extend(report.unknown_tables)
-        if report.failure:
-            out.failures.append(report.failure)
+    for i, store_id in enumerate(touched, 1):
+        store = model.store(store_id)
+        # 报店名而不是「第 2 家店」：交表的人认得店名，认不得序号。
+        done = recompute(
+            ws, model, store,
+            report=report, note=f"{store.name}（{i}/{len(touched)} 家店）",
+        )
+        out.periods.extend(done.periods)
+        out.unknown_tables.extend(done.unknown_tables)
+        if done.failure:
+            out.failures.append(done.failure)
     return out
 
 
@@ -144,7 +156,13 @@ def _commission(result: RunResult, model: Model, store: Store, period: str) -> d
         }
 
 
-def recompute(ws: Workspace, model: Model, store: Store) -> Recomputed:
+def recompute(
+    ws: Workspace,
+    model: Model,
+    store: Store,
+    report: progress.Reporter = progress.SILENT,
+    note: str = "",
+) -> Recomputed:
     """拿这家店当前生效的全部文件重算，把每个账期的结果存成快照。
 
     已结账的账期不会被覆盖：`Workspace.record` 只追加，展示时仍然给结账那一版。
@@ -156,8 +174,16 @@ def recompute(ws: Workspace, model: Model, store: Store) -> Recomputed:
         out.failure = {"store": store.name, "why": "这家店还没有任何数据"}
         return out
 
-    ing = ingest(files, model, [store.name])
+    where = note or store.name
+    report(f"读表 · {where}", 0, len(files))
+    ing = ingest(
+        files, model, [store.name],
+        each=lambda done, total: report(f"读表 · {where}", done, total),
+    )
     out.unknown_tables = unknown_tables(ing, store)
+    # 这一段说不出份数：挂钩、归类、核算是把全店的行放在一起算的，没有「第几份」
+    # 可报。硬报个 0/9 会让人以为它卡在第零份上。
+    report(f"归类核算 · {where}")
     result = run(ing, store.platform)
 
     if not result.slices:
@@ -171,7 +197,9 @@ def recompute(ws: Workspace, model: Model, store: Store) -> Recomputed:
         return out
 
     shas = [i.ref.sha256 for i in ing.items]
-    for (_s, _p), sl in sorted(result.slices.items(), key=lambda kv: (kv[0][1] or "")):
+    slices = sorted(result.slices.items(), key=lambda kv: (kv[0][1] or ""))
+    for i, ((_s, _p), sl) in enumerate(slices, 1):
+        report(f"存账期 · {where}", i, len(slices))
         payload = slice_dict(sl, store, model)
         payload["commission"] = _commission(result, model, store, sl.period)
         run_id = ws.record(store.id, sl.period, payload, shas, evidence_ready=False)

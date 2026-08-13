@@ -62,7 +62,12 @@
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--n3);
   padding: var(--s3) var(--s5);
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
 }
+/* 筛选条占满，上传按钮永远贴在最右边——每一页的同一个位置。 */
+.topbar > :first-child { flex: 1; min-width: 0; }
 
 /* 内容居中，两侧留白对称。
  *

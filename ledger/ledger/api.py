@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import onboard, ownership, service, view
+from . import onboard, ownership, progress, service, view
 from . import search as search_mod
 from .model import propose
 from .model.config import (
@@ -129,8 +129,18 @@ def bootstrap() -> dict:
 # --------------------------------------------------------------------------- #
 
 
+@app.get("/api/upload/progress/{token}")
+def upload_progress(token: str) -> dict:
+    """这次交表干到哪儿了。
+
+    交表是同步请求，这个接口只是同一件事的旁白。号是客户端自己生成的：服务端发号
+    就得先有一次往返，而进度要从上传的第一个字节就开始报。
+    """
+    return progress.read(token) or {"phase": "", "finished": True, "unknown": True}
+
+
 @app.post("/api/upload")
-def upload(files: Annotated[list[UploadFile], File()]) -> dict:
+def upload(files: Annotated[list[UploadFile], File()], token: str = "") -> dict:
     """收一批表，留档，把受影响的店重算。
 
     重算整家店而不是这一批文件：损益要靠订单明细做脊柱，单独一张运费表算不出账。
@@ -147,7 +157,15 @@ def upload(files: Annotated[list[UploadFile], File()]) -> dict:
     uploads = [(Path(f.filename or "").name, f.file) for f in files if f.filename]
     if not uploads:
         raise HTTPException(400, "没有文件")
-    result = service.intake(ws, model, uploads, by=ANONYMOUS)
+    progress.open(token)
+    try:
+        result = service.intake(
+            ws, model, uploads, by=ANONYMOUS, report=progress.Reporter(token),
+        )
+    except Exception:
+        progress.close(token, "出错了")
+        raise
+    progress.close(token)
     return {
         "summary": result.summary(),
         "kept": [

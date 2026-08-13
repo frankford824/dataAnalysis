@@ -9,9 +9,21 @@
  */
 
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 import { api } from './api'
+
+//: 刷新之后还该记得的东西存这儿。只存「人选到哪儿了」，不存数据本身——数据要
+//: 是也缓存下来，账重算过之后界面会拿旧数骗人。
+const MEMO_KEY = 'ledger.memo'
+
+function recall() {
+  try {
+    return JSON.parse(localStorage.getItem(MEMO_KEY) || '{}')
+  } catch {
+    return {}
+  }
+}
 
 export const useApp = defineStore('app', () => {
   const boot = ref(null)
@@ -19,10 +31,17 @@ export const useApp = defineStore('app', () => {
   const loading = ref(false)
   const error = ref('')
 
+  //: 上次看到哪：筛选条、各页选中的标签、左栏选中的店。刷新和切页都不该丢。
+  const memo = ref(recall())
+  watch(memo, (m) => localStorage.setItem(MEMO_KEY, JSON.stringify(m)), { deep: true })
+
   // 筛选条。空字符串一律表示「不限」。
-  const platform = ref('')
-  const storeId = ref('')
-  const period = ref('')
+  const platform = ref(memo.value.platform || '')
+  const storeId = ref(memo.value.storeId || '')
+  const period = ref(memo.value.period || '')
+  watch([platform, storeId, period], ([p, s, t]) => {
+    memo.value = { ...memo.value, platform: p, storeId: s, period: t }
+  })
 
   //: 上传/重算这类要等的活。文案 + 起始时间，界面照着它显示秒数。
   const busy = ref(null)
@@ -83,13 +102,65 @@ export const useApp = defineStore('app', () => {
     }
   }
 
+  /** 交表。
+   *
+   * 分两段等：文件传上去（能报字节百分比），服务端解析加重算（只能问服务端干到
+   * 哪一步了）。第二段是大头——淘宝一个月的表十几秒起步，不报的话人看着一个转圈
+   * 会以为死了，然后刷新，而刷新之后这次交表的结果就再也看不见了。
+   */
   async function upload(files) {
     const list = [...files]
     if (!list.length) return null
     const what = list.length === 1 ? list[0].name : `${list.length} 个文件`
-    const res = await run(`正在收 ${what}`, () => api.upload(list))
-    intake.value = res
-    invalidate()
+    const token = `u${Date.now()}${Math.random().toString(36).slice(2, 8)}`
+    let poll = null
+    busy.value = { label: `正在收 ${what}`, since: Date.now(), phase: '正在传', percent: 0 }
+    try {
+      const res = await api.upload(list, {
+        token,
+        onSent(loaded, total) {
+          if (!busy.value) return
+          busy.value.percent = Math.round((loaded / total) * 100)
+          // 传完了就交给服务端，这时候才开始问它解析到哪儿。早问只会问到空。
+          if (loaded >= total && !poll) {
+            busy.value.phase = '收到了，正在解析'
+            busy.value.percent = null
+            poll = setInterval(async () => {
+              try {
+                const p = await api.uploadProgress(token)
+                if (busy.value && p?.phase && !p.finished) {
+                  busy.value.phase = p.total > 1 ? `${p.phase} ${p.done}/${p.total}` : p.phase
+                }
+              } catch {
+                // 问不到就不显示，别把一次轮询失败弹成上传失败。
+              }
+            }, 600)
+          }
+        },
+      })
+      intake.value = res
+      invalidate()
+      return res
+    } finally {
+      clearInterval(poll)
+      busy.value = null
+    }
+  }
+
+  //: 交表结果面板开着没有。上一版只弹一句「收下 3 份表」就没了，被拒的文件、
+  //: 认不出的表、算出来的账期全在响应里躺着，界面一个字都不显示。
+  const showIntake = ref(false)
+
+  /** 交表。所有入口都走这里：侧栏按钮、拖到窗口里、页面上的框。
+   *
+   * 不自动跳到最后一家店：人正开着某一页交表，被甩到别处是最讨厌的一种「帮忙」。
+   * 算出来的账期在结果面板里列着，想去点一下就行。
+   */
+  async function submit(files) {
+    const res = await upload(files)
+    if (!res) return null
+    await load(true)
+    showIntake.value = true
     return res
   }
 
@@ -116,10 +187,22 @@ export const useApp = defineStore('app', () => {
     }
   }
 
+  /** 记住页面里那些「上次翻到哪」的小选择：标签页、左栏选中的店。
+   *
+   * 组件自己 ref 的话，切走再回来就回到默认标签——人刚才在看的东西没了，还得
+   * 重新点一遍。存这里就跟着 localStorage 一起活过刷新。
+   */
+  function noted(key, fallback = '') {
+    return computed({
+      get: () => memo.value[key] ?? fallback,
+      set: (v) => (memo.value = { ...memo.value, [key]: v }),
+    })
+  }
+
   return {
     boot, overview, loading, error,
-    platform, storeId, period, busy, intake,
+    platform, storeId, period, busy, intake, memo, showIntake,
     stores, platforms, visibleStores, periods, currentStore,
-    load, invalidate, run, upload, pick,
+    load, invalidate, run, upload, submit, pick, noted,
   }
 })

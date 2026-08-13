@@ -34,7 +34,7 @@ const plan = ref(null)
 const config = ref(null)
 const loading = ref(false)
 const failed = ref('')
-const tab = ref('payout')
+const tab = app.noted('comm.tab', 'payout')
 
 //: 这家店的分法，一行一个人：{person, mode, rate}。
 //: mode='own' 是「只分他名下的商品」，mode='all' 是「每个商品都分一份」。
