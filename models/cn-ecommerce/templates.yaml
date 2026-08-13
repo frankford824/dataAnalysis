@@ -273,13 +273,24 @@
     - {role: original_order_id, columns: [原始线上订单号]}
     - {role: tracking_no, columns: [快递单号], required: false}
     - {role: order_type, columns: [订单类型], required: false}
+    - {role: order_state, columns: [状态], required: false}
     - {role: store_name, columns: [店铺名称], required: false}
     - {role: sku, columns: [商品编码]}
     - {role: quantity, columns: [数量]}
     - {role: unit_cost, columns: [成本价]}
     - {role: total_cost, columns: [总成本]}
     - {role: order_time, columns: [下单时间]}
-  note: 列名必须是「线上子订单编号」，写成「线上子订单号」会让覆盖率归零。
+  note: >
+    列名必须是「线上子订单编号」，写成「线上子订单号」会让覆盖率归零。
+
+    这份表可能交不止一份。淘宝店有 388 行拿不到成本价：385 行是空的（补差价商品，
+    以及被合并、被拆分之后成本落到另一张单子上的行），另外 3 行把商品编码填进了
+    成本价那一格（HZS00888、HSC25016、HSC25021），归一化时当空处理并留痕。
+    这些订单的成本要靠再导一份聚水潭补上——业务那边把它叫 K 表，结构和这张完全
+    一样，所以走同一个模板。两份一起进账不会重复计算，去重键见 sources.yaml。
+
+    总成本那一列不参与算账。表头批注写着「公式：总成本=成本价*数量」，指标就照这个
+    式子自己乘，实测 70,954 行两者一分不差。这样 K 表就算没带总成本列也能算。
 
 - id: promotion_taobao_v1
   source: promotion

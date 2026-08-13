@@ -300,6 +300,11 @@ def _dedupe_across_files(result: Ingestion, model: Model) -> None:
 
     先到的文件保留，后到的只留新增行。哪个文件先到不影响结果，因为重复行本来就一样。
     去掉多少行要说出来——这是证据，不是可以悄悄做掉的清洗。
+
+    只比文件之间，不动一份文件自己内部的重复行。聚水潭成本表里有 11 组共 25 行
+    完全相同（同一单同一商品分几批出库，看起来就是一模一样），那是真实发生了两次
+    的出库，不是重复上报。要是连文件内部也去重，同一份成本表的金额会因为「今天多传
+    了一份补充导出」而变小——上传一个新文件改掉了旧文件的数，这种事不该发生。
     """
     for source in model.sources:
         if not source.dedupe_key:
@@ -318,9 +323,10 @@ def _dedupe_across_files(result: Ingestion, model: Model) -> None:
         for item in items:
             frame = item.frame
             before = frame.height
-            frame = frame.unique(subset=keys, keep="first", maintain_order=True)
             if seen is not None:
-                frame = frame.join(seen, on=keys, how="anti")
+                # nulls_equal：键里带空格子的行也要能认出是同一行。补充导出针对的
+                # 恰恰就是「成本价是空的」那批，不认空值等于对它们完全不去重。
+                frame = frame.join(seen, on=keys, how="anti", nulls_equal=True)
             kept = frame.height
             if kept < before:
                 item.notes.append(

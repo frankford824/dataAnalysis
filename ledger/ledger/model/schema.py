@@ -183,6 +183,13 @@ class Predicate(Base):
     field: str
     op: Literal["eq", "ne", "in", "not_in", "contains", "not_contains", "gt", "lt", "notnull"]
     value: str | float | tuple[str, ...] | None = None
+    #: 这个字段是空的时候，算不算满足条件。
+    #:
+    #: 默认不算：「有运单号」「订单类型是补发」这类条件是在挑出一批行，空值当然不该
+    #: 被挑中。但排除型的条件反过来——「状态不是已取消」遇到状态为空的行，按默认
+    #: 会把这行排除掉，也就是**因为不知道状态而丢掉一笔成本**。少算的钱不报错，
+    #: 只是利润凭空高一截。所以排除型条件要显式写上「空值也留下」。
+    include_null: bool = False
 
     @model_validator(mode="after")
     def _check(self) -> Predicate:

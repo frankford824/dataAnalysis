@@ -135,6 +135,20 @@ class TestAmountsParseTheSameBothWays:
         fast = frame.select(_number_expr("a", frame.schema["a"]).alias("n")).get_column("n")
         assert fast.to_list() == [1.5, -2.0, None]
 
+    @pytest.mark.parametrize(
+        "written",
+        ["HSC25016", "HZS00888", "887836316460件", "2026-05-22", "已发货", "3-5", "1.2.3"],
+    )
+    def test_codes_in_a_money_column_are_not_money(self, written):
+        """成本价那列里混进商品编码，要留空，不能抠出里面的数字。
+
+        淘宝聚水潭导出里真有三行是这样的。抠数字的写法会把 `HSC25016` 算成两万五
+        的成本——一行凭空多出的钱比整张表一天的成本还多，而且不报错。
+        """
+        assert to_number(written) is None
+        frame = pl.DataFrame({"a": [written]}, schema={"a": pl.Utf8})
+        assert frame.select(_number_expr("a", pl.Utf8).alias("n")).get_column("n")[0] is None
+
 
 # --------------------------------------------------------------------------- #
 # 单元格清洗

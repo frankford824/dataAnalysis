@@ -146,7 +146,14 @@ def _empty_frame(template: Template) -> pl.DataFrame:
 # 金额
 # --------------------------------------------------------------------------- #
 
-_NUM_KEEP = re.compile(r"[^\d.\-+eE]")
+#: 数字外面允许出现的装饰。只认这几种，别的字符一律说明这格不是数。
+#:
+#: 早先的写法是反过来的——把非数字字符全删掉，剩下什么算什么。那样 `HSC25016`
+#: 会变成 25016：淘宝聚水潭导出里确实有三行把商品编码填进了成本价列，一行凭空
+#: 造出两万五的成本，还不报错。宁可解不出来留空，也不要造一个假数。
+_NUM_DECOR = re.compile(r"[\s,，、¥￥$€£]|元|人民币|RMB|CNY", re.I)
+#: 去掉装饰之后必须整个长成一个数，多一个字母都不认。
+_NUM_BODY = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$")
 _BRACKET = re.compile(r"^[(（]\s*(.+?)\s*[)）]$")
 #: 数值型角色的判定：模板显式声明的金额与数量角色。
 _NUMERIC_HINT = re.compile(
@@ -159,6 +166,9 @@ def to_number(value: object) -> float | None:
 
     实测遇到的写法：`1,234.56`、`¥1,234.56`、`1234.56元`、`(123.45)`、`（123.45）`、
     `12%`、`无退款申请`（混合类型字段）、`-`（空值占位）。
+
+    解不出来给空，不给「尽力而为」的数。金额列里混进一串编码是真实发生的事，
+    从里面抠几位数字出来当钱算，账上不会有任何异常表现。
     """
     if value is None:
         return None
@@ -177,8 +187,10 @@ def to_number(value: object) -> float | None:
         negative, s = True, m.group(1)
 
     percent = s.endswith("%")
-    cleaned = _NUM_KEEP.sub("", s)
-    if not cleaned or cleaned in ("-", "+", ".", "-.", "e", "E"):
+    if percent:
+        s = s[:-1]
+    cleaned = _NUM_DECOR.sub("", s)
+    if not _NUM_BODY.match(cleaned):
         return None
     try:
         num = float(Decimal(cleaned))
@@ -252,6 +264,13 @@ def _normalize_amounts(frame: pl.DataFrame, template: Template, notes: list[str]
             slow = raw.filter(need).map_elements(to_number, return_dtype=pl.Float64)
             where = pl.arange(0, frame.height, eager=True).filter(need)
             frame = frame.with_columns(frame.get_column(r).scatter(where, slow).alias(r))
+
+            # 有字、解不出来、又不是空——这格填错了。留空往下走，但要说一声：
+            # 一列钱里混进编码或说明文字，不说的话谁也不会发现少算了这几行。
+            stuck = need & frame.get_column(r).is_null()
+            if n := int(stuck.sum()):
+                sample = raw.filter(stuck).cast(pl.Utf8).head(3).to_list()
+                notes.append(f"{r} 有 {n} 格不是数，当空处理：{'、'.join(sample)}")
 
     # 声明了 negate 的角色在这里取反，把各来源不一致的符号约定拉齐，
     # 下游算钱时就不用再记「这张表的支出是正是负」。

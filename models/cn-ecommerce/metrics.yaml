@@ -112,9 +112,17 @@
 - id: goods_cost
   name: 商品成本
   source: order_cost
-  value: {op: sum, of: [total_cost]}
+  # 成本价×数量，不是直接读「总成本」那一列。两份平台规则表（淘宝、京东）写的都是
+  # 「成本价*数量算出总金额」，而聚水潭导出里那列总成本本来就是这么来的——实测
+  # 70,954 行两者一分不差。自己乘一遍的好处是补充导出的那份（业务叫 K 表）
+  # 就算没带总成本列也能算，少一个「表导得对不对」的前提。
+  value: {op: sum_product, of: [unit_cost, quantity]}
   where:
     - {field: order_type, op: not_in, value: [补发订单]}
+    # 已取消的单子没有成本。当前三家店的导出里一行都没有，但两份规则表都写了这一条，
+    # 写进来是为了哪天真出现时不用等人发现。空状态要留下：不知道状态不等于已取消，
+    # 因为不知道就丢掉一笔成本，账上只会表现为利润高了一点。
+    - {field: order_state, op: ne, value: 已取消, include_null: true}
   sign: negate
   time_basis: order_date
   link: {key: sub_order_id, to: order.sub_order_id, grain: order}
@@ -139,7 +147,10 @@
       # 聚水潭成本里」，也就是它的商品成本口径本来就含补发。淘宝把补发单独列一行，
       # 所以缺省要排除，否则两边都算会重复。这个店的 132 行补发订单成本 501.59 元，
       # 沿用淘宝的排除就会全部漏掉。
-      where: []
+      #
+      # 补发那条不要，已取消那条要留着——清空整个 where 会把它一起清掉。
+      where:
+        - {field: order_state, op: ne, value: 已取消, include_null: true}
 
 - id: dropship_cost
   name: 代发成本
@@ -161,9 +172,11 @@
   name: 补发成本
   occasional: true
   source: order_cost
-  value: {op: sum, of: [total_cost]}
+  # 和商品成本同源同算法，见那一条的说明。
+  value: {op: sum_product, of: [unit_cost, quantity]}
   where:
     - {field: order_type, op: in, value: [补发订单]}
+    - {field: order_state, op: ne, value: 已取消, include_null: true}
   sign: negate
   time_basis: order_date
   link: {key: original_order_id, to: order.order_id, grain: order}

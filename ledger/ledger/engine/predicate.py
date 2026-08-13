@@ -22,11 +22,12 @@ class PredicateError(Exception):
 def compile_where(where: tuple[Predicate, ...], frame: pl.DataFrame) -> pl.Expr:
     """把一串条件编成一个布尔表达式。全部满足才为真。
 
-    空值一律视为不满足：缺数据不等于符合条件。
+    空值默认视为不满足：缺数据不等于符合条件。排除型的条件要反过来，见
+    `Predicate.include_null`——「状态不是已取消」不该因为状态是空的就把这笔成本丢掉。
     """
     out = pl.lit(True)
     for p in where:
-        out = out & _one(p, frame).fill_null(False)
+        out = out & _one(p, frame).fill_null(p.include_null)
     return out
 
 
