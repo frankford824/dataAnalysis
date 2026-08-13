@@ -44,10 +44,23 @@ trap 'rm -rf "$stage"' EXIT
 
 step '打包代码与模型'
 mkdir -p "$stage/app"
+# 界面带的是构建产物（ledger/ledger/static），不是 Vue 源码，服务器上不需要 node。
+# node_modules 有 162 MB，比整个包大一个量级，传过去也没有任何东西会读它。
 tar -C "$REPO" -cf "$stage/app/payload.tar" \
   --exclude='.venv' --exclude='__pycache__' --exclude='.pytest_cache' \
-  --exclude='*.pyc' --exclude='.git' \
+  --exclude='*.pyc' --exclude='.git' --exclude='node_modules' \
   ledger models
+# 列表落一次盘再查。`tar | grep -q` 在 pipefail 下是个陷阱：grep 命中就提前退出，
+# tar 吃到 SIGPIPE 返回非零，于是「找到了」被判成「失败」。
+tar -tf "$stage/app/payload.tar" > "$stage/listing.txt"
+if grep -q 'ledger/ledger/static/assets/' "$stage/listing.txt"; then
+  echo "  界面产物在包里"
+else
+  # 界面是构建出来的，源码改了不重新构建，产物就还是上一版。部署一份跑着旧界面的
+  # 新后端，表现是接口全对、页面上什么都没变——这种问题很难往「忘了构建」上想。
+  echo '  界面产物不在包里。先在 ledger/web 下跑一次 pnpm build。' >&2
+  exit 1
+fi
 # 盖版本印。线上没有 git，不带这个文件过去，每笔账的运行记录都只能写「引擎 unknown」，
 # 「回到哪一版」就永久无解。内容是打包这一刻本机 git 说的实话，脏就带 -dirty。
 mkdir -p "$stage/stamp"
@@ -56,8 +69,9 @@ mkdir -p "$stage/stamp"
   > "$stage/stamp/VERSION"
 tar -C "$stage/stamp" -rf "$stage/app/payload.tar" VERSION
 echo "  版本印 $(cat "$stage/stamp/VERSION")"
-echo "  $(du -h "$stage/app/payload.tar" | cut -f1)  $(tar -tf "$stage/app/payload.tar" | wc -l) 个条目"
-if tar -tf "$stage/app/payload.tar" | LC_ALL=C grep -qP '[^\x00-\x7F]'; then
+tar -tf "$stage/app/payload.tar" > "$stage/listing.txt"
+echo "  $(du -h "$stage/app/payload.tar" | cut -f1)  $(wc -l < "$stage/listing.txt") 个条目"
+if LC_ALL=C grep -qP '[^\x00-\x7F]' "$stage/listing.txt"; then
   echo '  警告：包里有非 ASCII 文件名，Windows 上解包可能出问题'
 fi
 
