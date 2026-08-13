@@ -189,54 +189,86 @@ class TestOverridingWhoOwnsAProduct:
         row = next(r for r in got["preview"] if r["product_id"] == "P1")
         assert row["note"] == "人工指定"
 
-    def test_a_dash_hands_the_product_back_to_the_fallback(self, client) -> None:
-        got = _plan(client, rates={"汪学成": 0.03}, owners={"P1": "-"},
-                    fallbacks={"张三": 0.02})
+    def test_a_dash_leaves_the_operator_slot_empty(self, client) -> None:
+        """指成「没人管」的商品不单独出行，跟着店铺那一组走。"""
+        got = _plan(client, rates={"汪学成": 0.03}, owners={"P1": "-"})
         assert all(r["product_id"] != "P1" for r in got["preview"])
-        assert got["coverage"]["by_store"] == 3
+        assert got["coverage"]["nobody"] == 3
 
 
-class TestSeveralPeopleSplittingTheStore:
-    """淘宝那家店现行配置就是两个人分掉店铺的 5 个点。
+class TestSplittingOneRateAmongSeveralPeople:
+    """一个商品的总提成率是定死的，再分给几个人——淘宝那家店就是运营 3.5、主管 1.5。
 
-    只支持一个兜底人的话，界面把现状显示成一个人，人随手一存另一个人就没了——
-    而少发的那一个人要到发工资那天才会发现。
+    分法只有两种角色：运营（谁管这个商品谁拿）和固定分成（每个商品都分一份）。
+    只支持「兜底一个人」的话，这种分法根本表达不出来，界面把现状显示成一个人，
+    人随手一存主管那 1.5 个点就没了——而少发的那个人要到发工资那天才会发现。
     """
 
-    def test_each_one_gets_a_store_row(self, client) -> None:
-        got = _plan(client, fallbacks={"汪学成": 0.035, "李秋雨": 0.015})
-        assert {(r["person"], r["share"]) for r in got["preview"]} == {
+    TAOBAO = {"rates": {"汪学成": 0.035}, "fixed": {"李秋雨": 0.015},
+              "fallback_owner": "汪学成"}
+
+    def test_the_store_row_is_the_two_of_them(self, client) -> None:
+        got = _plan(client, **self.TAOBAO)
+        store_rows = [r for r in got["preview"] if not r["product_id"]]
+        assert {(r["person"], r["share"]) for r in store_rows} == {
             ("汪学成", "0.035"), ("李秋雨", "0.015")}
-
-    def test_a_product_owned_at_the_same_rate_is_not_split_off(self, client) -> None:
-        """负责人的点数和全店分法里那一格一样，这个商品就不用单独出行。
-
-        淘宝那家店 627 个商品都是这种情况。不压掉的话，写出去的是 627 行「只给
-        运营 3.5」——主管那 1.5 个点在这些商品上被抹掉了，而配置看着还是对的。
-        """
-        got = _plan(client, rates={"汪学成": 0.035},
-                    fallbacks={"汪学成": 0.035, "李秋雨": 0.015})
-        assert got["coverage"]["by_product"] == 0
-        assert {r["product_id"] for r in got["preview"]} == {""}
-
-    def test_changing_one_product_keeps_the_others_share(self, client) -> None:
-        """给某个商品换个人，只换运营那一格，主管那一格照旧。"""
-        got = _plan(client, rates={"汪学成": 0.02},
-                    fallbacks={"汪学成": 0.035, "李秋雨": 0.015})
-        rows = [r for r in got["preview"] if r["product_id"] == "P1"]
-        assert {(r["person"], r["share"]) for r in rows} == {
-            ("汪学成", "0.02"), ("李秋雨", "0.015")}
-        assert {r["total_rate"] for r in rows} == {"0.035"}
 
     def test_the_group_total_is_what_they_add_up_to(self, client) -> None:
         """同组每条写同一个总提成率，加载时校验组内相加等于它。写各自的点数会加载失败。"""
-        got = _plan(client, fallbacks={"汪学成": 0.035, "李秋雨": 0.015})
-        assert {r["total_rate"] for r in got["preview"]} == {"0.05"}
+        got = _plan(client, **self.TAOBAO)
+        store_rows = [r for r in got["preview"] if not r["product_id"]]
+        assert {r["total_rate"] for r in store_rows} == {"0.05"}
+
+    def test_products_that_follow_the_default_are_not_split_off(self, client) -> None:
+        """运营和点数都跟店铺那份一致的商品不单独出行。
+
+        淘宝那家店 627 个商品都是这种情况。不压掉的话，写出去的是 627 行——
+        而且一旦漏写了主管那一份，她在这些商品上的 1.5 个点就被抹掉了，
+        配置看着还是对的。
+        """
+        got = _plan(client, **self.TAOBAO)
+        assert got["coverage"]["by_store"] == 3
+        assert all(r["product_id"] not in ("P1", "P2", "P9") for r in got["preview"])
+
+    def test_a_product_nobody_owns_goes_to_the_fallback_operator(self, client) -> None:
+        """归属里查不到的商品落到兜底运营身上——第四步说的就是这件事。
+
+        不这么做的话，那些商品只发固定分成，运营那一格凭空少掉；淘宝那家店
+        95 个长尾商品会各写一行「只给主管 1.5」，而人以为它们跟着店铺那一组走。
+        """
+        got = _plan(client, **self.TAOBAO)
+        assert all(r["product_id"] != "P9" for r in got["preview"])
+
+    def test_a_product_whose_owner_has_no_rate_still_needs_its_own_rows(self, client) -> None:
+        """运营没定点数的商品必须单独写，不能让它落到店铺那一组。
+
+        落过去的话，这个商品的 3.5 个点会发给店铺默认那个运营——一个不管这个
+        商品的人。这是真会多发钱的一种错。
+        """
+        got = _plan(client, **self.TAOBAO)
+        rows = [r for r in got["preview"] if r["product_id"] == "P3"]
+        assert [(r["person"], r["share"]) for r in rows] == [("李秋雨", "0.015")]
+
+    def test_handing_one_product_to_someone_else_keeps_the_fixed_share(self, client) -> None:
+        """把某个商品交给别人，换的是运营那一格，固定分成那一格照旧。"""
+        got = _plan(client, **self.TAOBAO | {"rates": {"汪学成": 0.035, "李四": 0.02},
+                                             "owners": {"P1": "李四"}})
+        rows = [r for r in got["preview"] if r["product_id"] == "P1"]
+        assert {(r["person"], r["share"]) for r in rows} == {
+            ("李四", "0.02"), ("李秋雨", "0.015")}
+        assert {r["total_rate"] for r in rows} == {"0.035"}
+
+    def test_a_product_with_no_owner_still_pays_the_fixed_share(self, client) -> None:
+        """运营那一格空着，固定分成照发——总提成率就少了运营那一块。"""
+        got = _plan(client, **self.TAOBAO | {"owners": {"P1": "-"}})
+        rows = [r for r in got["preview"] if r["product_id"] == "P1"]
+        assert [(r["person"], r["share"], r["total_rate"]) for r in rows] == [
+            ("李秋雨", "0.015", "0.015")]
 
     def test_it_survives_a_round_trip_through_the_config(self, client, model, monkeypatch) -> None:
         monkeypatch.setattr(api.service, "recompute",
                             lambda *a, **k: type("R", (), {"periods": []})())
-        _plan(client, fallbacks={"汪学成": 0.035, "李秋雨": 0.015}, apply=True)
+        _plan(client, **self.TAOBAO, apply=True)
         rules = client.get(f"/api/commission/config?store_id={STORE}").json()["rules"]
         store_level = [r for r in rules if not r["product_id"]]
         assert sorted(r["share"] for r in store_level) == [0.015, 0.035]

@@ -103,6 +103,8 @@ a:hover { text-decoration: underline; }
 /* 缺数据。灰破折号，和「算出来是 0」区分开。 */
 .na { color: var(--n5); font-family: var(--num); }
 .neg { color: var(--bad); }
+/* 还没做完的事。比灰色显眼，比红色轻——它不是错，是缺一步。 */
+.warn { color: var(--warn); }
 .stack { display: flex; flex-direction: column; gap: var(--s2); }
 .row { display: flex; align-items: center; gap: var(--s3); }
 .spread { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); }

@@ -5,9 +5,14 @@
  * 上一版把它们竖着摊成一页，人打开先看到发放金额，滚到底才看到配置，中间还夹着
  * 一张预览表——「我现在该干嘛」这个问题一直没有答案。
  *
- * 配置这件事本身的顺序是固定的四步：谁拿几个点 → 哪些商品归谁 → 剩下的归谁 →
- * 看展开结果对不对 → 落库。系统知道的比人多（这个月卖过哪些商品、每个赚了多少、
- * 历史归属里它归谁管），所以前三步都预填好，人只要改。
+ * 配置按的是「一个商品的总提成率定死，再分给几个人」这个口径，所以分法只有
+ * 两种角色：运营（谁管这个商品谁拿那一格）和固定分成（主管助理那类，每个商品
+ * 都分一份）。两者相加就是这家店的总提成率，页面上一直写着它是多少——加一个人
+ * 却看不出总数变成几个点，是上一版最要命的地方。
+ *
+ * 顺序：定运营的点数 → 定谁管哪些商品 → 定固定分成 → 看展开结果 → 落库。
+ * 系统知道的比人多（这个月卖过哪些商品、每个赚了多少、历史归属里它归谁管），
+ * 所以每一步都预填好，人只要改。
  *
  * 猜测永远只是猜测，它不进计算。进计算的是提成配置本身，也就是第三个标签里
  * 那张表，每一行人都能看见。
@@ -31,16 +36,21 @@ const loading = ref(false)
 const failed = ref('')
 const tab = ref('payout')
 
-//: 「谁拿几个点」。界面上填 3.5，这里存 3.5，发给后端前除以 100——
+//: 运营各自几个点。界面上填 3.5，这里存 3.5，发给后端前除以 100——
 //: 把百分号翻译成小数这件事放在离人最近的地方。
 const rates = ref({})
 const extra = ref([])
 const owners = ref({})
-//: 店铺兜底可以是几个人分。淘宝那家店现在就是两个人分掉 5 个点。
-const fallbacks = ref([])
+//: 每个商品都分一份的人：主管、助理那类，不看商品归谁。
+const fixed = ref([])
+//: 没有归属的商品，运营那一格归谁。
+const fallbackOwner = ref('')
 const preview = ref(null)
 const showPreview = ref(false)
 const hunt = ref('')
+const onlyOwner = ref(null)
+const bulk = ref(null)
+const step = ref('who')
 
 // 配置只认筛选条里明确选的那家店。默认落到第一家的话，页面上没有任何地方写着
 // 「你正在配的是哪家」，而配错店这件事要等到发钱那天才看得出来。
@@ -82,27 +92,39 @@ function seed() {
     since[r.person] = r.effective_from
     seen[r.person] = +(Number(r.share) * 100).toFixed(3)
   }
+
+  // 店铺那一组（不带商品号的规则）是现在的默认分法。把它拆回两种角色：在商品
+  // 归属里管着东西的那个是运营，其余的是固定分成。淘宝那两条正是这样——汪学成
+  // 管着 627 个商品，李秋雨一个也不管，她那 1.5 个点是每个商品都分的。
+  const owns = new Set()
   for (const s of plan.value?.stores || []) {
-    for (const o of s.owners || []) {
-      if (o.person && !(o.person in seen)) seen[o.person] = null
+    for (const o of s.owners || []) if (o.person) owns.add(o.person)
+  }
+  const day = Object.values(since).sort().pop() || ''
+  const storeRows = (config.value?.rules || []).filter(
+    (r) =>
+      (!app.storeId || r.store === app.storeId) &&
+      !r.product_id &&
+      r.person &&
+      (!day || r.effective_from === day),
+  )
+
+  fixed.value = []
+  fallbackOwner.value = ''
+  for (const r of storeRows) {
+    const rate = +(Number(r.share) * 100).toFixed(3)
+    if (owns.has(r.person) && !fallbackOwner.value) {
+      fallbackOwner.value = r.person
+      seen[r.person] = rate
+    } else {
+      fixed.value.push({ person: r.person, rate })
     }
   }
+
+  for (const person of owns) if (!(person in seen)) seen[person] = null
   rates.value = seen
   extra.value = []
   owners.value = {}
-
-  // 店铺兜底就是现行规则里不带商品的那几条。把它读出来，人打开看到的是现状，
-  // 而不是一张空表——空表会让人以为现在没有兜底，随手一存就把它抹了。
-  const day = Object.values(since).sort().pop() || ''
-  fallbacks.value = (config.value?.rules || [])
-    .filter(
-      (r) =>
-        (!app.storeId || r.store === app.storeId) &&
-        !r.product_id &&
-        r.person &&
-        (!day || r.effective_from === day),
-    )
-    .map((r) => ({ person: r.person, rate: +(Number(r.share) * 100).toFixed(3) }))
 }
 
 watch(() => [app.period, app.storeId], load, { immediate: true })
@@ -125,13 +147,34 @@ const people = computed(() => {
   return [...names].filter(Boolean).map((n) => ({ label: n, value: n }))
 })
 
-const products = computed(() => {
-  const all = (plan.value?.products || []).filter((p) => p.store_id === storeId.value)
+const products = computed(() =>
+  (plan.value?.products || []).filter((p) => p.store_id === storeId.value),
+)
+
+/** 这个商品现在归谁——人改过就是改后的，没改过就是系统猜的。 */
+function ownerOf(p) {
+  const set = owners.value[p.product_id]
+  if (set === '-') return ''
+  return set || p.suggest_person || ''
+}
+
+const ownerFilters = computed(() => {
+  const by = new Map()
+  for (const p of products.value) {
+    const who = ownerOf(p) || '(没人管)'
+    by.set(who, (by.get(who) || 0) + 1)
+  }
+  return [...by].map(([who, n]) => ({ label: `${who} · ${n} 个`, value: who }))
+})
+
+/** 搜索加「按现在归谁」筛。七百个商品逐个点没人做得完，得能一批一批指。 */
+const shownProducts = computed(() => {
   const q = hunt.value.trim()
-  if (!q) return all
-  return all.filter(
-    (p) => (p.product_name || '').includes(q) || (p.product_id || '').includes(q),
-  )
+  return products.value.filter((p) => {
+    if (onlyOwner.value && (ownerOf(p) || '(没人管)') !== onlyOwner.value) return false
+    if (!q) return true
+    return (p.product_name || '').includes(q) || (p.product_id || '').includes(q)
+  })
 })
 
 // 只按筛选条里明确选的店过滤。配置那一步没选店会默认落到第一家，但「现在配的是
@@ -162,16 +205,41 @@ const stale = computed(() => {
 
 const changed = computed(() => Object.keys(owners.value).length)
 
-const fallbackTotal = computed(() =>
-  +fallbacks.value.reduce((a, f) => a + (Number(f.rate) || 0), 0).toFixed(3),
+/** 固定分成合计。每个商品都要分掉这么多，跟归谁管没关系。 */
+const fixedTotal = computed(() =>
+  +fixed.value.reduce((a, f) => a + (f.person ? Number(f.rate) || 0 : 0), 0).toFixed(3),
 )
 
-const fallbackLabel = computed(() => {
-  const live = fallbacks.value.filter((f) => f.person && f.rate)
-  if (!live.length) return '不给任何人'
+/** 这个人管的商品，总提成率是几个点。人真正要确认的就是这一列。 */
+function totalFor(person) {
+  return +((Number(rates.value[person]) || 0) + fixedTotal.value).toFixed(3)
+}
+
+const fixedLabel = computed(() => {
+  const live = fixed.value.filter((f) => f.person && f.rate)
+  if (!live.length) return '没有'
   if (live.length === 1) return `${live[0].person} ${live[0].rate}%`
-  return `${live.length} 人分 ${fallbackTotal.value}%`
+  return `${live.length} 人共 ${fixedTotal.value}%`
 })
+
+const ownerLabel = computed(() =>
+  fallbackOwner.value
+    ? `${fallbackOwner.value} ${rates.value[fallbackOwner.value] || 0}%`
+    : '运营那一格空着',
+)
+
+/** 被指到商品上、却没定点数的人。不说出来的话，他名下的商品一分钱都不发。 */
+const unpaid = computed(() => {
+  const used = new Set(Object.values(owners.value).filter((w) => w && w !== '-'))
+  for (const o of staff.value) if (o.person && o.products) used.add(o.person)
+  if (fallbackOwner.value) used.add(fallbackOwner.value)
+  return [...used].filter((w) => !rates.value[w])
+})
+
+/** 大多数商品的总提成率：兜底运营那一格 + 固定分成。页头一直挂着它。 */
+const defaultTotal = computed(() =>
+  fallbackOwner.value ? totalFor(fallbackOwner.value) : fixedTotal.value,
+)
 
 const storeName = computed(() =>
   Object.fromEntries((config.value?.stores || []).map((s) => [s.id, s.name])),
@@ -179,19 +247,50 @@ const storeName = computed(() =>
 
 const newcomer = ref('')
 
+/** 把一个名字登记进这一页，之后所有下拉里都有他。
+ *
+ * 任何一个选人的地方都能直接打名字新建，但新建出来的名字如果不落进费率表，
+ * 他就是个没有点数的人——指给他的商品最后一分钱都不发，而页面上看着是配好的。
+ * 所以新建走这里，一律先占一个空点数的位置，第一步那张表会把它显示成待填。
+ */
+function register(who) {
+  const name = (who || '').trim()
+  if (!name || name === '-') return name
+  if (!(name in rates.value)) rates.value[name] = null
+  if (!extra.value.includes(name)) extra.value.push(name)
+  return name
+}
+
 function addPerson() {
-  const who = newcomer.value.trim()
+  const who = register(newcomer.value)
   if (!who) return
-  if (!(who in rates.value)) rates.value[who] = null
-  if (!extra.value.includes(who)) extra.value.push(who)
   newcomer.value = ''
-  message.success(`${who} 加进来了。给他一个点数，再到第二步把商品指给他。`)
+  // 加完人光弹一句提示没用——人还得自己找到第二步在哪。直接把第二步打开，
+  // 他要做的下一件事就摆在眼前。
+  step.value = 'what'
+  message.success(`${who} 加进来了。给他一个点数，再在下面把商品指给他。`)
 }
 
 /** 商品归属改了或者改回默认。改回默认就把这条覆盖删掉，别留一条和建议一样的。 */
 function setOwner(productId, who) {
   if (who === null || who === undefined || who === '') delete owners.value[productId]
-  else owners.value[productId] = who
+  else owners.value[productId] = register(who)
+}
+
+/** 把筛出来的这一批一起指给某个人。逐个点七百次这件事没人会做。 */
+function assignAll() {
+  const who = register(bulk.value)
+  if (!who) return
+  const hit = shownProducts.value
+  for (const p of hit) owners.value[p.product_id] = who
+  message.success(`${hit.length} 个商品指给了 ${who}`)
+  bulk.value = null
+  if (rates.value[who] == null) step.value = 'who'
+}
+
+/** 第三步的固定分成、第四步的兜底运营，选到新名字也一样要登记。 */
+function pickPerson(target, key, who) {
+  target[key] = register(who) || ''
 }
 
 function payload() {
@@ -199,16 +298,17 @@ function payload() {
   for (const [person, v] of Object.entries(rates.value)) {
     if (v) out[person] = Number(v) / 100
   }
-  const rest = {}
-  for (const f of fallbacks.value) {
-    if (f.person && f.rate) rest[f.person] = Number(f.rate) / 100
+  const share = {}
+  for (const f of fixed.value) {
+    if (f.person && f.rate) share[f.person] = Number(f.rate) / 100
   }
   return {
     store_id: storeId.value,
     period: period.value,
     rates: out,
     owners: owners.value,
-    fallbacks: rest,
+    fixed: share,
+    fallback_owner: fallbackOwner.value,
   }
 }
 
@@ -352,13 +452,21 @@ function open(id) {
             </n-alert>
 
             <template v-else>
-              <div class="spread" style="margin-bottom: var(--s3)">
+              <div class="spread wrap" style="margin-bottom: var(--s3)">
                 <div class="small muted">
                   {{ app.currentStore?.name }} ·
                   这个月卖过 {{ count(products.length) }} 个商品 ·
                   生效日 {{ period }}-01
                 </div>
                 <div class="row">
+                  <span class="small">
+                    默认总提成率
+                    <span class="num strong">{{ defaultTotal }}%</span>
+                    <span class="xs muted">
+                      （{{ ownerLabel }}
+                      <template v-if="fixedTotal"> + 固定 {{ fixedTotal }}%</template>）
+                    </span>
+                  </span>
                   <n-button size="small" @click="look">看展开结果</n-button>
                 </div>
               </div>
@@ -367,11 +475,17 @@ function open(id) {
                 商品归属数据只到 {{ stale }}，下面的归属是沿用那时的安排。人换了的话在第二步改。
               </n-alert>
 
-              <n-collapse :default-expanded-names="['who']" accordion>
-                <n-collapse-item name="who" title="一、谁拿几个点">
+              <n-collapse v-model:expanded-names="step" accordion>
+                <n-collapse-item name="who" title="一、运营各拿几个点">
                   <template #header-extra>
-                    <span class="xs muted">{{ staff.length }} 人</span>
+                    <span class="xs" :class="unpaid.length ? 'warn' : 'muted'">
+                      {{ unpaid.length ? `${unpaid.join('、')} 还没定点数` : `${staff.length} 人` }}
+                    </span>
                   </template>
+                  <p class="xs muted" style="margin-bottom: var(--s3)">
+                    运营是「谁管这个商品谁拿这一格」。他管的商品的总提成率，
+                    就是这一格加上第三步的固定分成。
+                  </p>
                   <div class="scroll">
                     <n-table size="small" :bordered="false">
                       <thead>
@@ -379,7 +493,8 @@ function open(id) {
                           <th>人</th>
                           <th class="right">管着的商品</th>
                           <th class="right">这个月{{ pay?.base_name || '利润' }}</th>
-                          <th style="width: 130px">拿几个点</th>
+                          <th style="width: 130px">运营这一格</th>
+                          <th class="right">他管的商品总提成率</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -402,7 +517,11 @@ function open(id) {
                             >
                               <template #suffix>%</template>
                             </n-input-number>
-                            <span v-else class="xs muted">第三步的兜底管这些</span>
+                            <span v-else class="xs muted">第四步说这些归谁</span>
+                          </td>
+                          <td class="right num">
+                            <template v-if="o.person">{{ totalFor(o.person) }}%</template>
+                            <span v-else class="na">—</span>
                           </td>
                         </tr>
                       </tbody>
@@ -420,29 +539,58 @@ function open(id) {
                       加进来
                     </n-button>
                     <span class="xs muted">
-                      历史归属里没有的人从这里加，然后到第二步把商品指给他。
+                      历史归属里没有的人从这里加，加完直接进第二步指商品。
+                      下面每个选人的框也都能直接打名字新建。
                     </span>
                   </div>
                 </n-collapse-item>
 
-                <n-collapse-item name="what" title="二、哪些商品归谁">
+                <n-collapse-item name="what" title="二、谁管哪些商品">
                   <template #header-extra>
                     <span class="xs muted">
                       {{ changed ? `改了 ${changed} 个` : '按历史归属' }}
                     </span>
                   </template>
-                  <div class="spread" style="margin-bottom: var(--s3)">
+                  <div class="spread wrap" style="margin-bottom: var(--s3)">
                     <p class="xs muted">
-                      默认沿用历史归属，不用逐个填。只在人换了的时候改这里；
-                      改成「不单独配」就交给第三步兜底。
+                      默认沿用历史归属，不用逐个填。只在人换了的时候改这里——
+                      改的是运营那一格归谁，固定分成不受影响。
                     </p>
-                    <n-input
-                      v-model:value="hunt"
+                    <div class="row">
+                      <n-select
+                        v-model:value="onlyOwner"
+                        size="small"
+                        clearable
+                        :options="ownerFilters"
+                        placeholder="按现在归谁筛"
+                        style="width: 180px"
+                      />
+                      <n-input
+                        v-model:value="hunt"
+                        size="small"
+                        clearable
+                        placeholder="找商品：名称或 ID"
+                        style="width: 200px"
+                      />
+                    </div>
+                  </div>
+                  <div v-if="shownProducts.length" class="row" style="margin-bottom: var(--s3)">
+                    <span class="xs muted">
+                      这 {{ count(shownProducts.length) }} 个商品一起指给
+                    </span>
+                    <n-select
+                      v-model:value="bulk"
                       size="small"
+                      filterable
+                      tag
                       clearable
-                      placeholder="找商品：名称或 ID"
-                      style="width: 220px"
+                      :options="people"
+                      placeholder="选人／打名字新建"
+                      style="width: 190px"
                     />
+                    <n-button size="tiny" :disabled="!bulk" @click="assignAll">
+                      一起指过去
+                    </n-button>
                   </div>
                   <div class="scroll tall">
                     <n-table size="small" :bordered="false">
@@ -450,11 +598,11 @@ function open(id) {
                         <tr>
                           <th>商品</th>
                           <th class="right">本月{{ pay?.base_name || '利润' }}</th>
-                          <th style="width: 190px">归谁</th>
+                          <th style="width: 190px">谁管</th>
                         </tr>
                       </thead>
                       <tbody>
-                        <tr v-for="p in products.slice(0, 300)" :key="p.product_id">
+                        <tr v-for="p in shownProducts.slice(0, 300)" :key="p.product_id">
                           <td class="xs">
                             {{ p.product_name || p.product_id }}
                             <div class="xs muted num">{{ p.product_id }}</div>
@@ -469,8 +617,8 @@ function open(id) {
                               tag
                               clearable
                               :value="owners[p.product_id] ?? (p.suggest_person || null)"
-                              :options="[...people, { label: '不单独配（走兜底）', value: '-' }]"
-                              :placeholder="p.suggest_person || '没人管'"
+                              :options="[...people, { label: '没人管（只发固定分成）', value: '-' }]"
+                              placeholder="打名字可新建"
                               @update:value="(v) => setOwner(p.product_id, v)"
                             />
                           </td>
@@ -478,29 +626,31 @@ function open(id) {
                       </tbody>
                     </n-table>
                   </div>
-                  <p v-if="products.length > 300" class="xs muted" style="margin-top: var(--s2)">
-                    只列了利润最高的 300 个。长尾商品逐个配没有意义，交给兜底。
+                  <p v-if="shownProducts.length > 300" class="xs muted" style="margin-top: var(--s2)">
+                    列的是利润最高的 300 个。剩下的用上面的筛选一批一批指，
+                    或者交给第四步。
                   </p>
                 </n-collapse-item>
 
-                <n-collapse-item name="rest" title="三、剩下没人管的归谁">
+                <n-collapse-item name="fixed" title="三、每个商品都分一份的人">
                   <template #header-extra>
-                    <span class="xs muted">{{ fallbackLabel }}</span>
+                    <span class="xs muted">{{ fixedLabel }}</span>
                   </template>
                   <p class="xs muted" style="margin-bottom: var(--s3)">
-                    长尾商品逐个配没有意义，交给按店兜底。可以几个人分——这里填的点数
-                    加起来就是这家店的总提成率。一个人都不填就是这部分不给任何人。
+                    主管、助理这类，不看商品归谁管，每个商品都分一份。这里填的点数
+                    加进每个商品的总提成率里。
                   </p>
                   <div class="stack">
-                    <div v-for="(f, i) in fallbacks" :key="i" class="row">
+                    <div v-for="(f, i) in fixed" :key="i" class="row">
                       <n-select
-                        v-model:value="f.person"
+                        :value="f.person || null"
                         size="small"
                         filterable
                         tag
                         :options="people"
-                        placeholder="人名"
+                        placeholder="人名／打名字新建"
                         style="width: 200px"
+                        @update:value="(v) => pickPerson(f, 'person', v)"
                       />
                       <n-input-number
                         v-model:value="f.rate"
@@ -513,19 +663,38 @@ function open(id) {
                       >
                         <template #suffix>%</template>
                       </n-input-number>
-                      <n-button size="tiny" quaternary type="error" @click="fallbacks.splice(i, 1)">
+                      <n-button size="tiny" quaternary type="error" @click="fixed.splice(i, 1)">
                         去掉
                       </n-button>
                     </div>
                   </div>
                   <div class="row" style="margin-top: var(--s3)">
-                    <n-button size="tiny" @click="fallbacks.push({ person: '', rate: null })">
+                    <n-button size="tiny" @click="fixed.push({ person: '', rate: null })">
                       加一个人
                     </n-button>
-                    <span v-if="fallbacks.length > 1" class="xs muted num">
-                      合计 {{ fallbackTotal }}%
-                    </span>
+                    <span v-if="fixed.length" class="xs muted num">合计 {{ fixedTotal }}%</span>
                   </div>
+                </n-collapse-item>
+
+                <n-collapse-item name="rest" title="四、没人管的商品，运营那一格归谁">
+                  <template #header-extra>
+                    <span class="xs muted">{{ ownerLabel }}</span>
+                  </template>
+                  <p class="xs muted" style="margin-bottom: var(--s3)">
+                    长尾商品逐个指没有意义。指一个人接住它们，留空就是这一格不给人——
+                    那些商品只发固定分成。
+                  </p>
+                  <n-select
+                    :value="fallbackOwner || null"
+                    size="small"
+                    filterable
+                    tag
+                    clearable
+                    :options="people"
+                    placeholder="选人／打名字新建，留空表示不给"
+                    style="width: 260px"
+                    @update:value="(v) => (fallbackOwner = register(v) || '')"
+                  />
                 </n-collapse-item>
               </n-collapse>
 

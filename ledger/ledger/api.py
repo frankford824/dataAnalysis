@@ -735,63 +735,67 @@ def commission_product_list(period: str = "", store_id: str = "") -> dict:
 
 
 class RatePlan(BaseModel):
-    """按人定提成率，由系统展开成逐商品的配置。
+    """一个商品的总提成率怎么分给几个人，由系统展开成逐商品的配置。
 
-    人只需要回答「谁拿几个点」，商品归谁是系统已经知道的。反过来让人逐商品填，
-    七百行里填错一行没人看得出来。
+    分法只有两种角色，因为实际的表里就只有这两种：
+
+    运营
+        谁管这个商品谁拿这一格。管哪些商品是系统已经知道的（历史归属），人只要
+        回答「这个人几个点」。反过来让人逐商品填，七百行里填错一行没人看得出来。
+    固定分成
+        主管、助理这类，不看商品归谁，每个商品都分一份。淘宝那家店的李秋雨就是
+        这种：运营 3.5、她 1.5，加起来是这家店的总提成率 5。
+
+    一个商品的总提成率就是这两部分之和。这也是为什么不能只给「兜底一个人」的
+    字段——那样表达不了「五个点分给两个人」，界面把现状显示成一个人，人一保存
+    另一个人的点数就没了，而这件事要到发工资那天才有人发现。
     """
 
     store_id: str
     period: str = ""
     effective_from: str = ""
-    #: 人员 → 提成率。写 0.03 或 3 都按 3% 理解不了，所以这里只收小数，
-    #: 界面上负责把「3%」翻成 0.03——翻译放在离人最近的地方。
+    #: 运营 → 他管的商品里他拿几个点。写 0.03 或 3 都按 3% 理解不了，所以这里
+    #: 只收小数，界面上负责把「3%」翻成 0.03——翻译放在离人最近的地方。
     rates: dict[str, float] = {}
-    #: 商品 → 人，改掉系统猜的归属。历史归属数据认不出新来的人，也认不出这个月
+    #: 商品 → 运营，改掉系统猜的归属。历史归属数据认不出新来的人，也认不出这个月
     #: 刚交接的商品；没有这个口子，新人只能靠手改 CSV 才能绑上，那这一页就等于
-    #: 只对老人有用。写 "-" 表示不单独配，按「没人管」处理——有兜底就归兜底那个人，
-    #: 没兜底就谁都不给。
+    #: 只对老人有用。写 "-" 表示这个商品没人管，运营那一格空着。
     owners: dict[str, str] = {}
-    #: 没有归属的商品归谁、拿几个点。可以是几个人分——淘宝那家店现行配置就是
-    #: 两个人按 3.5 和 1.5 分掉店铺的 5 个点。只留一个人的字段表达不了它，
-    #: 结果是界面把现状显示成一个人，人一保存另一个人就没了。
-    fallbacks: dict[str, float] = {}
-    #: 单人写法。老调用方和命令行还在用，收到就并进 `fallbacks`。
+    #: 每个商品都分一份的人 → 几个点。不看商品归谁。
+    fixed: dict[str, float] = {}
+    #: 没有归属的商品，运营那一格归谁。留空就是这一格不给人，只剩固定分成。
+    fallback_owner: str = ""
+    #: 单人写法。老调用方和命令行还在用，收到就当成「兜底运营 + 他的点数」。
     fallback_person: str = ""
     fallback_rate: float = 0.0
     note: str = ""
 
-    def store_level(self) -> dict[str, float]:
-        """店铺兜底最终是谁拿几个点。两种写法并起来，零费率的不算。"""
-        out = {p: r for p, r in self.fallbacks.items() if p and r}
-        if self.fallback_person and self.fallback_rate:
-            out[self.fallback_person] = self.fallback_rate
+    def operator_rates(self) -> dict[str, float]:
+        return {**self.rates, **(
+            {self.fallback_person: self.fallback_rate}
+            if self.fallback_person and self.fallback_rate
+            and self.fallback_person not in self.rates else {}
+        )}
+
+    def default_owner(self) -> str:
+        return self.fallback_owner or self.fallback_person
+
+    def split_for(self, owner: str) -> dict[str, float]:
+        """这个商品的提成分给谁、各几个点。运营那一格空着就只剩固定分成。"""
+        out = {p: r for p, r in self.fixed.items() if p and r}
+        rate = self.operator_rates().get(owner, 0.0) if owner else 0.0
+        if rate:
+            out[owner] = round(out.get(owner, 0.0) + rate, 10)
         return out
-
-
-def _split_for(store_level: dict[str, float], person: str, rate: float) -> dict[str, float]:
-    """这个商品的提成怎么分给几个人。
-
-    店铺兜底那一份是「每个商品默认怎么分」。淘宝那家店是两个人分掉 5 个点：
-    运营 3.5、主管 1.5。给某个商品单独指个人的时候，只能动运营那一格——把整份
-    换成一个人的话，主管在这个商品上的 1.5 个点就凭空没了，而这件事要等发工资
-    那天才有人发现。
-
-    指的人不在默认分法里，说明这个商品整份归他（换了个不参与全店分成的人来管），
-    那就整份给他。
-    """
-    if person in store_level:
-        return {**store_level, person: rate}
-    return {person: rate}
 
 
 @app.post("/api/commission/plan")
 def commission_plan(plan: RatePlan, apply: bool = False) -> dict:
-    """把「谁拿几个点」展开成提成配置。`apply=false` 只预览，不落盘。
+    """把「总提成率怎么分」展开成提成配置。`apply=false` 只预览，不落盘。
 
-    展开的时候会做一次压缩：负责人和兜底是同一个人、同一个费率的商品不单独出行，
-    交给店铺兜底那一行盖住。淘宝那家店七百多个商品全归一个人，压缩前是七百多行
-    配置，压缩后是一行——两者算出来的钱一分不差，但后者是人看得懂的。
+    展开的时候会做一次压缩：分法和店铺默认那一份一样的商品不单独出行，交给店铺
+    那一组盖住。淘宝那家店七百多个商品的运营和点数都一样，压缩前是七百多行配置，
+    压缩后是两行——两者算出来的钱一分不差，但后者是人看得懂的。
 
     同一个（生效日期，店铺）重复展开会覆盖上一次的结果，不会叠加。别的生效日期
     原样留着：提成是生效制的，改配置就是往表里加一个新版本，旧版本得留下来，
@@ -808,42 +812,45 @@ def commission_plan(plan: RatePlan, apply: bool = False) -> dict:
 
     generated: list[dict[str, str]] = []
     covered = {"by_product": 0, "by_store": 0, "nobody": 0}
-    store_level = plan.store_level()
-    total_fallback = round(sum(store_level.values()), 10)
+    store_level = plan.split_for(plan.default_owner())
+
+    def rows(product_id: str, product_name: str, split: dict[str, float],
+             note: str) -> list[dict[str, str]]:
+        # 同一组里每条写一样的总数，加载时校验组内相加等于它。几个人分一个商品
+        # 时，总数就是几个人加起来。
+        total = round(sum(split.values()), 10)
+        return [{
+            "effective_from": effective, "store": store.id,
+            "product_id": product_id, "product_name": product_name,
+            "person": who, "share": str(share), "total_rate": str(total),
+            "note": plan.note or note,
+        } for who, share in split.items()]
+
     for p in items:
         override = plan.owners.get(p["product_id"], "")
-        person = "" if override == "-" else (override or p["suggest_person"])
-        rate = plan.rates.get(person, 0.0) if person else 0.0
-        if not person or not rate:
+        # 谁都没指、归属也认不出的商品，落到兜底运营身上——这就是第四步那句
+        # 「没人管的商品运营那一格归谁」。只有明写 "-" 才真的空着。
+        owner = "" if override == "-" else (
+            override or p["suggest_person"] or plan.default_owner()
+        )
+        split = plan.split_for(owner)
+        if not split:
+            # 谁都不分的商品没法单独表达：店铺那一组不写商品号，引擎眼里它盖住
+            # 所有没单独配的商品。所以这里只能如实说——有店铺那一组就是走它，
+            # 没有才是真的谁都不给。
             covered["by_store" if store_level else "nobody"] += 1
             continue
-        split = _split_for(store_level, person, rate)
-        # 商品单独写的这一份和店铺兜底那一份是一样的分法，写了也只是同一笔钱的
-        # 两种写法。淘宝那家店 627 个商品的负责人和点数都跟兜底一致，压掉之后
-        # 配置从 629 行变成 2 行。
+        # 这个商品的分法和店铺那一份一样，单独写只是同一笔钱的两种写法。淘宝那家
+        # 店 627 个商品的运营和点数都跟店铺那份一致，压掉之后配置从 629 行变成 2 行。
         if split == store_level:
             covered["by_store"] += 1
             continue
         covered["by_product"] += 1
-        source = "人工指定" if override else f"按运营归属展开（{p['suggest_since'] or '无出处'}）"
-        total = round(sum(split.values()), 10)
-        for who, share in split.items():
-            generated.append({
-                "effective_from": effective, "store": store.id,
-                "product_id": p["product_id"], "product_name": p["product_name"],
-                "person": who, "share": str(share), "total_rate": str(total),
-                "note": plan.note or source,
-            })
-    for person, rate in store_level.items():
-        generated.append({
-            "effective_from": effective, "store": store.id,
-            "product_id": "", "product_name": "",
-            "person": person, "share": str(rate),
-            # 同一组里每条写一样的总数，加载时校验组内相加等于它。几个人分店铺
-            # 兜底时，总数就是几个人加起来。
-            "total_rate": str(total_fallback),
-            "note": plan.note or "店铺兜底：没有单独归属的商品",
-        })
+        generated += rows(
+            p["product_id"], p["product_name"], split,
+            "人工指定" if override else f"按运营归属展开（{p['suggest_since'] or '无出处'}）",
+        )
+    generated += rows("", "", store_level, "店铺默认分法：没有单独配的商品")
 
     kept = [r for r in view.commission_rules(model)
             if not (r["store"] == store.id and r["effective_from"] == effective)]
