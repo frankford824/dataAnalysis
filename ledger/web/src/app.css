@@ -144,37 +144,27 @@
 
 /* 逐月对比。
  *
- * 上一版是店铺×账期的格子矩阵，一格里塞一个缩写金额（「15.2 万」）。看趋势够用，
- * 对账不够用——差的那几千块正好落在被四舍五入掉的位数里，人只能再点进去一次。
- * 现在改成竖排：一行一个月，金额各占一列，写全、两位小数、等宽右对齐。一列扫下来
- * 位数不齐的那行自己会跳出来，这是发现数量级错误唯一靠得住的办法。 */
-
-.months .hd {
-  display: flex;
-  align-items: baseline;
-  gap: var(--s3);
-  margin-bottom: var(--s3);
-}
+ * 改过三版，前两版各错一头。第一版是店铺×账期的格子矩阵，一格塞一个缩写金额
+ * （「15.2 万」）：看趋势够用，对账不够用——差的那几千块正好落在被四舍五入掉的
+ * 位数里。第二版把金额写全了，但把利润项、各店两张表也摊在同一页上竖着摞，
+ * 页面比原来更长，等于用「翻不完」换了「看不清」。
+ *
+ * 这一版：主页面只有一张表，一行一个月，一屏看完；利润项和各店收进弹框，点开才看。
+ * 金额一律写全、两位小数、等宽右对齐——一列扫下来位数不齐的那行自己会跳出来，
+ * 这是发现数量级错误唯一靠得住的办法。 */
 
 /* 金额列。比正文大一号、加粗，是这张表里最该被先看见的东西。 */
-.months td.big-num {
+.months td.big-num,
+.month-detail td.big-num {
   font-size: var(--t-lg);
   font-weight: 600;
   letter-spacing: -.01em;
   white-space: nowrap;
 }
-.months .pct { font-size: var(--t-xs); opacity: .8; margin-left: 4px; }
-.months .up { color: var(--ok); }
-
-/* 店名那一行。底色压住，让它和底下的月份分开。 */
-.months tr.group td {
-  background: var(--n1);
-  font-weight: 620;
-  border-top: 1px solid var(--n3);
-}
-.months tr.group td:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
-.months tr.group td:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; padding-right: var(--s3); }
-.months td.indent { padding-left: var(--s4); color: var(--n6); }
+.months .pct,
+.month-detail .pct { font-size: var(--t-xs); opacity: .8; margin-left: 4px; }
+.months .up,
+.month-detail .up { color: var(--ok); }
 
 .months tr.tap { cursor: pointer; }
 .months tr.tap:hover td { background: var(--accent-bg); }
@@ -187,18 +177,41 @@
   padding: 1px 7px;
   margin-left: var(--s2);
 }
+/* 「看明细」。平时淡着，鼠标压到那一行才亮起来——它是提示，不是第七列数据。 */
+.months td.go { color: var(--n4); white-space: nowrap; }
+.months tr.tap:hover td.go { color: var(--accent); }
 .months tfoot td {
   border-top: 2px solid var(--n8);
   padding-top: var(--s3);
   font-weight: 660;
 }
 
-/* 利润项 × 账期。账期多的时候横着滚，项目名钉在左边——滚到第八列还得知道
-   现在看的是「推广费用」还是「代发成本」，否则这张表只能看第一屏。 */
-.months table.items td { white-space: nowrap; }
-.months table.items td.big-num { font-size: var(--t-base); }
-.months table.items th.right { padding-left: var(--s4); }
-.months .pin {
+/* 一个月的细账弹框。 */
+.month-detail .sum {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  background: var(--n1);
+  border-radius: var(--r-md);
+}
+.month-detail .sum .label { font-size: var(--t-xs); color: var(--n6); }
+.month-detail .sum .value {
+  font-family: var(--num);
+  font-size: var(--t-xl);
+  font-weight: 620;
+  letter-spacing: -.01em;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+.month-detail tr.tap { cursor: pointer; }
+.month-detail tr.tap:hover td { background: var(--accent-bg); }
+
+/* 损益表逐项。项目名钉在左边：横向滚起来还得知道现在看的是「推广费用」
+   还是「代发成本」，否则这张表只能看第一屏。 */
+.month-detail table.items td { white-space: nowrap; }
+.month-detail table.items td.big-num { font-size: var(--t-base); }
+.month-detail .pin {
   position: sticky;
   left: 0;
   z-index: 2;
@@ -206,13 +219,17 @@
   white-space: nowrap;
   padding-right: var(--s5);
 }
-.months table.items thead th.pin { z-index: 3; }
-.months table.items tr.lv1 td { font-weight: 620; border-top: 1px solid var(--n3); }
-.months table.items tr.lv2 td.pin { padding-left: var(--s4); color: var(--n7); font-weight: 400; }
-.months table.items tr.total td {
+.month-detail table.items thead th.pin { z-index: 3; }
+.month-detail table.items tr.lv1 td { font-weight: 620; border-top: 1px solid var(--n3); }
+.month-detail table.items tr.lv2 td.pin { padding-left: var(--s4); color: var(--n7); font-weight: 400; }
+.month-detail table.items tr.total td {
   border-top: 2px solid var(--n8);
   font-weight: 660;
   padding-top: var(--s3);
+}
+
+@media (max-width: 720px) {
+  .month-detail .sum { grid-template-columns: repeat(2, 1fr); }
 }
 
 /* --------------------------------------------------------------------------
