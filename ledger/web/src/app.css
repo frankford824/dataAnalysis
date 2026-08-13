@@ -142,38 +142,77 @@
 }
 .kpi .foot { color: var(--n5); font-size: var(--t-xs); margin-top: var(--s1); }
 
-/* 店铺×账期矩阵。格子是给人扫的，不是给人读的：颜色先说话，数字第二。 */
-.matrix { overflow-x: auto; }
-.matrix table { border-collapse: separate; border-spacing: var(--s2); min-width: 600px; }
-.matrix th { border: 0; padding: 0 var(--s2); }
-.matrix td { padding: 0; border: 0 !important; }
+/* 逐月对比。
+ *
+ * 上一版是店铺×账期的格子矩阵，一格里塞一个缩写金额（「15.2 万」）。看趋势够用，
+ * 对账不够用——差的那几千块正好落在被四舍五入掉的位数里，人只能再点进去一次。
+ * 现在改成竖排：一行一个月，金额各占一列，写全、两位小数、等宽右对齐。一列扫下来
+ * 位数不齐的那行自己会跳出来，这是发现数量级错误唯一靠得住的办法。 */
 
-.cell {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: 1px solid var(--n3);
-  border-radius: var(--r-md);
-  background: var(--n0);
-  padding: var(--s3);
-  cursor: pointer;
-  transition: border-color .12s, box-shadow .12s;
+.months .hd {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  margin-bottom: var(--s3);
 }
-.cell:hover { border-color: var(--n4); box-shadow: var(--shadow); }
-.cell.closed { background: var(--ok-bg); border-color: #cfe8dc; }
-.cell.blocked { background: var(--bad-bg); border-color: #f6d5d1; }
-.cell.stale { border-color: var(--warn); }
-.cell .amt {
-  font-family: var(--num);
+
+/* 金额列。比正文大一号、加粗，是这张表里最该被先看见的东西。 */
+.months td.big-num {
   font-size: var(--t-lg);
   font-weight: 600;
+  letter-spacing: -.01em;
+  white-space: nowrap;
 }
-.cell .state { font-size: var(--t-xs); color: var(--n6); margin-top: 2px; }
-.cell.empty-cell {
+.months .pct { font-size: var(--t-xs); opacity: .8; margin-left: 4px; }
+.months .up { color: var(--ok); }
+
+/* 店名那一行。底色压住，让它和底下的月份分开。 */
+.months tr.group td {
   background: var(--n1);
-  border-style: dashed;
-  color: var(--n5);
-  cursor: default;
+  font-weight: 620;
+  border-top: 1px solid var(--n3);
+}
+.months tr.group td:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.months tr.group td:last-child { border-radius: 0 var(--r-sm) var(--r-sm) 0; padding-right: var(--s3); }
+.months td.indent { padding-left: var(--s4); color: var(--n6); }
+
+.months tr.tap { cursor: pointer; }
+.months tr.tap:hover td { background: var(--accent-bg); }
+.months tr.now td { background: var(--n1); }
+.months .tagline {
+  font-size: var(--t-xs);
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-left: var(--s2);
+}
+.months tfoot td {
+  border-top: 2px solid var(--n8);
+  padding-top: var(--s3);
+  font-weight: 660;
+}
+
+/* 利润项 × 账期。账期多的时候横着滚，项目名钉在左边——滚到第八列还得知道
+   现在看的是「推广费用」还是「代发成本」，否则这张表只能看第一屏。 */
+.months table.items td { white-space: nowrap; }
+.months table.items td.big-num { font-size: var(--t-base); }
+.months table.items th.right { padding-left: var(--s4); }
+.months .pin {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--n0);
+  white-space: nowrap;
+  padding-right: var(--s5);
+}
+.months table.items thead th.pin { z-index: 3; }
+.months table.items tr.lv1 td { font-weight: 620; border-top: 1px solid var(--n3); }
+.months table.items tr.lv2 td.pin { padding-left: var(--s4); color: var(--n7); font-weight: 400; }
+.months table.items tr.total td {
+  border-top: 2px solid var(--n8);
+  font-weight: 660;
+  padding-top: var(--s3);
 }
 
 /* --------------------------------------------------------------------------

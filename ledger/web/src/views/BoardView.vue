@@ -9,10 +9,11 @@
  * 数字的另一种排法，收在标签页后面——两张表竖着摆的话，一屏之内看不完，人会以为
  * 下面那张是别的东西。
  */
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { brief, count, money, percent } from '../format'
+import { api } from '../api'
+import { count, money, percent, signed, signedPct } from '../format'
 import { useApp } from '../store'
 import DropZone from '../components/DropZone.vue'
 
@@ -61,18 +62,157 @@ const groups = computed(() => {
   }))
 })
 
-const shown = computed(() => app.periods.slice(0, 6))
+//: 逐月对比里的账期，新的在上。矩阵那版横着摆六列，金额只能缩写成「15.2 万」——
+//: 对账的人要的是 152,392.61，缩写只能看个大概，看个大概就得再点进去一次。
+const shown = computed(() => app.periods)
 
-const storeRows = computed(() => {
+/** 一行逐月对比：钱、利润率、和上个月差多少。 */
+function line(period, list) {
+  const done = list.filter((c) => c.revenue !== null && c.profit !== null)
+  const revenue = done.reduce((a, c) => a + c.revenue, 0)
+  const profit = done.reduce((a, c) => a + c.profit, 0)
+  return {
+    period,
+    revenue: done.length ? revenue : null,
+    profit: done.length ? profit : null,
+    margin: revenue ? profit / revenue : null,
+    stores: list.length,
+    closed: list.filter((c) => c.state === 'closed').length,
+    pending: list.length - done.length,
+    cell: list.length === 1 ? list[0] : null,
+  }
+}
+
+/** 上一行（更早那个月）到这一行差了多少。表格是新的在上，所以看的是下一行。 */
+function withDelta(rows) {
+  return rows.map((r, i) => {
+    const before = rows[i + 1]
+    const from = before?.profit
+    const to = r.profit
+    const can = typeof from === 'number' && typeof to === 'number'
+    return {
+      ...r,
+      delta: can ? to - from : null,
+      // 上个月是零或者亏的，百分比没有意义（除以零、或者「增长了 -300%」）。
+      // 这种时候只给金额差。
+      deltaPct: can && from > 0 ? (to - from) / from : null,
+    }
+  })
+}
+
+/** 全公司逐月。 */
+const companyMonths = computed(() =>
+  withDelta(shown.value.map((p) => line(p, cells.value.filter((c) => c.period === p)))),
+)
+
+/** 每家店逐月。 */
+const storeMonths = computed(() => {
   const ids = [...new Set(cells.value.map((c) => c.store_id))]
-  return ids.map((id) => ({
-    id,
-    name: cells.value.find((c) => c.store_id === id)?.store || id,
-    byPeriod: Object.fromEntries(
-      cells.value.filter((c) => c.store_id === id).map((c) => [c.period, c]),
-    ),
-  }))
+  return ids.map((id) => {
+    const mine = cells.value.filter((c) => c.store_id === id)
+    const rows = withDelta(
+      shown.value
+        .filter((p) => mine.some((c) => c.period === p))
+        .map((p) => line(p, mine.filter((c) => c.period === p))),
+    )
+    const done = mine.filter((c) => c.profit !== null)
+    const revenue = done.reduce((a, c) => a + c.revenue, 0)
+    const profit = done.reduce((a, c) => a + c.profit, 0)
+    return {
+      id,
+      name: mine[0]?.store || id,
+      platform: app.platforms.find((p) => p.id === mine[0]?.platform)?.name || mine[0]?.platform,
+      rows,
+      revenue,
+      profit,
+      margin: revenue ? profit / revenue : null,
+    }
+  }).sort((a, b) => b.profit - a.profit)
 })
+
+/** 各店逐月拉平成一张表：店名一行抬头，底下是这家店的每个月。 */
+const monthRows = computed(() =>
+  storeMonths.value.flatMap((s) => [
+    { head: s },
+    ...s.rows.map((r) => ({ ...r, store: s })),
+  ]),
+)
+
+/** 所有账期加起来。 */
+const span = computed(() => {
+  const revenue = companyMonths.value.reduce((a, r) => a + (r.revenue || 0), 0)
+  const profit = companyMonths.value.reduce((a, r) => a + (r.profit || 0), 0)
+  return { revenue, profit, margin: revenue ? profit / revenue : null }
+})
+
+/** 涨了绿、跌了红。零和空不着色——不是好消息也不是坏消息。 */
+function delta(v) {
+  return { up: typeof v === 'number' && v > 0, neg: typeof v === 'number' && v < 0 }
+}
+
+//: 记住上次看的是哪个标签。切走再回来跳回默认，等于把人刚才翻到的地方扔了。
+const tab = app.noted('board.tab', 'here')
+
+/* 利润项逐月。
+ *
+ * 「这个月比上个月少了八万」这句话本身没有用，有用的是少在哪一项上。所以整张损益表
+ * 按月摊开：收入、退款、推广、代发成本，一项一行，跟得到月，右边一列直接给出最近
+ * 两个月的差额。合并多家店时逐项相加，凑不齐的格子会自己说明。 */
+
+const trend = ref(null)
+const trendBusy = ref(false)
+
+async function pullTrend() {
+  trendBusy.value = true
+  try {
+    trend.value = await api.trend({ store_id: app.storeId, platform: app.platform })
+  } catch {
+    trend.value = null
+  } finally {
+    trendBusy.value = false
+  }
+}
+
+watch(
+  [tab, () => app.storeId, () => app.platform, () => app.overview],
+  () => {
+    if (tab.value === 'months') pullTrend()
+  },
+  { immediate: true },
+)
+
+const trendPeriods = computed(() => trend.value?.periods || [])
+
+/** 每一行补上「最近一个月比上个月」。 */
+const trendRows = computed(() =>
+  (trend.value?.rows || []).map((r) => {
+    const [now, before] = trendPeriods.value
+    const to = r.cells?.[now]?.value
+    const from = r.cells?.[before]?.value
+    const can = typeof to === 'number' && typeof from === 'number'
+    return {
+      ...r,
+      delta: can ? to - from : null,
+      // 费用项是负数，「多花了钱」是往下走。百分比按绝对值算，不然会出现
+      // 「推广费涨了 -30%」这种要在脑子里绕一圈的说法。
+      deltaPct: can && Math.abs(from) > 0 ? (Math.abs(to) - Math.abs(from)) / Math.abs(from) : null,
+    }
+  }),
+)
+
+/** 这一格是几家店加出来的。凑不齐要说，不能让人以为它是完整的。 */
+function short(row, period) {
+  const cell = row.cells?.[period]
+  const all = trend.value?.stores?.[period] || 0
+  if (!cell || cell.value === null || all <= 1) return ''
+  return cell.stores < all ? `${all} 家店里 ${cell.stores} 家有这一项` : ''
+}
+
+function cellText(row, period) {
+  const v = row.cells?.[period]?.value
+  if (v === null || v === undefined) return '—'
+  return row.display === 'percent' ? percent(v) : money(v)
+}
 
 function label(c) {
   if (!c) return ''
@@ -82,9 +222,6 @@ function label(c) {
   if (c.can_close) return '可结账'
   return '进行中'
 }
-
-//: 记住上次看的是哪个标签。切走再回来跳回默认，等于把人刚才翻到的地方扔了。
-const tab = app.noted('board.tab', 'here')
 
 /** 平台分组拉平成一张表。分组抬头留着，但不再各占一张卡。 */
 const rows = computed(() =>
@@ -181,45 +318,198 @@ function open(c) {
           </n-tab-pane>
 
           <n-tab-pane name="months" :tab="`逐月对比（${shown.length} 个账期）`">
-            <div class="matrix scroll tall">
-              <table>
-                <thead>
-                  <tr>
-                    <th />
-                    <th v-for="p in shown" :key="p" class="num">{{ p }}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="row in storeRows" :key="row.id">
-                    <th style="white-space: nowrap">{{ row.name }}</th>
-                    <td v-for="p in shown" :key="p">
-                      <button
-                        v-if="row.byPeriod[p]"
-                        class="cell"
-                        :class="{
-                          closed: row.byPeriod[p].state === 'closed',
-                          blocked: row.byPeriod[p].blocking?.length,
-                          stale: row.byPeriod[p].stale,
-                        }"
-                        @click="open(row.byPeriod[p])"
+            <div class="months">
+              <div class="hd">
+                <span class="strong">全公司逐月</span>
+                <span class="xs muted">
+                  金额是元，两位小数。「比上月」拿这个月的利润减上一个月的。
+                </span>
+              </div>
+              <div class="scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>账期</th>
+                      <th class="right">销售收入</th>
+                      <th class="right">利润</th>
+                      <th class="right">利润率</th>
+                      <th class="right">比上月</th>
+                      <th class="right">结账</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      v-for="r in companyMonths"
+                      :key="r.period"
+                      :class="{ now: r.period === period }"
+                    >
+                      <td class="num nowrap">
+                        {{ r.period }}
+                        <span v-if="r.period === period" class="tagline">本月</span>
+                      </td>
+                      <td class="right num big-num">{{ money(r.revenue) }}</td>
+                      <td class="right num big-num" :class="{ neg: r.profit < 0 }">
+                        {{ money(r.profit) }}
+                      </td>
+                      <td class="right num">{{ percent(r.margin) }}</td>
+                      <td class="right num nowrap" :class="delta(r.delta)">
+                        {{ signed(r.delta) }}
+                        <span v-if="r.deltaPct !== null" class="pct">
+                          {{ signedPct(r.deltaPct) }}
+                        </span>
+                      </td>
+                      <td class="right num nowrap">
+                        {{ r.closed }} / {{ r.stores }}
+                        <span v-if="r.pending" class="warn xs">· {{ r.pending }} 家没数</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td class="num">合计</td>
+                      <td class="right num big-num">{{ money(span.revenue) }}</td>
+                      <td class="right num big-num" :class="{ neg: span.profit < 0 }">
+                        {{ money(span.profit) }}
+                      </td>
+                      <td class="right num">{{ percent(span.margin) }}</td>
+                      <td colspan="2" class="right xs muted">
+                        {{ shown.length }} 个账期 · {{ count(cells.length) }} 个店期
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+
+              <div class="hd" style="margin-top: var(--s5)">
+                <span class="strong">利润项逐月</span>
+                <span class="xs muted">
+                  {{ trend?.scope || '全公司' }} · 整张损益表按月摊开。
+                  少了钱是少在哪一项上，这张表回答这个。
+                </span>
+              </div>
+              <n-spin :show="trendBusy">
+                <div v-if="trendRows.length" class="scroll tall">
+                  <table class="items">
+                    <thead>
+                      <tr>
+                        <th class="pin">利润项</th>
+                        <th v-for="p in trendPeriods" :key="p" class="right">
+                          {{ p }}
+                          <span v-if="trend.stores?.[p] > 1" class="xs muted">
+                            {{ trend.stores[p] }} 家店
+                          </span>
+                        </th>
+                        <th v-if="trendPeriods.length > 1" class="right">
+                          {{ trendPeriods[0] }} 比上月
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="r in trendRows"
+                        :key="r.id"
+                        :class="{ lv1: r.level === 1, lv2: r.level > 1, total: r.is_total }"
                       >
-                        <div class="amt" :class="{ neg: row.byPeriod[p].profit < 0 }">
-                          {{ brief(row.byPeriod[p].profit) }}
-                        </div>
-                        <div class="state">{{ label(row.byPeriod[p]) }}</div>
-                      </button>
-                      <div v-else class="cell empty-cell">
-                        <div class="amt">—</div>
-                        <div class="state">没交表</div>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+                        <td class="pin">{{ r.name }}</td>
+                        <td
+                          v-for="p in trendPeriods"
+                          :key="p"
+                          class="right num big-num"
+                          :class="{ neg: r.cells?.[p]?.value < 0, na: r.cells?.[p]?.value == null }"
+                          :title="short(r, p)"
+                        >
+                          {{ cellText(r, p) }}
+                          <span v-if="short(r, p)" class="warn">*</span>
+                        </td>
+                        <td
+                          v-if="trendPeriods.length > 1"
+                          class="right num nowrap"
+                          :class="delta(r.delta)"
+                        >
+                          <template v-if="r.display === 'percent'">—</template>
+                          <template v-else>
+                            {{ signed(r.delta) }}
+                            <span v-if="r.deltaPct !== null" class="pct">
+                              {{ signedPct(r.deltaPct) }}
+                            </span>
+                          </template>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p v-else class="small muted">这个范围里还没有算出数的账期。</p>
+              </n-spin>
+              <p v-if="trendRows.some((r) => trendPeriods.some((p) => short(r, p)))"
+                 class="xs muted" style="margin-top: var(--s2)">
+                带 <span class="warn">*</span> 的格子不是所有店都有这一项，鼠标停上去看是几家。
+              </p>
+
+              <div class="hd" style="margin-top: var(--s5)">
+                <span class="strong">各店逐月</span>
+                <span class="xs muted">点一行进那个月的账。</span>
+              </div>
+              <div class="scroll tall">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>店铺 / 账期</th>
+                      <th class="right">销售收入</th>
+                      <th class="right">利润</th>
+                      <th class="right">利润率</th>
+                      <th class="right">比上月</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template v-for="r in monthRows">
+                      <tr v-if="r.head" :key="`h-${r.head.id}`" class="group">
+                        <td class="nowrap">
+                          {{ r.head.name }}
+                          <span class="xs muted">{{ r.head.platform }}</span>
+                        </td>
+                        <td class="right num">{{ money(r.head.revenue) }}</td>
+                        <td class="right num" :class="{ neg: r.head.profit < 0 }">
+                          {{ money(r.head.profit) }}
+                        </td>
+                        <td class="right num">{{ percent(r.head.margin) }}</td>
+                        <td colspan="2" class="xs muted right">
+                          {{ r.head.rows.length }} 个账期合计
+                        </td>
+                      </tr>
+                      <tr
+                        v-else
+                        :key="`${r.store.id}-${r.period}`"
+                        class="tap"
+                        @click="open(r.cell)"
+                      >
+                        <td class="num nowrap indent">{{ r.period }}</td>
+                        <td class="right num big-num">{{ money(r.revenue) }}</td>
+                        <td class="right num big-num" :class="{ neg: r.profit < 0 }">
+                          {{ money(r.profit) }}
+                        </td>
+                        <td class="right num">{{ percent(r.margin) }}</td>
+                        <td class="right num nowrap" :class="delta(r.delta)">
+                          {{ signed(r.delta) }}
+                          <span v-if="r.deltaPct !== null" class="pct">
+                            {{ signedPct(r.deltaPct) }}
+                          </span>
+                        </td>
+                        <td>
+                          <n-tag
+                            size="small"
+                            :type="r.cell?.state === 'closed' ? 'success' : r.cell?.blocking?.length ? 'error' : r.cell?.can_close ? 'info' : 'default'"
+                            :bordered="false"
+                          >
+                            {{ label(r.cell) }}
+                          </n-tag>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
             </div>
-            <p class="xs muted" style="margin-top: var(--s3)">
-              格子里是利润。{{ count(cells.length) }} 个店期。
-            </p>
           </n-tab-pane>
         </n-tabs>
       </div>

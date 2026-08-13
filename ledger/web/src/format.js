@@ -31,7 +31,7 @@ export function percent(v, digits = 1) {
   return `${(Number(v) * 100).toFixed(digits)}%`
 }
 
-/** 展板上的紧凑写法。矩阵格子里放不下完整金额，放下了也没人逐位读。 */
+/** 展板上的紧凑写法。只用在标题和说明里，正文金额一律写全。 */
 export function brief(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return MISSING
   const n = Number(v)
@@ -39,6 +39,22 @@ export function brief(v) {
   if (abs >= 1e8) return `${(n / 1e8).toFixed(2)} 亿`
   if (abs >= 1e4) return `${(n / 1e4).toFixed(1)} 万`
   return n.toFixed(0)
+}
+
+/* 差额。逐月对比里「比上月」那一列。
+ *
+ * 正数要带 +。没有加号的话，一列里正负混着看，眼睛只能靠有没有减号来分，
+ * 而减号和破折号（还不知道）在小字号下几乎一样。 */
+
+export function signed(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return MISSING
+  return `${v > 0 ? '+' : v < 0 ? '−' : ''}${money(Math.abs(v))}`
+}
+
+export function signedPct(v, digits = 1) {
+  if (v === null || v === undefined || Number.isNaN(v)) return ''
+  const n = Number(v) * 100
+  return `${n > 0 ? '+' : n < 0 ? '−' : ''}${Math.abs(n).toFixed(digits)}%`
 }
 
 /** 负数标红的判断。0 和空都不算。 */

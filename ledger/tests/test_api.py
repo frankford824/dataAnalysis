@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import ledger.api as api
+from ledger.workspace import PeriodState
 
 
 @pytest.fixture
@@ -169,6 +170,74 @@ class TestOverview:
         # 这份表算不出账期也没关系，重点是矩阵结构成立。
         assert isinstance(body["periods"], list)
         assert isinstance(body["totals"], list)
+
+
+class TestTrend:
+    """逐月对比要能回答「少的那八万少在哪一项上」。
+
+    所以摊开的是整张损益表，不是三个总数；而合并多家店的时候，凑不齐的项必须
+    自报家门——一个看起来完整的错数，比一个空格危险得多。
+    """
+
+    @pytest.fixture
+    def stubbed(self, client, monkeypatch):
+        def snap(store_id, period, receipt, refund, profit):
+            return PeriodState(
+                store_id=store_id, period=period, run_id=1,
+                result={"statement": [
+                    {"id": "n_receipt", "value": receipt, "available": True},
+                    *([{"id": "n_refund", "value": refund, "available": True}]
+                      if refund is not None else []),
+                    {"id": "net_profit", "value": profit, "available": True},
+                    {"id": "net_margin", "value": profit / receipt, "available": True},
+                ]},
+            )
+
+        rows = [
+            snap("taobao_xibishun", "2026-05", 1000.0, -100.0, 200.0),
+            snap("taobao_xibishun", "2026-04", 800.0, -50.0, 100.0),
+            # 1688 那家没有销售退款这一项，合并时不能按 0 算进去。
+            snap("alibaba1688_xingze", "2026-05", 500.0, None, 50.0),
+        ]
+        monkeypatch.setattr(api, "workspace", lambda: _FakeWorkspace(rows))
+        return client
+
+    def test_every_profit_item_gets_its_own_row_per_period(self, stubbed):
+        body = stubbed.get("/api/trend").json()
+        assert body["periods"] == ["2026-05", "2026-04"]
+        rows = {r["id"]: r for r in body["rows"]}
+        assert rows["n_receipt"]["cells"]["2026-05"]["value"] == 1500.0
+        assert rows["n_receipt"]["cells"]["2026-04"]["value"] == 800.0
+        assert rows["net_profit"]["cells"]["2026-05"]["value"] == 250.0
+
+    def test_says_how_many_stores_a_cell_adds_up(self, stubbed):
+        """两家店里只有一家有销售退款，界面要能标出来这一格不是全的。"""
+        rows = {r["id"]: r for r in stubbed.get("/api/trend").json()["rows"]}
+        assert rows["n_refund"]["cells"]["2026-05"] == {"value": -100.0, "stores": 1}
+        assert rows["n_receipt"]["cells"]["2026-05"]["stores"] == 2
+
+    def test_margin_is_recomputed_not_added_up(self, stubbed):
+        """两家店的利润率加起来是个没有意义的数。合并后的利润除以合并后的收入才对。"""
+        rows = {r["id"]: r for r in stubbed.get("/api/trend").json()["rows"]}
+        assert rows["net_margin"]["cells"]["2026-05"]["value"] == pytest.approx(250 / 1500)
+
+    def test_one_store_only_shows_that_store(self, stubbed):
+        body = stubbed.get("/api/trend", params={"store_id": "taobao_xibishun"}).json()
+        rows = {r["id"]: r for r in body["rows"]}
+        assert rows["n_receipt"]["cells"]["2026-05"]["value"] == 1000.0
+        assert body["scope"] == "淘宝喜必顺"
+
+    def test_empty_workspace_is_not_an_error(self, client):
+        body = client.get("/api/trend").json()
+        assert body["periods"] == [] and body["rows"] == []
+
+
+class _FakeWorkspace:
+    def __init__(self, states):
+        self._states = states
+
+    def overview(self):
+        return self._states
 
 
 class TestStoreDetail:

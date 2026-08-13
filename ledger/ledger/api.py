@@ -276,6 +276,120 @@ def _totals(cells: list[dict]) -> list[dict]:
     return sorted(out.values(), key=lambda d: d["period"], reverse=True)
 
 
+#: 逐月对比一次最多摆几个账期。再多横着看不过来，也不是这一页要回答的问题。
+TREND_PERIODS = 12
+
+
+@app.get("/api/trend")
+def trend(store_id: str = "", platform: str = "", periods: int = TREND_PERIODS) -> dict:
+    """损益表逐月：行是利润项，列是账期。
+
+    总览那三个数（收入、利润、利润率）只够回答「这个月怎么样」。真正要解释的是
+    「为什么这个月比上个月少了八万」，而答案永远在某一个费项里——推广涨了、退款
+    多了、代发成本翻倍了。所以这里把整张损益表按月摊开，每一项都跟得到月。
+
+    多家店合并时逐项相加。比率行不能加（三家店的利润率加起来没有意义），除了利润率
+    ——它由合并后的利润除以合并后的收入现算，这个数是对的。
+    """
+    model = _model()
+    ws = workspace()
+    keep = {
+        s.id for s in model.stores
+        if (not store_id or s.id == store_id) and (not platform or s.platform == platform)
+    }
+    snaps = [
+        st for st in ws.overview()
+        if st.store_id in keep and st.result
+    ]
+    months = sorted({st.period for st in snaps}, reverse=True)[:max(periods, 1)]
+    by_period: dict[str, list[dict]] = {p: [] for p in months}
+    for st in snaps:
+        if st.period in by_period:
+            by_period[st.period].append(st.result or {})
+
+    headline = {n.headline: n.id for n in model.statement if n.headline}
+    rows = _trend_rows(model, months, by_period, headline)
+    return {
+        "periods": months,
+        "stores": {p: len(v) for p, v in by_period.items()},
+        "rows": rows,
+        "scope": (
+            _store(model, store_id).name if store_id
+            else next((p.name for p in model.platforms if p.id == platform), "")
+            or "全公司"
+        ),
+    }
+
+
+def _trend_rows(
+    model: Model,
+    months: list[str],
+    by_period: dict[str, list[dict]],
+    headline: dict[str, str],
+) -> list[dict]:
+    """每个损益表节点在各个账期的数。
+
+    有的店没有这一项（1688 没有软件服务费），有的店这个月还没算出数。两种情况都不能
+    按 0 加进去——合并出来的数会显得完整，而「看起来完整的错数」比空着危险。所以
+    每一格都带上它是几家店加出来的，界面上凑不齐的那格自己会说。
+    """
+    order = view.statement_order(model)
+    out: list[dict] = []
+    for node in order:
+        cells: dict[str, dict] = {}
+        for period in months:
+            payloads = by_period.get(period, [])
+            found = [
+                r for pay in payloads for r in pay.get("statement", [])
+                if r.get("id") == node.id and r.get("available")
+            ]
+            if node.display == "percent":
+                cells[period] = _trend_ratio(node, payloads, headline, found)
+                continue
+            if not found:
+                cells[period] = {"value": None, "stores": 0}
+                continue
+            total = decimal_amount(0)
+            for r in found:
+                total += decimal_amount(r.get("value") or 0)
+            cells[period] = {"value": money_float(total), "stores": len(found)}
+        if all(c["value"] is None for c in cells.values()):
+            continue
+        out.append({
+            "id": node.id,
+            "name": node.name,
+            "level": node.level,
+            "display": node.display,
+            "is_total": node.is_total,
+            "headline": node.headline,
+            "cells": cells,
+        })
+    return out
+
+
+def _trend_ratio(
+    node: Any, payloads: list[dict], headline: dict[str, str], found: list[dict],
+) -> dict:
+    """比率行。单店直接取；多店合并只有利润率能现算，别的给空。"""
+    if len(payloads) == 1 and found:
+        return {"value": found[0].get("value"), "stores": 1}
+    if node.headline != "margin":
+        return {"value": None, "stores": len(found)}
+    revenue = sum(
+        decimal_amount(r.get("value") or 0) for pay in payloads
+        for r in pay.get("statement", [])
+        if r.get("id") == headline.get("revenue") and r.get("available")
+    )
+    profit = sum(
+        decimal_amount(r.get("value") or 0) for pay in payloads
+        for r in pay.get("statement", [])
+        if r.get("id") == headline.get("profit") and r.get("available")
+    )
+    if not revenue:
+        return {"value": None, "stores": len(payloads)}
+    return {"value": float(profit / revenue), "stores": len(payloads)}
+
+
 @app.get("/api/stores/{store_id}")
 def store_detail(store_id: str) -> dict:
     """一家店的全部：账期清单 + 交了哪些表。"""
