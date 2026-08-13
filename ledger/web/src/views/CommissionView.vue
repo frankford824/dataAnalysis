@@ -36,21 +36,24 @@ const loading = ref(false)
 const failed = ref('')
 const tab = ref('payout')
 
-//: 运营各自几个点。界面上填 3.5，这里存 3.5，发给后端前除以 100——
-//: 把百分号翻译成小数这件事放在离人最近的地方。
-const rates = ref({})
-const extra = ref([])
+//: 这家店的分法，一行一个人：{person, mode, rate}。
+//: mode='own' 是「只分他名下的商品」，mode='all' 是「每个商品都分一份」。
+//: 界面上填 3.5，这里存 3.5，发给后端前除以 100——把百分号翻成小数这件事
+//: 放在离人最近的地方。
+const crew = ref([])
 const owners = ref({})
-//: 每个商品都分一份的人：主管、助理那类，不看商品归谁。
-const fixed = ref([])
-//: 没有归属的商品，运营那一格归谁。
+//: 没有归属的商品归谁管。
 const fallbackOwner = ref('')
+
+const modes = [
+  { label: '只分他名下的', value: 'own' },
+  { label: '每个商品都分', value: 'all' },
+]
 const preview = ref(null)
 const showPreview = ref(false)
 const hunt = ref('')
 const onlyOwner = ref(null)
 const bulk = ref(null)
-const step = ref('who')
 
 // 配置只认筛选条里明确选的那家店。默认落到第一家的话，页面上没有任何地方写着
 // 「你正在配的是哪家」，而配错店这件事要等到发钱那天才看得出来。
@@ -83,19 +86,20 @@ async function load() {
  * 日期最新的那条——那就是「现在是几个点」。
  */
 function seed() {
-  const seen = {}
   const since = {}
+  const rate = {}
   for (const r of config.value?.rules || []) {
     if (app.storeId && r.store !== app.storeId) continue
     if (!r.person) continue
     if (since[r.person] && since[r.person] > r.effective_from) continue
     since[r.person] = r.effective_from
-    seen[r.person] = +(Number(r.share) * 100).toFixed(3)
+    rate[r.person] = +(Number(r.share) * 100).toFixed(3)
   }
 
-  // 店铺那一组（不带商品号的规则）是现在的默认分法。把它拆回两种角色：在商品
-  // 归属里管着东西的那个是运营，其余的是固定分成。淘宝那两条正是这样——汪学成
-  // 管着 627 个商品，李秋雨一个也不管，她那 1.5 个点是每个商品都分的。
+  // 店铺那一组（不带商品号的规则）就是现在的分法。把它拆回两种：在商品归属里
+  // 管着东西的那个人，他那一份是跟着商品走的；一个商品都不管却拿着钱的，那一份
+  // 是每个商品都分的。淘宝那两条正是这样——汪学成管着 627 个商品，李秋雨一个
+  // 也不管，她那 1.5 个点每个商品都有。
   const owns = new Set()
   for (const s of plan.value?.stores || []) {
     for (const o of s.owners || []) if (o.person) owns.add(o.person)
@@ -109,40 +113,31 @@ function seed() {
       (!day || r.effective_from === day),
   )
 
-  fixed.value = []
   fallbackOwner.value = ''
+  const rows = []
   for (const r of storeRows) {
-    const rate = +(Number(r.share) * 100).toFixed(3)
+    const pct = +(Number(r.share) * 100).toFixed(3)
     if (owns.has(r.person) && !fallbackOwner.value) {
       fallbackOwner.value = r.person
-      seen[r.person] = rate
+      rows.push({ person: r.person, mode: 'own', rate: pct })
     } else {
-      fixed.value.push({ person: r.person, rate })
+      rows.push({ person: r.person, mode: 'all', rate: pct })
     }
   }
-
-  for (const person of owns) if (!(person in seen)) seen[person] = null
-  rates.value = seen
-  extra.value = []
+  const listed = new Set(rows.map((r) => r.person))
+  for (const person of owns) {
+    if (!listed.has(person)) rows.push({ person, mode: 'own', rate: rate[person] ?? null })
+  }
+  crew.value = rows
   owners.value = {}
 }
 
 watch(() => [app.period, app.storeId], load, { immediate: true })
 
-/** 这家店里系统认得出负责人的商品，按人汇总。加进来的新人排在后面。 */
-const staff = computed(() => {
-  const s = (plan.value?.stores || []).find((x) => x.store_id === storeId.value)
-  const known = s?.owners || []
-  const names = new Set(known.map((o) => o.person))
-  return [
-    ...known,
-    ...extra.value.filter((n) => !names.has(n)).map((n) => ({ person: n, products: 0, base: 0, fresh: true })),
-  ]
-})
-
 /** 人名下拉的选项。配过的、猜出来的、刚加的，都算。 */
 const people = computed(() => {
-  const names = new Set(Object.keys(rates.value))
+  const names = new Set(crew.value.map((c) => c.person))
+  for (const p of products.value) if (p.suggest_person) names.add(p.suggest_person)
   for (const r of config.value?.rules || []) if (r.person) names.add(r.person)
   return [...names].filter(Boolean).map((n) => ({ label: n, value: n }))
 })
@@ -157,6 +152,22 @@ function ownerOf(p) {
   if (set === '-') return ''
   return set || p.suggest_person || ''
 }
+
+/** 每个人名下现在有几个商品。改了归属这个数当场变——它是「现在」，不是历史。 */
+const holdings = computed(() => {
+  const by = new Map()
+  for (const p of products.value) {
+    const who = ownerOf(p)
+    if (who) by.set(who, (by.get(who) || 0) + 1)
+  }
+  return by
+})
+
+function held(person) {
+  return holdings.value.get(person) || 0
+}
+
+const orphans = computed(() => products.value.filter((p) => !ownerOf(p)).length)
 
 const ownerFilters = computed(() => {
   const by = new Map()
@@ -205,40 +216,49 @@ const stale = computed(() => {
 
 const changed = computed(() => Object.keys(owners.value).length)
 
-/** 固定分成合计。每个商品都要分掉这么多，跟归谁管没关系。 */
-const fixedTotal = computed(() =>
-  +fixed.value.reduce((a, f) => a + (f.person ? Number(f.rate) || 0 : 0), 0).toFixed(3),
+/** 每个商品都分的那部分合计。 */
+const everyone = computed(() =>
+  +crew.value
+    .reduce((a, c) => a + (c.person && c.mode === 'all' ? Number(c.rate) || 0 : 0), 0)
+    .toFixed(3),
 )
 
-/** 这个人管的商品，总提成率是几个点。人真正要确认的就是这一列。 */
-function totalFor(person) {
-  return +((Number(rates.value[person]) || 0) + fixedTotal.value).toFixed(3)
+function rateOf(person) {
+  const row = crew.value.find((c) => c.person === person && c.mode === 'own')
+  return Number(row?.rate) || 0
 }
 
-const fixedLabel = computed(() => {
-  const live = fixed.value.filter((f) => f.person && f.rate)
-  if (!live.length) return '没有'
-  if (live.length === 1) return `${live[0].person} ${live[0].rate}%`
-  return `${live.length} 人共 ${fixedTotal.value}%`
+/** 一个商品的总提成率：管它的那个人那一份 + 每个商品都分的那部分。
+ *
+ * 取的是名下商品最多的那个人。这一页要回答的是「一个商品的五个点怎么分」，
+ * 而绝大多数商品都是他管的。
+ */
+const defaultTotal = computed(() => {
+  const main = crew.value
+    .filter((c) => c.person && c.mode === 'own')
+    .sort((a, b) => held(b.person) - held(a.person))[0]
+  return +((main ? Number(main.rate) || 0 : 0) + everyone.value).toFixed(3)
 })
 
-const ownerLabel = computed(() =>
-  fallbackOwner.value
-    ? `${fallbackOwner.value} ${rates.value[fallbackOwner.value] || 0}%`
-    : '运营那一格空着',
-)
-
-/** 被指到商品上、却没定点数的人。不说出来的话，他名下的商品一分钱都不发。 */
-const unpaid = computed(() => {
-  const used = new Set(Object.values(owners.value).filter((w) => w && w !== '-'))
-  for (const o of staff.value) if (o.person && o.products) used.add(o.person)
-  if (fallbackOwner.value) used.add(fallbackOwner.value)
-  return [...used].filter((w) => !rates.value[w])
+/** 把这张表用一句话说出来。数字对不对，人是靠这句话确认的。 */
+const splitWords = computed(() => {
+  const live = crew.value.filter((c) => c.person && c.rate)
+  if (!live.length) return '还没定：这家店现在谁都不发提成。'
+  const own = live.filter((c) => c.mode === 'own')
+  const all = live.filter((c) => c.mode === 'all')
+  const parts = []
+  if (own.length) parts.push(own.map((c) => `管它的人 ${c.rate}%`)[0])
+  for (const c of all) parts.push(`${c.person} ${c.rate}%`)
+  const spread = new Set(own.map((c) => c.rate))
+  const tail = spread.size > 1 ? '（各人点数不同，这里按名下商品最多的那个算）' : ''
+  return `每个商品的提成 = ${parts.join(' + ')}${tail}`
 })
 
-/** 大多数商品的总提成率：兜底运营那一格 + 固定分成。页头一直挂着它。 */
-const defaultTotal = computed(() =>
-  fallbackOwner.value ? totalFor(fallbackOwner.value) : fixedTotal.value,
+/** 名下有商品、却没定点数的人。不说出来的话，这些商品一分钱都不发。 */
+const unpaid = computed(() =>
+  crew.value
+    .filter((c) => c.person && c.mode === 'own' && !c.rate && held(c.person))
+    .map((c) => c.person),
 )
 
 const storeName = computed(() =>
@@ -247,17 +267,18 @@ const storeName = computed(() =>
 
 const newcomer = ref('')
 
-/** 把一个名字登记进这一页，之后所有下拉里都有他。
+/** 把一个名字登记进分法表，之后所有下拉里都有他。
  *
- * 任何一个选人的地方都能直接打名字新建，但新建出来的名字如果不落进费率表，
+ * 任何一个选人的地方都能直接打名字新建，但新建出来的名字如果不落进分法表，
  * 他就是个没有点数的人——指给他的商品最后一分钱都不发，而页面上看着是配好的。
- * 所以新建走这里，一律先占一个空点数的位置，第一步那张表会把它显示成待填。
+ * 所以新建走这里，一律先占一行空点数，左边那张表会把它显示出来。
  */
 function register(who) {
   const name = (who || '').trim()
   if (!name || name === '-') return name
-  if (!(name in rates.value)) rates.value[name] = null
-  if (!extra.value.includes(name)) extra.value.push(name)
+  if (!crew.value.some((c) => c.person === name)) {
+    crew.value.push({ person: name, mode: 'own', rate: null })
+  }
   return name
 }
 
@@ -265,10 +286,7 @@ function addPerson() {
   const who = register(newcomer.value)
   if (!who) return
   newcomer.value = ''
-  // 加完人光弹一句提示没用——人还得自己找到第二步在哪。直接把第二步打开，
-  // 他要做的下一件事就摆在眼前。
-  step.value = 'what'
-  message.success(`${who} 加进来了。给他一个点数，再在下面把商品指给他。`)
+  message.success(`${who} 加进来了。填上点数，右边把商品指给他。`)
 }
 
 /** 商品归属改了或者改回默认。改回默认就把这条覆盖删掉，别留一条和建议一样的。 */
@@ -285,22 +303,29 @@ function assignAll() {
   for (const p of hit) owners.value[p.product_id] = who
   message.success(`${hit.length} 个商品指给了 ${who}`)
   bulk.value = null
-  if (rates.value[who] == null) step.value = 'who'
 }
 
-/** 第三步的固定分成、第四步的兜底运营，选到新名字也一样要登记。 */
-function pickPerson(target, key, who) {
-  target[key] = register(who) || ''
+/** 分法表里改人名。改名要把它名下的商品一起带走，不然那些商品就没人管了。 */
+function pickPerson(row, who) {
+  const name = (who || '').trim()
+  if (!name) return
+  const was = row.person
+  row.person = name
+  if (was && was !== name) {
+    for (const p of products.value) {
+      if (ownerOf(p) === was) owners.value[p.product_id] = name
+    }
+    if (fallbackOwner.value === was) fallbackOwner.value = name
+  }
 }
 
 function payload() {
   const out = {}
-  for (const [person, v] of Object.entries(rates.value)) {
-    if (v) out[person] = Number(v) / 100
-  }
   const share = {}
-  for (const f of fixed.value) {
-    if (f.person && f.rate) share[f.person] = Number(f.rate) / 100
+  for (const c of crew.value) {
+    if (!c.person || !c.rate) continue
+    if (c.mode === 'all') share[c.person] = Number(c.rate) / 100
+    else out[c.person] = Number(c.rate) / 100
   }
   return {
     store_id: storeId.value,
@@ -456,149 +481,172 @@ function open(id) {
                 <div class="small muted">
                   {{ app.currentStore?.name }} ·
                   这个月卖过 {{ count(products.length) }} 个商品 ·
-                  生效日 {{ period }}-01
+                  从 {{ period }}-01 起生效
                 </div>
-                <div class="row">
-                  <span class="small">
-                    默认总提成率
-                    <span class="num strong">{{ defaultTotal }}%</span>
-                    <span class="xs muted">
-                      （{{ ownerLabel }}
-                      <template v-if="fixedTotal"> + 固定 {{ fixedTotal }}%</template>）
-                    </span>
-                  </span>
-                  <n-button size="small" @click="look">看展开结果</n-button>
-                </div>
+                <n-button size="small" type="primary" @click="look">保存</n-button>
               </div>
 
-              <n-alert v-if="stale" type="warning" :bordered="false" style="margin-bottom: var(--s3)">
-                商品归属数据只到 {{ stale }}，下面的归属是沿用那时的安排。人换了的话在第二步改。
+              <n-alert v-if="unpaid.length" type="warning" :bordered="false" style="margin-bottom: var(--s3)">
+                {{ unpaid.join('、') }} 名下有商品，但点数还是空的——这些商品现在一分钱都不发。
               </n-alert>
 
-              <n-collapse v-model:expanded-names="step" accordion>
-                <n-collapse-item name="who" title="一、运营各拿几个点">
-                  <template #header-extra>
-                    <span class="xs" :class="unpaid.length ? 'warn' : 'muted'">
-                      {{ unpaid.length ? `${unpaid.join('、')} 还没定点数` : `${staff.length} 人` }}
-                    </span>
-                  </template>
-                  <p class="xs muted" style="margin-bottom: var(--s3)">
-                    运营是「谁管这个商品谁拿这一格」。他管的商品的总提成率，
-                    就是这一格加上第三步的固定分成。
-                  </p>
-                  <div class="scroll">
-                    <n-table size="small" :bordered="false">
-                      <thead>
-                        <tr>
-                          <th>人</th>
-                          <th class="right">管着的商品</th>
-                          <th class="right">这个月{{ pay?.base_name || '利润' }}</th>
-                          <th style="width: 130px">运营这一格</th>
-                          <th class="right">他管的商品总提成率</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr v-for="o in staff" :key="o.person || '(没人管)'">
-                          <td>
-                            {{ o.person || '（系统认不出负责人）' }}
-                            <n-tag v-if="o.fresh" size="tiny" type="info" :bordered="false">新加</n-tag>
-                          </td>
-                          <td class="right num">{{ count(o.products) }}</td>
-                          <td class="right num" :class="{ neg: o.base < 0 }">{{ money(o.base) }}</td>
-                          <td>
-                            <n-input-number
-                              v-if="o.person"
-                              v-model:value="rates[o.person]"
-                              size="small"
-                              :min="0"
-                              :max="100"
-                              :step="0.5"
-                              placeholder="0"
-                            >
-                              <template #suffix>%</template>
-                            </n-input-number>
-                            <span v-else class="xs muted">第四步说这些归谁</span>
-                          </td>
-                          <td class="right num">
-                            <template v-if="o.person">{{ totalFor(o.person) }}%</template>
-                            <span v-else class="na">—</span>
-                          </td>
-                        </tr>
-                      </tbody>
-                    </n-table>
+              <div class="cols rule">
+                <section class="panel rail">
+                  <div class="spread" style="margin-bottom: var(--s2)">
+                    <h3>这家店怎么分</h3>
+                    <span class="xs muted">对每个商品都是这么分的</span>
                   </div>
+                  <n-table size="small" :bordered="false" :single-line="false">
+                    <thead>
+                      <tr>
+                        <th>人</th>
+                        <th style="width: 150px">分哪些商品</th>
+                        <th class="right" style="width: 120px">点数</th>
+                        <th class="right">名下商品</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="(c, i) in crew" :key="i">
+                        <td>
+                          <n-select
+                            :value="c.person || null"
+                            size="small"
+                            filterable
+                            tag
+                            :options="people"
+                            placeholder="打名字新建"
+                            @update:value="(v) => pickPerson(c, v)"
+                          />
+                        </td>
+                        <td>
+                          <n-select
+                            v-model:value="c.mode"
+                            size="small"
+                            :options="modes"
+                            :consistent-menu-width="false"
+                          />
+                        </td>
+                        <td>
+                          <n-input-number
+                            v-model:value="c.rate"
+                            size="small"
+                            :min="0"
+                            :max="100"
+                            :step="0.5"
+                            placeholder="0"
+                          >
+                            <template #suffix>%</template>
+                          </n-input-number>
+                        </td>
+                        <td class="right num xs">
+                          <template v-if="c.mode === 'all'">全部 {{ count(products.length) }}</template>
+                          <button v-else-if="held(c.person)" class="link num" @click="onlyOwner = c.person">
+                            {{ count(held(c.person)) }} 个
+                          </button>
+                          <span v-else class="na">0</span>
+                        </td>
+                        <td>
+                          <n-button size="tiny" quaternary type="error" @click="crew.splice(i, 1)">
+                            去掉
+                          </n-button>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </n-table>
+
                   <div class="row" style="margin-top: var(--s3)">
                     <n-input
                       v-model:value="newcomer"
                       size="small"
-                      placeholder="新来的人叫什么"
-                      style="width: 180px"
+                      placeholder="加人：名字"
+                      style="width: 160px"
                       @keyup.enter="addPerson"
                     />
                     <n-button size="tiny" :disabled="!newcomer.trim()" @click="addPerson">
                       加进来
                     </n-button>
-                    <span class="xs muted">
-                      历史归属里没有的人从这里加，加完直接进第二步指商品。
-                      下面每个选人的框也都能直接打名字新建。
-                    </span>
                   </div>
-                </n-collapse-item>
 
-                <n-collapse-item name="what" title="二、谁管哪些商品">
-                  <template #header-extra>
-                    <span class="xs muted">
+                  <div class="total">
+                    <span>一个商品的总提成率</span>
+                    <span class="num strong big">{{ defaultTotal }}%</span>
+                  </div>
+                  <p class="xs muted">
+                    {{ splitWords }}
+                  </p>
+                </section>
+
+                <section class="panel">
+                  <div class="spread wrap" style="margin-bottom: var(--s2)">
+                    <h3>谁管哪些商品</h3>
+                    <span class="xs" :class="changed ? 'warn' : 'muted'">
                       {{ changed ? `改了 ${changed} 个` : '按历史归属' }}
                     </span>
-                  </template>
-                  <div class="spread wrap" style="margin-bottom: var(--s3)">
-                    <p class="xs muted">
-                      默认沿用历史归属，不用逐个填。只在人换了的时候改这里——
-                      改的是运营那一格归谁，固定分成不受影响。
-                    </p>
-                    <div class="row">
-                      <n-select
-                        v-model:value="onlyOwner"
-                        size="small"
-                        clearable
-                        :options="ownerFilters"
-                        placeholder="按现在归谁筛"
-                        style="width: 180px"
-                      />
-                      <n-input
-                        v-model:value="hunt"
-                        size="small"
-                        clearable
-                        placeholder="找商品：名称或 ID"
-                        style="width: 200px"
-                      />
-                    </div>
                   </div>
-                  <div v-if="shownProducts.length" class="row" style="margin-bottom: var(--s3)">
-                    <span class="xs muted">
-                      这 {{ count(shownProducts.length) }} 个商品一起指给
+
+                  <div class="line">
+                    <span class="small">
+                      没人管的
+                      <span class="num">{{ count(orphans) }}</span>
+                      个商品，归
                     </span>
                     <n-select
-                      v-model:value="bulk"
+                      :value="fallbackOwner || null"
                       size="small"
                       filterable
                       tag
                       clearable
                       :options="people"
-                      placeholder="选人／打名字新建"
-                      style="width: 190px"
+                      placeholder="留空＝不给"
+                      style="width: 170px"
+                      @update:value="(v) => (fallbackOwner = register(v) || '')"
                     />
-                    <n-button size="tiny" :disabled="!bulk" @click="assignAll">
-                      一起指过去
-                    </n-button>
                   </div>
+
+                  <n-alert v-if="stale" type="warning" :bordered="false" style="margin: var(--s3) 0">
+                    归属数据只到 {{ stale }}，下面是沿用那时的安排。人换了就在这里改。
+                  </n-alert>
+
+                  <div class="row wrap" style="margin: var(--s3) 0">
+                    <n-select
+                      v-model:value="onlyOwner"
+                      size="small"
+                      clearable
+                      :options="ownerFilters"
+                      placeholder="按现在归谁筛"
+                      style="width: 165px"
+                    />
+                    <n-input
+                      v-model:value="hunt"
+                      size="small"
+                      clearable
+                      placeholder="找商品"
+                      style="width: 140px"
+                    />
+                    <template v-if="shownProducts.length">
+                      <span class="xs muted">这 {{ count(shownProducts.length) }} 个一起给</span>
+                      <n-select
+                        v-model:value="bulk"
+                        size="small"
+                        filterable
+                        tag
+                        clearable
+                        :options="people"
+                        placeholder="选人"
+                        style="width: 130px"
+                      />
+                      <n-button size="tiny" :disabled="!bulk" @click="assignAll">指过去</n-button>
+                    </template>
+                  </div>
+
                   <div class="scroll tall">
                     <n-table size="small" :bordered="false">
                       <thead>
                         <tr>
                           <th>商品</th>
                           <th class="right">本月{{ pay?.base_name || '利润' }}</th>
-                          <th style="width: 190px">谁管</th>
+                          <th style="width: 170px">归谁</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -617,8 +665,8 @@ function open(id) {
                               tag
                               clearable
                               :value="owners[p.product_id] ?? (p.suggest_person || null)"
-                              :options="[...people, { label: '没人管（只发固定分成）', value: '-' }]"
-                              placeholder="打名字可新建"
+                              :options="[...people, { label: '没人管', value: '-' }]"
+                              placeholder="打名字新建"
                               @update:value="(v) => setOwner(p.product_id, v)"
                             />
                           </td>
@@ -627,82 +675,9 @@ function open(id) {
                     </n-table>
                   </div>
                   <p v-if="shownProducts.length > 300" class="xs muted" style="margin-top: var(--s2)">
-                    列的是利润最高的 300 个。剩下的用上面的筛选一批一批指，
-                    或者交给第四步。
+                    列的是{{ pay?.base_name || '利润' }}最高的 300 个。剩下的用上面的筛选一批一批指。
                   </p>
-                </n-collapse-item>
-
-                <n-collapse-item name="fixed" title="三、每个商品都分一份的人">
-                  <template #header-extra>
-                    <span class="xs muted">{{ fixedLabel }}</span>
-                  </template>
-                  <p class="xs muted" style="margin-bottom: var(--s3)">
-                    主管、助理这类，不看商品归谁管，每个商品都分一份。这里填的点数
-                    加进每个商品的总提成率里。
-                  </p>
-                  <div class="stack">
-                    <div v-for="(f, i) in fixed" :key="i" class="row">
-                      <n-select
-                        :value="f.person || null"
-                        size="small"
-                        filterable
-                        tag
-                        :options="people"
-                        placeholder="人名／打名字新建"
-                        style="width: 200px"
-                        @update:value="(v) => pickPerson(f, 'person', v)"
-                      />
-                      <n-input-number
-                        v-model:value="f.rate"
-                        size="small"
-                        :min="0"
-                        :max="100"
-                        :step="0.5"
-                        placeholder="几个点"
-                        style="width: 140px"
-                      >
-                        <template #suffix>%</template>
-                      </n-input-number>
-                      <n-button size="tiny" quaternary type="error" @click="fixed.splice(i, 1)">
-                        去掉
-                      </n-button>
-                    </div>
-                  </div>
-                  <div class="row" style="margin-top: var(--s3)">
-                    <n-button size="tiny" @click="fixed.push({ person: '', rate: null })">
-                      加一个人
-                    </n-button>
-                    <span v-if="fixed.length" class="xs muted num">合计 {{ fixedTotal }}%</span>
-                  </div>
-                </n-collapse-item>
-
-                <n-collapse-item name="rest" title="四、没人管的商品，运营那一格归谁">
-                  <template #header-extra>
-                    <span class="xs muted">{{ ownerLabel }}</span>
-                  </template>
-                  <p class="xs muted" style="margin-bottom: var(--s3)">
-                    长尾商品逐个指没有意义。指一个人接住它们，留空就是这一格不给人——
-                    那些商品只发固定分成。
-                  </p>
-                  <n-select
-                    :value="fallbackOwner || null"
-                    size="small"
-                    filterable
-                    tag
-                    clearable
-                    :options="people"
-                    placeholder="选人／打名字新建，留空表示不给"
-                    style="width: 260px"
-                    @update:value="(v) => (fallbackOwner = register(v) || '')"
-                  />
-                </n-collapse-item>
-              </n-collapse>
-
-              <div class="row" style="margin-top: var(--s4)">
-                <n-button size="small" type="primary" @click="look">看展开结果</n-button>
-                <span class="xs muted">
-                  先看会写进配置的每一行，确认了再落库。落库会把这家店重算一遍。
-                </span>
+                </section>
               </div>
             </template>
           </n-tab-pane>
@@ -771,7 +746,7 @@ function open(id) {
         <p class="small" style="margin-bottom: var(--s3)">
           {{ count(preview?.generated) }} 条规则。
           {{ count(preview?.coverage?.by_product || 0) }} 个商品单独配，
-          {{ count(preview?.coverage?.by_store || 0) }} 个走店铺兜底，
+          {{ count(preview?.coverage?.by_store || 0) }} 个按这家店的分法，
           {{ count(preview?.coverage?.nobody || 0) }} 个不给任何人。
           生效日 {{ preview?.effective_from }}，同一天的旧配置会被这一份换掉。
           <template v-if="(preview?.generated || 0) > (preview?.preview?.length || 0)">

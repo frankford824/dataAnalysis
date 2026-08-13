@@ -100,6 +100,8 @@ a:hover { text-decoration: underline; }
 .small { font-size: var(--t-sm); }
 .xs { font-size: var(--t-xs); }
 .strong { font-weight: 620; }
+/* 一屏里最该被看见的那个数。 */
+.big { font-size: var(--t-xl); }
 /* 缺数据。灰破折号，和「算出来是 0」区分开。 */
 .na { color: var(--n5); font-family: var(--num); }
 .neg { color: var(--bad); }

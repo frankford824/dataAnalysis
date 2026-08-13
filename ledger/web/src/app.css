@@ -91,6 +91,8 @@
   .cols.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   /* 清单在左、内容在右时反过来：清单只放店名，不需要那么宽。 */
   .cols.list { grid-template-columns: minmax(240px, .62fr) minmax(0, 2fr); }
+  /* 定义在左、明细在右：左边是几行规则，右边是几百行商品。 */
+  .cols.rule { grid-template-columns: minmax(420px, 1fr) minmax(0, 1.35fr); }
   .rail { position: sticky; top: 76px; }
 }
 
@@ -272,6 +274,29 @@
 
 /* 等宽数字。表格里凡是钱、行号、单号都挂这个。 */
 .num { font-family: var(--num); font-variant-numeric: tabular-nums; }
+
+/* 一张表的合计行。提成那一页靠它回答「一个商品总共几个点」——这个数不能靠人
+ * 自己把几行加起来，那正是发错钱的地方。 */
+.total {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  margin-top: var(--s4);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--n4);
+  font-size: var(--t-sm);
+}
+
+/* 一句话加一个控件，读起来是完整的一句。 */
+.line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3);
+  background: var(--n1);
+  border-radius: var(--r-md);
+}
 
 /* --------------------------------------------------------------------------
  * 窄屏
