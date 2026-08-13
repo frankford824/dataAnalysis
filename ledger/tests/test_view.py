@@ -508,6 +508,17 @@ def test_nothing_landed_at_all():
     assert d["uncounted"]["amount"] == pytest.approx(-530.0)
 
 
+def test_a_penny_of_float_noise_does_not_show_up_as_a_difference():
+    """留档里的金额是 f64，四万行加起来会攒出半分钱的误差。
+
+    报表写 -172,082.78、下钻写 -172,082.79，界面就会标一句「差 -0.01」——
+    那一分钱不存在，而人会去查一笔根本没有的账。
+    """
+    rows = [{"metric_id": "m1", "amount": 0.1, "counted": True} for _ in range(30)]
+    d = drill(_graded(rows), _tree(), "d1", value=3.0)
+    assert d["source_total"] == 3.0
+
+
 def test_an_unknown_view_falls_back_to_the_safe_one():
     """界面传错值时给进了账的那部分。多给一屏别家店铺的行是误导，少给不是。"""
     assert drill(_graded(_MIXED), _tree(), "d1", only="乱写")["only"] == "counted"

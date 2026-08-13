@@ -131,6 +131,35 @@ def predicate(query: str, kinds: list[str]) -> pl.Expr | None:
     return out
 
 
+#: 定位一条物理记录要的三样东西。文件用 sha 而不是文件名——同名文件是常事。
+_ROW = ("file_sha", "sheet", "row_no")
+
+#: 检索结果要用到的列。
+_COLUMNS = ("metric_id", "amount", "subject", "minor", "link_key", "linked",
+            "file_name", "sheet", "row_no")
+
+
+def _one_row_each(frame: pl.DataFrame) -> pl.DataFrame:
+    """一条物理记录只出现一次。
+
+    事实表里，源表的每一行会在每个读这张表的指标名下各出现一次——对账表有五个指标
+    读它，于是一行钱在表里躺着五份。不去重的话，查一个订单号会列出五条一模一样的
+    「交易收款 172.20 · 第 156788 行」，而合计把这 172.20 加了五遍。人看到的是
+    一笔凭空多出四倍的钱，和一份没法往下看的结果列表。
+
+    留哪一份：优先留真正进了账的那一份，它的科目才是这行钱最后归到的科目。
+    """
+    keys = [c for c in _ROW if c in frame.columns]
+    if not keys:
+        return frame.select(c for c in _COLUMNS if c in frame.columns)
+    if "counted" in frame.columns:
+        frame = frame.sort("counted", descending=True)
+    return (
+        frame.unique(subset=keys, keep="first", maintain_order=True)
+        .select(c for c in _COLUMNS if c in frame.columns)
+    )
+
+
 def search(states: list[Any], facts_of, model, query: str, *,
            limit: int = LIMIT) -> Result:
     """在留档的事实行里找。
@@ -152,12 +181,8 @@ def search(states: list[Any], facts_of, model, query: str, *,
         if path is None:
             continue
         try:
-            frame = (
-                pl.scan_parquet(path)
-                .filter(cond)
-                .select("metric_id", "amount", "subject", "minor", "link_key",
-                        "linked", "file_name", "sheet", "row_no")
-                .collect()
+            frame = _one_row_each(
+                pl.scan_parquet(path).filter(cond).collect()
             )
         except Exception as exc:  # 留档损坏不该让整个检索报错
             res.notes.append(f"{state.store_id} {state.period} 的留档读不了：{exc}")

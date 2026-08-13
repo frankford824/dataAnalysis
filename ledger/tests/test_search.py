@@ -58,6 +58,8 @@ def facts(tmp_path):
     def frame(rows):
         return pl.DataFrame(
             {
+                "file_sha": [f"{r[3]}:{r[5]}" for r in rows],
+                "counted": [True] * len(rows),
                 "metric_id": ["fee"] * len(rows),
                 "link_key": [r[0] for r in rows],
                 "amount": [r[1] for r in rows],
@@ -189,6 +191,52 @@ class TestBeingHonestAboutTheSearch:
         res = _find(states, facts, "5111236008850009225")
         assert res.exhausted is False
         assert any("没翻" in n for n in res.notes)
+
+    def test_one_physical_row_is_one_hit(self, tmp_path):
+        """对账表有五个指标读它，同一行钱在事实表里躺着五份。
+
+        不去重的话，查一个订单号会列出五条一模一样的「交易收款 172.20 · 第 156788 行」，
+        而合计把这 172.20 加了五遍——人看到的是凭空多出四倍的钱。
+        """
+        rows = 5
+        pl.DataFrame({
+            "file_sha": ["sha"] * rows,
+            "counted": [False, False, True, False, False],
+            "metric_id": ["receipt", "refund", "fee", "mkt", "comp"],
+            "link_key": ["5111236008850009225"] * rows,
+            "amount": [172.2] * rows,
+            "subject": ["交易收款-交易收款"] * rows,
+            "minor": [None, None, "天猫软件服务费", None, None],
+            "linked": [True] * rows,
+            "file_name": ["对账-甲店.xlsx"] * rows,
+            "sheet": ["支付宝"] * rows,
+            "row_no": [156788] * rows,
+        }).write_parquet(tmp_path / "1.parquet")
+
+        res = search.search([_State("s1", "2026-05", 1)],
+                            lambda rid: tmp_path / f"{rid}.parquet",
+                            _model(), "5111236008850009225")
+        assert (res.total, res.amount) == (1, pytest.approx(172.2))
+        assert res.hits[0].subject == "天猫软件服务费", "留真正进了账的那一份"
+
+    def test_the_same_row_number_in_another_file_is_another_hit(self, tmp_path):
+        """同名文件是常事，所以按文件内容而不是文件名区分。"""
+        pl.DataFrame({
+            "file_sha": ["sha1", "sha2"],
+            "counted": [True, True],
+            "metric_id": ["fee", "fee"],
+            "link_key": ["A1", "A1"],
+            "amount": [1.0, 2.0],
+            "subject": [None, None],
+            "minor": [None, None],
+            "linked": [True, True],
+            "file_name": ["对账.xlsx", "对账.xlsx"],
+            "sheet": ["支付宝", "支付宝"],
+            "row_no": [7, 7],
+        }).write_parquet(tmp_path / "1.parquet")
+        res = search.search([_State("s1", "2026-05", 1)],
+                            lambda rid: tmp_path / f"{rid}.parquet", _model(), "A1")
+        assert res.total == 2
 
     def test_a_missing_archive_is_skipped_not_fatal(self, states, facts):
         """某个店期没留明细，不该让整次检索报错——其他店期的结果照样有用。"""

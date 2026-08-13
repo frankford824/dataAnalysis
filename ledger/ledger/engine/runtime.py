@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import polars as pl
 
-from ..model.schema import Model, Template
+from ..model.schema import Metric, Model, Template
 from . import calculate as calc
 from .audit import AuditResult, audit
-from .project import Projection, project
+from .project import Projection, claims, project
 from .derivative import Derivative, detect as detect_derivative
 from .controls import ControlResult, summarize as summarize_controls, verify as verify_controls
 from .classify import classify, merge_reports
@@ -441,7 +442,7 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
     spine_facts = (
         pl.concat(spine_parts, how="vertical_relaxed") if spine_parts else _empty_spine_facts()
     )
-    facts = _mark_counted(facts, spine_facts)
+    facts = _mark_counted(facts, spine_facts, metrics)
 
     result = RunResult(
         model=model, ingestion=ingestion, facts=facts, notes=notes, spine_rows=spine.size,
@@ -457,7 +458,8 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
     return result
 
 
-def _mark_counted(facts: pl.DataFrame, spine_facts: pl.DataFrame) -> pl.DataFrame:
+def _mark_counted(facts: pl.DataFrame, spine_facts: pl.DataFrame,
+                  metrics: Sequence[Metric]) -> pl.DataFrame:
     """给每条源记录标上：它进没进损益表，进了多少。
 
     源事实是「这张表里有这么一行」，脊柱事实是「这笔钱算进了账」。两者差得很远，
@@ -471,6 +473,10 @@ def _mark_counted(facts: pl.DataFrame, spine_facts: pl.DataFrame) -> pl.DataFram
 
     挂不上的行照样留档，只是标成没进账。它们是真实存在的记录，删掉就没法回答
     「这笔钱到底去哪了」——而这个问题每个月都会被问到。
+
+    光看键匹不匹配是不够的：对账表有五个指标读它，同一个订单号在五个指标的脊柱事实
+    里都在。只按键标的话，一笔软件服务费会在「销售收入」名下也标成进账——检索里
+    这行钱就顶着「销售收入」的名字出来。所以还要过一遍认领条件。
     """
     if "counted" in facts.columns:
         return facts
@@ -482,11 +488,19 @@ def _mark_counted(facts: pl.DataFrame, spine_facts: pl.DataFrame) -> pl.DataFram
     weights = spine_facts.group_by("metric_id", "store", "period", "link_key").agg(
         pl.col("factor").sum().alias("__share__")
     )
+    claim = pl.lit(False)
+    for metric in metrics:
+        claim = claim | claims(metric)
     return (
         facts.join(weights, on=["metric_id", "store", "period", "link_key"], how="left")
         .with_columns(
-            pl.col("__share__").is_not_null().alias("counted"),
-            (pl.col("amount") * pl.col("__share__").fill_null(0.0)).alias("contribution"),
+            (claim & pl.col("__share__").is_not_null()).alias("counted"),
+        )
+        .with_columns(
+            pl.when(pl.col("counted"))
+            .then(pl.col("amount") * pl.col("__share__"))
+            .otherwise(pl.lit(0.0))
+            .alias("contribution"),
         )
         .drop("__share__")
     )

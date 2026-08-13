@@ -19,10 +19,12 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 
 from .engine.calculate import NodeValue
+from .engine.project import claims
 from .engine.runtime import Slice
 from .engine.types import RawTable
 from .model.propose import Draft, role_facts
 from .model.schema import Model, Store
+from .money import money_float
 
 if TYPE_CHECKING:  # 只为类型标注；运行时导入会让 view 依赖向导层，方向反了
     from .commission import Commission
@@ -334,22 +336,12 @@ DRILL_LIMIT = 200
 def _claimed_by(model: Model, metrics: list[str]) -> pl.Expr:
     """挑出真正算进这些指标的事实行。
 
-    指标声明了 `major` 就只认归到这个大类的行——这和投影时的过滤是同一条规则
-    （`engine/project.py` 里那句 `filter(major == metric.major)`）。两处必须一致，
-    不一致的表现是下钻和报表各说各话，而且两个数看着都像对的。
-
-    没声明 `major` 的指标（推广扣费、运费这类源头就不分科目的表）不加这一层：
-    它们的每一行都算数，硬要求 major 相等会把整张表筛空。
+    认领条件由引擎定义（`engine.project.claims`），这里只是把这个节点底下几个指标的
+    条件或起来。不自己写一份是因为写两份必然分叉，而分叉的表现是下钻和报表各说各话，
+    两个数看着都像对的。
     """
     by_id = {m.id: m for m in model.metrics}
-    parts: list[pl.Expr] = []
-    for mid in metrics:
-        metric = by_id.get(mid)
-        hit = pl.col("metric_id") == mid
-        major = getattr(metric, "major", None) if metric else None
-        if major:
-            hit = hit & (pl.col("major") == major)
-        parts.append(hit)
+    parts = [claims(by_id[mid]) for mid in metrics if mid in by_id]
     if not parts:
         return pl.lit(False)
     out = parts[0]
@@ -498,8 +490,12 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
         .sort(by, descending=descending)
         .slice(max(offset, 0), limit)
     )
-    source_total = float(scope.select(money.sum()).item() or 0.0)
-    picked_total = float(picked.select(money.sum()).item() or 0.0)
+    # 收到分。留档里的金额是 f64（parquet 存不了 Decimal），四万行加起来会攒出
+    # 半分钱的浮点误差，于是报表写着 -172,082.78、下钻写着 -172,082.79，界面上还
+    # 老老实实标一句「差 -0.01」。那一分钱不存在，是加法本身的误差；把它显示出来
+    # 只会让人去查一笔根本没有的账。
+    source_total = money_float(scope.select(money.sum()).item() or 0.0)
+    picked_total = money_float(picked.select(money.sum()).item() or 0.0)
     return {
         "node": node_id,
         "name": node.name if node else node_id,

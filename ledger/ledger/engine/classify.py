@@ -270,7 +270,10 @@ def _decide(
             drop_by_rule[i] = False
         else:
             by_rule[i] = None if rule.exclude else rule.major
-            minor_by_rule[i] = None if rule.exclude else (rule.minor or rule.major)
+            # 规则没写细项就留空，界面退回显示平台自己那个科目名。填大类的话，
+            # 填进去的是 `software_fee` 这种内部代号——它会一路漏到下钻和检索的
+            # 科目栏上，人看到的是一个自己表里根本不存在的词。
+            minor_by_rule[i] = None if rule.exclude else rule.minor
             drop_by_rule[i] = rule.exclude
 
     work = pl.DataFrame({"i": winner})

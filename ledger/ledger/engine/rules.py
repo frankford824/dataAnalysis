@@ -236,7 +236,9 @@ def resolve_class(
             stats.record(i, excluded=rule.exclude)
         if rule.exclude:
             return None, None, True
-        return rule.major, rule.minor or rule.major, False
+        # 没写细项就留空。填大类等于把 `software_fee` 这种内部代号当科目名摆到
+        # 界面上，而界面退回显示平台原始科目名才是人认得的东西。
+        return rule.major, rule.minor or None, False
     if stats:
         stats.record(None)
     return None, None, False

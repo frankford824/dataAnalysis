@@ -43,11 +43,26 @@ class Projection:
     notes: list[str] = field(default_factory=list)
 
 
+def claims(metric: Metric) -> pl.Expr:
+    """这个指标认领哪些源事实行。
+
+    事实表里存的是「每个指标看过的每一行」：对账表有五个指标读它，一行钱就在表里
+    躺着五份。真正算进哪个指标由归类结果（`major`）定，所以凡是要回答「这一行属于
+    哪个指标」的地方，都得过这一层——投影、进账标记、界面下钻各有一处。
+
+    三处必须一致。不一致的表现是同一行钱在报表、下钻、检索里归到三个不同科目下，
+    而三个说法看着都像对的。所以这个条件只写一遍。
+
+    没声明大类的指标（推广扣费、运费这类源头就不分科目的表）不加这一层：
+    它们的每一行都算数，硬要求 major 相等会把整张表筛空。
+    """
+    hit = pl.col("metric_id") == metric.id
+    return hit & (pl.col("major") == metric.major) if metric.major else hit
+
+
 def aggregate_by_key(source_facts: pl.DataFrame, metric: Metric) -> pl.DataFrame:
     """源事实按关联键汇总。这是投影的输入。"""
-    frame = source_facts.filter(pl.col("metric_id") == metric.id)
-    if metric.major:
-        frame = frame.filter(pl.col("major") == metric.major)
+    frame = source_facts.filter(claims(metric))
     if frame.is_empty():
         return pl.DataFrame(schema={"link_key": pl.Utf8, "amount": pl.Float64})
     totals = {}

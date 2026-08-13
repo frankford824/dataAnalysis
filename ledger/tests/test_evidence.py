@@ -26,7 +26,7 @@ import pytest
 
 from ledger.engine.calculate import evaluate_metric
 from ledger.engine.link import LINK_KEY, LINKED
-from ledger.engine.runtime import _mark_counted
+from ledger.engine.runtime import _mark_counted as mark_counted
 from ledger.engine.types import ANCHOR_FILE, ANCHOR_ROW, ANCHOR_SHA, ANCHOR_SHEET
 from ledger.model.schema import LinkRule, Metric, SourceContract, Template, ValueExpr
 
@@ -37,6 +37,14 @@ def _metric(**kw) -> Metric:
     kw.setdefault("source", "s")
     kw.setdefault("value", ValueExpr(op="sum", of=("amount",)))
     return Metric(**kw)
+
+
+def _mark_counted(facts, spine, metrics=None):
+    """`_mark_counted` 要求调用方交出指标清单——认领条件从那里来。
+
+    测试里默认给一条不分大类的指标 m，和 `_facts` 里的 metric_id 对得上。
+    """
+    return mark_counted(facts, spine, metrics if metrics is not None else [_metric()])
 
 
 def _template() -> Template:
@@ -184,6 +192,28 @@ class TestWhetherTheRowMadeItIntoTheStatement:
         out = _mark_counted(_facts([{"amount": -10.0}]), _spine([]).clear())
         assert out.get_column("counted").to_list() == [False]
         assert "contribution" in out.columns
+
+    def test_a_metric_that_did_not_claim_the_row_does_not_count_it(self):
+        """对账表有五个指标读它，同一个订单号在五个指标的脊柱事实里都在。
+
+        只按键标的话，一笔软件服务费会在「销售收入」名下也标成进账。实测检索一个
+        订单号，那笔 -0.62 的类目软件服务费顶着「销售收入」的名字出来——归类结果
+        白算了。所以还要过一遍认领条件。
+        """
+        facts = _facts([{"metric_id": "收入", "link_key": "A1", "amount": -0.62,
+                         "major": "软件服务费"}])
+        spine = _spine([{"metric_id": "收入", "link_key": "A1"}])
+        metrics = [_metric(id="收入", major="收入"), _metric(id="费用", major="软件服务费")]
+        out = _mark_counted(facts, spine, metrics)
+        assert out.get_column("counted").to_list() == [False]
+        assert out.get_column("contribution").to_list() == [0.0]
+
+    def test_a_metric_with_no_category_claims_every_row(self):
+        """推广扣费、运费这类表源头就不分科目，指标也不声明大类。
+        对它们照样要求大类相等的话，一行都标不上进账。"""
+        out = _mark_counted(_facts([{"link_key": "A1", "amount": -10.0}]),
+                            _spine([{"link_key": "A1"}]), [_metric()])
+        assert out.get_column("counted").to_list() == [True]
 
     def test_marking_twice_does_not_stack(self):
         once = _mark_counted(_facts([{"link_key": "A1", "amount": -10.0}]),
