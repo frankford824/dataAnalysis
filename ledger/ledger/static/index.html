@@ -1,43 +1,13 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>记账</title>
-<link rel="stylesheet" href="/static/design.css">
-<link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-<div id="app">
-  <nav id="nav">
-    <div class="brand">记账<small>把表交上来，其余交给引擎</small></div>
-    <ul>
-      <li><a href="#/" data-view="overview">总览<span class="count" id="c-open"></span></a></li>
-      <li><a href="#/deliver" data-view="deliver">数据交付<span class="count" id="c-files"></span></a></li>
-      <li><a href="#/commission" data-view="commission">提成<span class="count" id="c-comm"></span></a></li>
-      <li><a href="#/stores" data-view="stores">店铺<span class="count" id="c-stores"></span></a></li>
-    </ul>
-    <div class="foot">
-      每个数都能点回原始文件行号。<br>
-      结不了的账不许结。
-    </div>
-  </nav>
-  <main id="main"></main>
-</div>
-
-<input type="file" id="file" multiple>
-<div id="veil">松手就收下</div>
-<div id="progress"></div>
-<div id="scrim"></div>
-<aside id="drawer">
-  <header>
-    <div><h2 id="drawer-title"></h2><div class="sub muted small" id="drawer-sub"></div></div>
-    <button class="link" id="drawer-close">关闭</button>
-  </header>
-  <div class="body" id="drawer-body"></div>
-</aside>
-<div id="toast"></div>
-
-<script src="/static/app.js"></script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>记账</title>
+    <script type="module" crossorigin src="/static/assets/index-Cj91fJac.js"></script>
+    <link rel="stylesheet" crossorigin href="/static/assets/index-ba5y8fJ6.css">
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
 </html>

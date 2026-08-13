@@ -355,6 +355,10 @@ class TestPage:
         assert 'id="app"' in res.text
 
     def test_serves_the_assets(self, client):
-        """样式和脚本是独立文件，不再拼在 Python 字符串里。"""
-        assert client.get("/static/app.js").status_code == 200
-        assert client.get("/static/design.css").status_code == 200
+        """页面引用的每个文件都得真的能取到，少一个就是白屏。"""
+        import re
+
+        refs = re.findall(r'(?:href|src)="(/static/[^"]+)"', client.get("/").text)
+        assert refs, "页面一个资源都没引用"
+        for ref in refs:
+            assert client.get(ref).status_code == 200, f"{ref} 取不到"

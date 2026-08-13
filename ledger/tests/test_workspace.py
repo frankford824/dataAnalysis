@@ -273,3 +273,35 @@ def test_reopen_then_close_again_uses_new_numbers(ws):
     ws.record("s1", "2025-05", _result(profit=200), ["a"])
     ws.close_period("s1", "2025-05")
     assert ws.state("s1", "2025-05").result["profit"] == 200
+
+
+def test_several_requests_can_read_at_once(ws):
+    """界面一进页面就并发拉三份数据，它们落在不同的线程上。
+
+    一条 sqlite 连接给多个线程共用会撞出 `bad parameter or other API misuse`——
+    不是「数据库忙」那种能重试的错，是直接 500。老界面一个请求接一个请求发，
+    把这个坑盖了好几个月。
+    """
+    import threading
+
+    for i in range(6):
+        ws.record(f"s{i}", "2025-05", _result(), ["a"])
+
+    seen: list[int] = []
+    boom: list[Exception] = []
+
+    def read() -> None:
+        try:
+            for _ in range(20):
+                seen.append(len(ws.overview()))
+        except Exception as exc:  # noqa: BLE001 - 要的就是把它捞出来看
+            boom.append(exc)
+
+    threads = [threading.Thread(target=read) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not boom, f"并发读崩了：{boom[0]!r}"
+    assert set(seen) == {6}

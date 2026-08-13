@@ -29,6 +29,7 @@ import json
 import os
 import shutil
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -184,7 +185,7 @@ class Workspace:
     """
 
     root: Path
-    _conn: sqlite3.Connection | None = field(default=None, repr=False)
+    _local: threading.local = field(default_factory=threading.local, repr=False)
 
     def __post_init__(self) -> None:
         self.root = Path(self.root)
@@ -196,7 +197,17 @@ class Workspace:
 
     @property
     def conn(self) -> sqlite3.Connection:
-        if self._conn is None:
+        """每个线程一条连接。
+
+        一条连接给多个线程共用是不行的：sqlite3 的连接对象内部有游标状态，两个线程
+        同时执行就会撞出 `InterfaceError: bad parameter or other API misuse`——不是
+        「数据库忙」那种能重试的错，是直接 500。
+
+        这个坑之前藏着，因为老界面是一个请求接一个请求发的。新界面一进页面就并发
+        拉启动信息、总览、店铺详情三份数据，一刷新就撞。
+        """
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
             conn = sqlite3.connect(self.root / "workspace.db", check_same_thread=False)
             conn.row_factory = sqlite3.Row
             # 界面读、上传写，同时发生很正常。WAL 让读不被写挡住。
@@ -209,13 +220,15 @@ class Workspace:
             conn.executescript(_SCHEMA)
             _migrate(conn)
             conn.commit()
-            self._conn = conn
-        return self._conn
+            self._local.conn = conn
+        return conn
 
     def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        """关掉本线程那条。别的线程各自持有自己的，由进程退出收尾。"""
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
 
     # ------------------------------------------------------------------ #
     # 留档

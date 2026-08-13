@@ -1,0 +1,235 @@
+/* 布局。设计变量在 design.css 里，这里只管怎么摆。 */
+
+#app {
+  min-height: 100vh;
+}
+
+/* --------------------------------------------------------------------------
+ * 外壳
+ * -------------------------------------------------------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-columns: 208px 1fr;
+  min-height: 100vh;
+}
+
+.side {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  border-right: 1px solid var(--n3);
+  background: var(--n0);
+  padding: var(--s5) var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.brand {
+  font-size: var(--t-lg);
+  font-weight: 640;
+  padding: 0 var(--s3) var(--s4);
+}
+
+.navlink {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: 8px var(--s3);
+  border-radius: var(--r-sm);
+  color: var(--n7);
+  font-size: var(--t-md);
+  text-decoration: none;
+}
+.navlink:hover { background: var(--n1); text-decoration: none; }
+.navlink.on { background: var(--accent-bg); color: var(--accent); font-weight: 560; }
+.navlink .count {
+  font-family: var(--num);
+  font-size: var(--t-xs);
+  color: var(--n5);
+}
+.navlink.on .count { color: var(--accent); }
+
+.body { min-width: 0; display: flex; flex-direction: column; }
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, .92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--n3);
+  padding: var(--s3) var(--s5);
+}
+
+.page {
+  padding: var(--s5);
+  max-width: 1280px;
+  width: 100%;
+}
+
+/* --------------------------------------------------------------------------
+ * 展板
+ * -------------------------------------------------------------------------- */
+
+.board-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--s4);
+}
+
+.kpi {
+  background: var(--n0);
+  border: 1px solid var(--n3);
+  border-radius: var(--r-lg);
+  padding: var(--s4) var(--s5);
+}
+.kpi .label { color: var(--n6); font-size: var(--t-sm); }
+.kpi .value {
+  font-family: var(--num);
+  font-size: var(--t-2xl);
+  font-weight: 620;
+  letter-spacing: -.01em;
+  margin-top: var(--s1);
+}
+.kpi .foot { color: var(--n5); font-size: var(--t-xs); margin-top: var(--s1); }
+
+/* 店铺×账期矩阵。格子是给人扫的，不是给人读的：颜色先说话，数字第二。 */
+.matrix { overflow-x: auto; }
+.matrix table { border-collapse: separate; border-spacing: var(--s2); min-width: 600px; }
+.matrix th { border: 0; padding: 0 var(--s2); }
+.matrix td { padding: 0; border: 0 !important; }
+
+.cell {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--n3);
+  border-radius: var(--r-md);
+  background: var(--n0);
+  padding: var(--s3);
+  cursor: pointer;
+  transition: border-color .12s, box-shadow .12s;
+}
+.cell:hover { border-color: var(--n4); box-shadow: var(--shadow); }
+.cell.closed { background: var(--ok-bg); border-color: #cfe8dc; }
+.cell.blocked { background: var(--bad-bg); border-color: #f6d5d1; }
+.cell.stale { border-color: var(--warn); }
+.cell .amt {
+  font-family: var(--num);
+  font-size: var(--t-lg);
+  font-weight: 600;
+}
+.cell .state { font-size: var(--t-xs); color: var(--n6); margin-top: 2px; }
+.cell.empty-cell {
+  background: var(--n1);
+  border-style: dashed;
+  color: var(--n5);
+  cursor: default;
+}
+
+/* --------------------------------------------------------------------------
+ * 损益表
+ * -------------------------------------------------------------------------- */
+
+.statement { max-width: 620px; }
+.statement .line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: 5px 0;
+}
+.statement .line.lv1 { font-weight: 620; border-top: 1px solid var(--n3); margin-top: var(--s2); padding-top: var(--s3); }
+.statement .line.lv2 { padding-left: var(--s4); font-size: var(--t-md); }
+.statement .line.total {
+  border-top: 2px solid var(--n8);
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  font-weight: 660;
+  font-size: var(--t-lg);
+}
+.statement .line.drillable { cursor: pointer; border-radius: var(--r-sm); }
+.statement .line.drillable:hover { background: var(--n1); }
+.statement .line .amt { font-family: var(--num); }
+.statement .why { color: var(--n5); font-size: var(--t-xs); padding-left: var(--s4); }
+
+/* --------------------------------------------------------------------------
+ * 交表
+ * -------------------------------------------------------------------------- */
+
+.drop {
+  border: 1.5px dashed var(--n4);
+  border-radius: var(--r-lg);
+  background: var(--n0);
+  padding: var(--s6);
+  text-align: center;
+  color: var(--n6);
+  cursor: pointer;
+}
+.drop:hover { border-color: var(--accent); background: var(--accent-bg); }
+
+.veil {
+  position: fixed;
+  inset: 0;
+  z-index: 4000;
+  background: rgba(31, 94, 255, .08);
+  border: 3px dashed var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--t-xl);
+  font-weight: 600;
+  color: var(--accent);
+  pointer-events: none;
+}
+
+.busy {
+  position: fixed;
+  right: var(--s5);
+  bottom: var(--s5);
+  z-index: 4100;
+  background: var(--n9);
+  color: var(--n0);
+  border-radius: var(--r-md);
+  padding: var(--s3) var(--s4);
+  font-size: var(--t-sm);
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+/* 等宽数字。表格里凡是钱、行号、单号都挂这个。 */
+.num { font-family: var(--num); font-variant-numeric: tabular-nums; }
+
+/* --------------------------------------------------------------------------
+ * 窄屏
+ *
+ * 店长在手机上看的次数比想象中多。三条底线：不出现横向滚动条、表格自己能滚、
+ * 筛选条不能把内容挤没。
+ * -------------------------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .side {
+    position: static;
+    height: auto;
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--n3);
+    padding: var(--s2) var(--s3);
+  }
+  .brand { padding: 0 var(--s3) 0 0; }
+  .navlink { white-space: nowrap; }
+}
+
+@media (max-width: 640px) {
+  .page { padding: var(--s3); }
+  .topbar { padding: var(--s2) var(--s3); }
+  .busy { left: var(--s3); right: var(--s3); bottom: var(--s3); }
+}
