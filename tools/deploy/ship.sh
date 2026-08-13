@@ -61,6 +61,13 @@ else
   echo '  界面产物不在包里。先在 ledger/web 下跑一次 pnpm build。' >&2
   exit 1
 fi
+# 光在还不够：产物比源码旧同样是上一版界面，而且更难发现——包里什么都不缺，
+# 页面上就是少一列。真实发生过一次，源码比产物新四十秒。
+stale=$(find "$REPO/ledger/web/src" -type f -newer "$REPO/ledger/ledger/static/index.html" -print -quit)
+if [ -n "$stale" ]; then
+  echo "  界面产物比源码旧（$(basename "$stale") 改过了）。先在 ledger/web 下跑一次 pnpm build。" >&2
+  exit 1
+fi
 # 盖版本印。线上没有 git，不带这个文件过去，每笔账的运行记录都只能写「引擎 unknown」，
 # 「回到哪一版」就永久无解。内容是打包这一刻本机 git 说的实话，脏就带 -dirty。
 mkdir -p "$stage/stamp"

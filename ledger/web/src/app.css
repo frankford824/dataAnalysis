@@ -64,10 +64,49 @@
   padding: var(--s3) var(--s5);
 }
 
+/* 内容居中，两侧留白对称。
+ *
+ * 之前是靠左定宽，2560 的屏上右边空掉一千多像素，看起来像页面没加载完。
+ * 上限还是要有：一行金额拉到两米宽，眼睛从科目名扫到数字会跑行。
+ * 所以做法是限宽 + 居中，宽屏多出来的空间由各页自己用双栏吃掉。 */
 .page {
   padding: var(--s5);
-  max-width: 1280px;
+  max-width: 1560px;
   width: 100%;
+  margin: 0 auto;
+}
+
+/* 主栏 + 边栏。窄屏自动叠成一栏。
+ *
+ * 边栏放的是「要不要信这个数」那一类东西——自检、缺的表、质量。它们和主栏
+ * 是同时要看的，竖着排的话人得滚上滚下来回对，滚一次就断一次。 */
+.cols {
+  display: grid;
+  gap: var(--s4);
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 1180px) {
+  .cols { grid-template-columns: minmax(0, 1.5fr) minmax(330px, 1fr); }
+  .cols.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  /* 清单在左、内容在右时反过来：清单只放店名，不需要那么宽。 */
+  .cols.list { grid-template-columns: minmax(240px, .62fr) minmax(0, 2fr); }
+  .rail { position: sticky; top: 76px; }
+}
+
+/* 长表格自己滚，不把页面撑长。表头钉住，滚到第二十行还知道哪列是哪列。 */
+.scroll {
+  overflow: auto;
+  max-height: 420px;
+  margin-right: calc(var(--s3) * -1);
+  padding-right: var(--s3);
+}
+.scroll.tall { max-height: 560px; }
+.scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--n0);
 }
 
 /* --------------------------------------------------------------------------
@@ -134,7 +173,9 @@
  * 损益表
  * -------------------------------------------------------------------------- */
 
-.statement { max-width: 620px; }
+/* 宽度由所在栏定。定死 620 的话，宽屏上这张表右边会空一块，
+   而空的那一块正好在金额列右侧——看起来像有一列没加载出来。 */
+.statement { max-width: 100%; }
 .statement .line {
   display: flex;
   align-items: baseline;
@@ -170,6 +211,33 @@
   cursor: pointer;
 }
 .drop:hover { border-color: var(--accent); background: var(--accent-bg); }
+
+/* 店铺清单。左边选店右边看表，一屏之内换店不用滚。 */
+.pick {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: none;
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+}
+.pick:hover { background: var(--n1); }
+.pick.on { background: var(--accent-bg); border-color: #cfdcff; }
+.pick .who { font-weight: 560; font-size: var(--t-md); }
+.pick .meta { font-size: var(--t-xs); color: var(--n6); margin-top: 1px; }
+.pick .group {
+  font-size: var(--t-xs);
+  color: var(--n5);
+}
+
+.groupline {
+  font-size: var(--t-xs);
+  color: var(--n5);
+  padding: var(--s3) var(--s3) var(--s1);
+  text-transform: none;
+}
 
 .veil {
   position: fixed;

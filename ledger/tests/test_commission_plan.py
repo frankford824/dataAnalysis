@@ -170,6 +170,78 @@ class TestExpandingAPlan:
         assert got["coverage"]["nobody"] == 2
 
 
+class TestOverridingWhoOwnsAProduct:
+    """归属表认不出新来的人，也认不出这个月刚交接的商品。
+
+    没有这个口子，界面上那一页只对老人有用：新人要拿到提成，只能有人去手改
+    commission.csv——而这一页存在的全部理由就是不用去改那个文件。
+    """
+
+    def test_a_named_owner_beats_the_suggestion(self, client) -> None:
+        got = _plan(client, rates={"李四": 0.04}, owners={"P1": "李四"})
+        assert ("P1", "李四", "0.04") in {
+            (r["product_id"], r["person"], r["share"]) for r in got["preview"]
+        }
+
+    def test_the_override_says_where_it_came_from(self, client) -> None:
+        """备注里要看得出这行是人指的还是系统猜的。半年后回头查账靠的就是这一列。"""
+        got = _plan(client, rates={"李四": 0.04}, owners={"P1": "李四"})
+        row = next(r for r in got["preview"] if r["product_id"] == "P1")
+        assert row["note"] == "人工指定"
+
+    def test_a_dash_hands_the_product_back_to_the_fallback(self, client) -> None:
+        got = _plan(client, rates={"汪学成": 0.03}, owners={"P1": "-"},
+                    fallbacks={"张三": 0.02})
+        assert all(r["product_id"] != "P1" for r in got["preview"])
+        assert got["coverage"]["by_store"] == 3
+
+
+class TestSeveralPeopleSplittingTheStore:
+    """淘宝那家店现行配置就是两个人分掉店铺的 5 个点。
+
+    只支持一个兜底人的话，界面把现状显示成一个人，人随手一存另一个人就没了——
+    而少发的那一个人要到发工资那天才会发现。
+    """
+
+    def test_each_one_gets_a_store_row(self, client) -> None:
+        got = _plan(client, fallbacks={"汪学成": 0.035, "李秋雨": 0.015})
+        assert {(r["person"], r["share"]) for r in got["preview"]} == {
+            ("汪学成", "0.035"), ("李秋雨", "0.015")}
+
+    def test_a_product_owned_at_the_same_rate_is_not_split_off(self, client) -> None:
+        """负责人的点数和全店分法里那一格一样，这个商品就不用单独出行。
+
+        淘宝那家店 627 个商品都是这种情况。不压掉的话，写出去的是 627 行「只给
+        运营 3.5」——主管那 1.5 个点在这些商品上被抹掉了，而配置看着还是对的。
+        """
+        got = _plan(client, rates={"汪学成": 0.035},
+                    fallbacks={"汪学成": 0.035, "李秋雨": 0.015})
+        assert got["coverage"]["by_product"] == 0
+        assert {r["product_id"] for r in got["preview"]} == {""}
+
+    def test_changing_one_product_keeps_the_others_share(self, client) -> None:
+        """给某个商品换个人，只换运营那一格，主管那一格照旧。"""
+        got = _plan(client, rates={"汪学成": 0.02},
+                    fallbacks={"汪学成": 0.035, "李秋雨": 0.015})
+        rows = [r for r in got["preview"] if r["product_id"] == "P1"]
+        assert {(r["person"], r["share"]) for r in rows} == {
+            ("汪学成", "0.02"), ("李秋雨", "0.015")}
+        assert {r["total_rate"] for r in rows} == {"0.035"}
+
+    def test_the_group_total_is_what_they_add_up_to(self, client) -> None:
+        """同组每条写同一个总提成率，加载时校验组内相加等于它。写各自的点数会加载失败。"""
+        got = _plan(client, fallbacks={"汪学成": 0.035, "李秋雨": 0.015})
+        assert {r["total_rate"] for r in got["preview"]} == {"0.05"}
+
+    def test_it_survives_a_round_trip_through_the_config(self, client, model, monkeypatch) -> None:
+        monkeypatch.setattr(api.service, "recompute",
+                            lambda *a, **k: type("R", (), {"periods": []})())
+        _plan(client, fallbacks={"汪学成": 0.035, "李秋雨": 0.015}, apply=True)
+        rules = client.get(f"/api/commission/config?store_id={STORE}").json()["rules"]
+        store_level = [r for r in rules if not r["product_id"]]
+        assert sorted(r["share"] for r in store_level) == [0.015, 0.035]
+
+
 class TestPreviewDoesNotTouchAnything:
     def test_preview_writes_no_config(self, client, model) -> None:
         before = (model / "commission.csv").read_bytes()

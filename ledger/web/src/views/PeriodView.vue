@@ -3,6 +3,10 @@
  *
  * 损益表每一行都能点开——这是这套系统和一张普通报表的唯一区别。数字点不开，
  * 对不上账时人就只能回去用 Excel 手工核。
+ *
+ * 排版上，损益表占主栏，剩下四块收进右边一栏的标签页里。它们回答的是同一个
+ * 问题的另一半——「这张表能不能信」——所以必须和数字同屏；但它们又不是每次都
+ * 要看，竖着铺开就把页面拉到三四屏长，人滚到底就忘了上面的数是多少。
  */
 import { useDialog, useMessage } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
@@ -107,6 +111,22 @@ function openDrill(row) {
   if (!row.drillable || !snap.value?.run_id) return
   drill.value = { runId: snap.value.run_id, node: row.id, name: row.name, value: row.value }
 }
+
+const bad = computed(() => (snap.value?.findings || []).filter((f) => !f.passed))
+const missingSources = computed(() =>
+  (snap.value?.sources || []).filter((s) => !s.arrived).length,
+)
+
+// 右栏默认停在最需要人处理的那一块：有没过的检查就停在自检，有没交的表就停在
+// 该交的表。都没有的时候才停在质量。默认永远停在第一个标签的话，真正卡住结账
+// 的那条提示就藏在第二个标签后面。
+const rail = ref('checks')
+watch(
+  () => snap.value,
+  () => {
+    rail.value = bad.value.length ? 'checks' : missingSources.value ? 'sources' : 'quality'
+  },
+)
 </script>
 
 <template>
@@ -157,114 +177,138 @@ function openDrill(row) {
           <template v-if="snap.stale"> · 之后又交了新表，数字还是结账那一版</template>
         </n-alert>
 
-        <div class="card">
-          <header>
-            <h2>损益表</h2>
-            <span class="sub">点任意一行看它是怎么来的</span>
-          </header>
-          <div class="statement">
-            <div
-              v-for="row in snap.statement || []"
-              :key="row.id"
-              class="line"
-              :class="[`lv${row.level}`, { total: row.is_total, drillable: row.drillable }]"
-              @click="openDrill(row)"
-            >
-              <span>{{ row.name }}</span>
-              <span v-if="!row.available" class="na">—</span>
-              <span v-else class="amt" :class="{ neg: row.value < 0 }">
-                {{ row.display === 'percent' ? percent(row.value) : money(row.value) }}
-              </span>
+        <div class="cols">
+          <div class="card" style="margin-top: 0">
+            <header>
+              <h2>损益表</h2>
+              <span class="sub">点任意一行看它是怎么来的</span>
+            </header>
+            <div class="statement">
+              <div
+                v-for="row in snap.statement || []"
+                :key="row.id"
+                class="line"
+                :class="[`lv${row.level}`, { total: row.is_total, drillable: row.drillable }]"
+                @click="openDrill(row)"
+              >
+                <span>{{ row.name }}</span>
+                <span v-if="!row.available" class="na">—</span>
+                <span v-else class="amt" :class="{ neg: row.value < 0 }">
+                  {{ row.display === 'percent' ? percent(row.value) : money(row.value) }}
+                </span>
+              </div>
             </div>
+            <p v-if="(snap.missing_sources || []).length" class="why" style="margin-top: var(--s3)">
+              破折号的行是还不知道，不是零。缺：{{ snap.missing_sources.join('、') }}
+            </p>
           </div>
-          <p v-if="(snap.missing_sources || []).length" class="why" style="margin-top: var(--s3)">
-            破折号的行是还不知道，不是零。缺：{{ snap.missing_sources.join('、') }}
-          </p>
-        </div>
 
-        <div class="card">
-          <header><h2>自检</h2></header>
-          <n-alert
-            v-for="f in (snap.findings || []).filter((x) => !x.passed)"
-            :key="f.id"
-            :type="f.blocking ? 'error' : 'warning'"
-            :bordered="false"
-            style="margin-bottom: var(--s2)"
-          >
-            {{ f.message }}
-          </n-alert>
-          <n-alert
-            v-if="!(snap.findings || []).some((x) => !x.passed)"
-            type="success"
-            :bordered="false"
-          >
-            {{ (snap.findings || []).length }} 项检查都过了
-          </n-alert>
-        </div>
+          <div class="card rail" style="margin-top: 0">
+            <n-tabs v-model:value="rail" type="line" size="small">
+              <n-tab-pane name="checks">
+                <template #tab>
+                  自检
+                  <n-badge
+                    v-if="bad.length"
+                    :value="bad.length"
+                    :type="bad.some((f) => f.blocking) ? 'error' : 'warning'"
+                    style="margin-left: 6px"
+                  />
+                </template>
+                <n-alert
+                  v-for="f in bad"
+                  :key="f.id"
+                  :type="f.blocking ? 'error' : 'warning'"
+                  :bordered="false"
+                  style="margin-bottom: var(--s2)"
+                >
+                  {{ f.message }}
+                </n-alert>
+                <n-alert v-if="!bad.length" type="success" :bordered="false">
+                  {{ (snap.findings || []).length }} 项检查都过了
+                </n-alert>
+              </n-tab-pane>
 
-        <div class="card">
-          <header>
-            <h2>该交的表</h2>
-            <span class="sub">缺一张，损益表上就有一行出不了数</span>
-          </header>
-          <n-table size="small" :bordered="false">
-            <tbody>
-              <tr v-for="s in snap.sources || []" :key="s.id">
-                <td>{{ s.name }}</td>
-                <td class="right">
-                  <n-tag size="small" :type="s.arrived ? 'success' : 'warning'" :bordered="false">
-                    {{ s.arrived ? '已交' : s.reason || '没交' }}
-                  </n-tag>
-                </td>
-              </tr>
-            </tbody>
-          </n-table>
-        </div>
+              <n-tab-pane name="sources">
+                <template #tab>
+                  该交的表
+                  <n-badge
+                    v-if="missingSources"
+                    :value="missingSources"
+                    type="warning"
+                    style="margin-left: 6px"
+                  />
+                </template>
+                <p class="xs muted" style="margin-bottom: var(--s2)">
+                  缺一张，损益表上就有一行出不了数。
+                </p>
+                <div class="scroll">
+                  <n-table size="small" :bordered="false">
+                    <tbody>
+                      <tr v-for="s in snap.sources || []" :key="s.id">
+                        <td class="small">{{ s.name }}</td>
+                        <td class="right">
+                          <n-tag size="small" :type="s.arrived ? 'success' : 'warning'" :bordered="false">
+                            {{ s.arrived ? '已交' : s.reason || '没交' }}
+                          </n-tag>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </n-table>
+                </div>
+              </n-tab-pane>
 
-        <div v-if="snap.quality?.length" class="card">
-          <header>
-            <h2>数据质量</h2>
-            <span class="sub">挂钩率是这张表有多少行认到了订单，覆盖率是订单里有多少拿到了这项数</span>
-          </header>
-          <n-table size="small" :bordered="false">
-            <thead>
-              <tr>
-                <th>项目</th>
-                <th class="right">行数</th>
-                <th class="right">挂钩率</th>
-                <th class="right">覆盖率</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="q in snap.quality" :key="q.metric">
-                <td>
-                  {{ q.name }}
-                  <span v-if="q.company_wide" class="xs muted">· 全公司表</span>
-                </td>
-                <td class="right num">{{ count(q.rows) }}</td>
-                <td class="right num">{{ q.hit_rate === null ? '—' : percent(q.hit_rate) }}</td>
-                <td class="right num">
-                  {{ q.coverage === null ? '—' : percent(q.coverage) }}
-                  <span v-if="q.expect_label" class="xs muted">（{{ q.expect_label }}）</span>
-                </td>
-              </tr>
-            </tbody>
-          </n-table>
-        </div>
+              <n-tab-pane v-if="snap.quality?.length" name="quality" tab="质量">
+                <p class="xs muted" style="margin-bottom: var(--s2)">
+                  挂钩率是这张表有多少行认到了订单，覆盖率是订单里有多少拿到了这项数。
+                </p>
+                <div class="scroll">
+                  <n-table size="small" :bordered="false">
+                    <thead>
+                      <tr>
+                        <th>项目</th>
+                        <th class="right">行数</th>
+                        <th class="right">挂钩</th>
+                        <th class="right">覆盖</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="q in snap.quality" :key="q.metric">
+                        <td class="small">
+                          {{ q.name }}
+                          <span v-if="q.company_wide" class="xs muted">· 全公司表</span>
+                        </td>
+                        <td class="right num xs">{{ count(q.rows) }}</td>
+                        <td class="right num xs">{{ q.hit_rate === null ? '—' : percent(q.hit_rate) }}</td>
+                        <td class="right num xs">
+                          {{ q.coverage === null ? '—' : percent(q.coverage) }}
+                          <span v-if="q.expect_label" class="xs muted">（{{ q.expect_label }}）</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </n-table>
+                </div>
+              </n-tab-pane>
 
-        <div v-if="snap.unlinked_total" class="card">
-          <header>
-            <h2>没进利润的钱</h2>
-            <span class="sub">合计 <span class="num">{{ money(snap.unlinked_total) }}</span></span>
-          </header>
-          <n-table size="small" :bordered="false">
-            <tbody>
-              <tr v-for="(b, i) in snap.unlinked_buckets || []" :key="i">
-                <td>{{ b.name || b.bucket }}<div class="xs muted">{{ b.why }}</div></td>
-                <td class="right num">{{ money(b.amount) }}</td>
-              </tr>
-            </tbody>
-          </n-table>
+              <n-tab-pane v-if="snap.unlinked_total" name="unlinked" tab="没进利润的钱">
+                <p class="small" style="margin-bottom: var(--s2)">
+                  合计 <span class="num">{{ money(snap.unlinked_total) }}</span>
+                </p>
+                <div class="scroll">
+                  <n-table size="small" :bordered="false">
+                    <tbody>
+                      <tr v-for="(b, i) in snap.unlinked_buckets || []" :key="i">
+                        <td class="small">
+                          {{ b.name || b.bucket }}<div class="xs muted">{{ b.why }}</div>
+                        </td>
+                        <td class="right num xs">{{ money(b.amount) }}</td>
+                      </tr>
+                    </tbody>
+                  </n-table>
+                </div>
+              </n-tab-pane>
+            </n-tabs>
+          </div>
         </div>
       </template>
 

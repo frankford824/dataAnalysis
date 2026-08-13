@@ -6,6 +6,10 @@
  * 另一页。合成一页之后，一家店就是一张卡：它是哪个平台的、交了哪些表、算到哪个
  * 账期了。
  *
+ * 摆法是左边一列店、右边一张表。上一版是每家店一张卡竖着铺，十几家店就是十几屏，
+ * 想比较「淘宝那家交齐了没、抖音那家呢」得来回滚。左右分栏之后换店只是点一下，
+ * 右边那半屏原地换掉，人的视线不用移动。
+ *
  * 登记新店只要店名加平台。剩下的字段系统自己能认：账期从文件名认，店铺主体在
  * 需要开票之前根本用不上。
  */
@@ -27,6 +31,7 @@ const detail = ref({})
 const loading = ref(false)
 const adding = ref(false)
 const draft = ref({ name: '', platform: '' })
+const picked = ref('')
 
 const shown = computed(() =>
   app.stores.filter(
@@ -50,6 +55,8 @@ const groups = computed(() => {
   }))
 })
 
+const here = computed(() => shown.value.find((s) => s.id === picked.value) || null)
+
 async function load() {
   loading.value = true
   try {
@@ -57,6 +64,9 @@ async function load() {
       shown.value.map((s) => api.store(s.id).catch(() => null)),
     )
     detail.value = Object.fromEntries(shown.value.map((s, i) => [s.id, got[i]]))
+    if (!shown.value.some((s) => s.id === picked.value)) {
+      picked.value = shown.value[0]?.id || ''
+    }
   } finally {
     loading.value = false
   }
@@ -72,8 +82,7 @@ function state(id) {
 }
 
 function files(id) {
-  const all = detail.value[id]?.files || []
-  return all
+  return detail.value[id]?.files || []
 }
 
 function drop(storeId, name) {
@@ -110,6 +119,7 @@ async function register() {
     adding.value = false
     draft.value = { name: '', platform: '' }
     await app.load(true)
+    picked.value = id
     message.success('登记好了。把这家店的表拖进来就能算账。')
   } catch (e) {
     message.error(e.message, { duration: 6000 })
@@ -129,7 +139,7 @@ function open(id) {
       <div>
         <h1>数据与店铺</h1>
         <div class="small muted">
-          {{ count(shown.length) }} 家店。每家店交了哪些表、算到哪个月了，都在这里。
+          {{ count(shown.length) }} 家店。左边选一家，右边是它交过的表。
         </div>
       </div>
       <n-button size="small" @click="adding = true">登记新店</n-button>
@@ -137,20 +147,22 @@ function open(id) {
 
     <DropZone style="margin-bottom: var(--s4)" />
 
-    <div v-for="g in groups" :key="g.platform" class="card">
-      <header>
-        <h2>{{ g.name }}</h2>
-        <span class="sub">{{ g.list.length }} 家店</span>
-      </header>
-
-      <div v-for="s in g.list" :key="s.id" class="panel" style="margin-top: var(--s3)">
-        <div class="spread">
-          <div>
-            <button class="link" style="font-size: var(--t-md); font-weight: 620" @click="open(s.id)">
-              {{ s.name }}
-            </button>
-            <span v-if="s.archived" class="pill" style="margin-left: var(--s2)">已归档</span>
-            <div class="xs muted">
+    <div class="cols list">
+      <div class="card" style="margin-top: 0; padding: var(--s3)">
+        <template v-for="g in groups" :key="g.platform">
+          <div class="groupline">{{ g.name }} · {{ g.list.length }} 家</div>
+          <button
+            v-for="s in g.list"
+            :key="s.id"
+            class="pick"
+            :class="{ on: s.id === picked }"
+            @click="picked = s.id"
+          >
+            <div class="spread">
+              <span class="who">{{ s.name }}</span>
+              <span class="xs muted num">{{ files(s.id).length }} 张</span>
+            </div>
+            <div class="meta">
               <template v-if="state(s.id)">
                 {{ state(s.id).period }} ·
                 {{ state(s.id).state === 'closed' ? '已结账' : '未结账' }}
@@ -160,42 +172,75 @@ function open(id) {
               </template>
               <template v-else>还没交过表</template>
             </div>
-          </div>
-          <span class="small muted num">{{ count(files(s.id).length) }} 张表</span>
-        </div>
+          </button>
+        </template>
+        <p v-if="!shown.length" class="xs muted" style="padding: var(--s3)">
+          筛选条里没有匹配的店。
+        </p>
+      </div>
 
-        <n-table v-if="files(s.id).length" size="small" :bordered="false" style="margin-top: var(--s3)">
-          <thead>
-            <tr>
-              <th>文件</th>
-              <th>交表人</th>
-              <th class="right">大小</th>
-              <th class="right">更新</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="f in files(s.id)" :key="f.name">
-              <td class="xs">
-                {{ f.name }}
-                <n-tag v-if="f.versions > 1" size="tiny" :bordered="false">
-                  {{ f.versions }} 版
-                </n-tag>
-              </td>
-              <td class="xs muted">{{ f.by || '—' }}</td>
-              <td class="right xs num">{{ bytes(f.size / 1024) }}</td>
-              <td class="right xs muted">{{ ago(f.updated_at) }}</td>
-              <td class="right">
-                <n-button size="tiny" quaternary type="error" @click="drop(s.id, f.name)">
-                  撤下
-                </n-button>
-              </td>
-            </tr>
-          </tbody>
-        </n-table>
-        <p v-else class="xs muted" style="margin-top: var(--s2)">
+      <div v-if="here" class="card rail" style="margin-top: 0">
+        <header>
+          <h2>
+            <button class="link" style="font-size: var(--t-lg); font-weight: 640" @click="open(here.id)">
+              {{ here.name }}
+            </button>
+            <span v-if="here.archived" class="pill" style="margin-left: var(--s2)">已归档</span>
+          </h2>
+          <span class="sub">{{ count(files(here.id).length) }} 张表</span>
+        </header>
+
+        <div v-if="files(here.id).length" class="scroll tall">
+          <n-table size="small" :bordered="false">
+            <thead>
+              <tr>
+                <th>文件</th>
+                <th>交表人</th>
+                <th class="right">大小</th>
+                <th class="right">更新</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="f in files(here.id)" :key="f.name">
+                <td class="xs">
+                  {{ f.name }}
+                  <n-tag v-if="f.versions > 1" size="tiny" :bordered="false">
+                    {{ f.versions }} 版
+                  </n-tag>
+                </td>
+                <td class="xs muted">{{ f.by || '—' }}</td>
+                <td class="right xs num">{{ bytes(f.size / 1024) }}</td>
+                <td class="right xs muted nowrap">{{ ago(f.updated_at) || '—' }}</td>
+                <td class="right">
+                  <n-button size="tiny" quaternary type="error" @click="drop(here.id, f.name)">
+                    撤下
+                  </n-button>
+                </td>
+              </tr>
+            </tbody>
+          </n-table>
+        </div>
+        <p v-else class="xs muted">
           还没交过表。把这家店的月度表拖进上面那个框就行。
         </p>
+
+        <div v-if="(detail[here.id]?.periods || []).length" class="panel">
+          <h3>算过的账期</h3>
+          <div class="row wrap" style="margin-top: var(--s2)">
+            <n-button
+              v-for="p in detail[here.id].periods"
+              :key="p.period"
+              size="tiny"
+              @click="open(here.id)"
+            >
+              {{ p.period }}
+              <span class="xs muted" style="margin-left: 4px">
+                {{ p.state === 'closed' ? '已结' : '未结' }}
+              </span>
+            </n-button>
+          </div>
+        </div>
       </div>
     </div>
 

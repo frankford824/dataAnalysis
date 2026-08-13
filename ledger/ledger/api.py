@@ -533,9 +533,11 @@ def commission_summary(period: str = "") -> dict:
         })
         for p in c.get("people") or []:
             slot = people.setdefault(p["person"], {"person": p["person"], "amount": 0.0,
-                                                   "base": 0.0, "stores": []})
+                                                   "base": 0.0, "products": 0, "stores": []})
             slot["amount"] += p.get("amount") or 0.0
             slot["base"] += p.get("base") or 0.0
+            # 商品是逐店的，跨店直接相加不会重复计数。
+            slot["products"] += int(p.get("products") or 0)
             slot["stores"].append({
                 "store": store.name if store else st.store_id,
                 "store_id": st.store_id,
@@ -745,10 +747,42 @@ class RatePlan(BaseModel):
     #: 人员 → 提成率。写 0.03 或 3 都按 3% 理解不了，所以这里只收小数，
     #: 界面上负责把「3%」翻成 0.03——翻译放在离人最近的地方。
     rates: dict[str, float] = {}
-    #: 没有归属的商品归谁、拿几个点。人名留空表示不给任何人。
+    #: 商品 → 人，改掉系统猜的归属。历史归属数据认不出新来的人，也认不出这个月
+    #: 刚交接的商品；没有这个口子，新人只能靠手改 CSV 才能绑上，那这一页就等于
+    #: 只对老人有用。写 "-" 表示不单独配，按「没人管」处理——有兜底就归兜底那个人，
+    #: 没兜底就谁都不给。
+    owners: dict[str, str] = {}
+    #: 没有归属的商品归谁、拿几个点。可以是几个人分——淘宝那家店现行配置就是
+    #: 两个人按 3.5 和 1.5 分掉店铺的 5 个点。只留一个人的字段表达不了它，
+    #: 结果是界面把现状显示成一个人，人一保存另一个人就没了。
+    fallbacks: dict[str, float] = {}
+    #: 单人写法。老调用方和命令行还在用，收到就并进 `fallbacks`。
     fallback_person: str = ""
     fallback_rate: float = 0.0
     note: str = ""
+
+    def store_level(self) -> dict[str, float]:
+        """店铺兜底最终是谁拿几个点。两种写法并起来，零费率的不算。"""
+        out = {p: r for p, r in self.fallbacks.items() if p and r}
+        if self.fallback_person and self.fallback_rate:
+            out[self.fallback_person] = self.fallback_rate
+        return out
+
+
+def _split_for(store_level: dict[str, float], person: str, rate: float) -> dict[str, float]:
+    """这个商品的提成怎么分给几个人。
+
+    店铺兜底那一份是「每个商品默认怎么分」。淘宝那家店是两个人分掉 5 个点：
+    运营 3.5、主管 1.5。给某个商品单独指个人的时候，只能动运营那一格——把整份
+    换成一个人的话，主管在这个商品上的 1.5 个点就凭空没了，而这件事要等发工资
+    那天才有人发现。
+
+    指的人不在默认分法里，说明这个商品整份归他（换了个不参与全店分成的人来管），
+    那就整份给他。
+    """
+    if person in store_level:
+        return {**store_level, person: rate}
+    return {person: rate}
 
 
 @app.post("/api/commission/plan")
@@ -774,28 +808,40 @@ def commission_plan(plan: RatePlan, apply: bool = False) -> dict:
 
     generated: list[dict[str, str]] = []
     covered = {"by_product": 0, "by_store": 0, "nobody": 0}
+    store_level = plan.store_level()
+    total_fallback = round(sum(store_level.values()), 10)
     for p in items:
-        person = p["suggest_person"]
+        override = plan.owners.get(p["product_id"], "")
+        person = "" if override == "-" else (override or p["suggest_person"])
         rate = plan.rates.get(person, 0.0) if person else 0.0
         if not person or not rate:
-            covered["by_store" if plan.fallback_person else "nobody"] += 1
+            covered["by_store" if store_level else "nobody"] += 1
             continue
-        if person == plan.fallback_person and rate == plan.fallback_rate:
+        split = _split_for(store_level, person, rate)
+        # 商品单独写的这一份和店铺兜底那一份是一样的分法，写了也只是同一笔钱的
+        # 两种写法。淘宝那家店 627 个商品的负责人和点数都跟兜底一致，压掉之后
+        # 配置从 629 行变成 2 行。
+        if split == store_level:
             covered["by_store"] += 1
             continue
         covered["by_product"] += 1
-        generated.append({
-            "effective_from": effective, "store": store.id,
-            "product_id": p["product_id"], "product_name": p["product_name"],
-            "person": person, "share": str(rate), "total_rate": str(rate),
-            "note": plan.note or f"按运营归属展开（{p['suggest_since'] or '无出处'}）",
-        })
-    if plan.fallback_person and plan.fallback_rate:
+        source = "人工指定" if override else f"按运营归属展开（{p['suggest_since'] or '无出处'}）"
+        total = round(sum(split.values()), 10)
+        for who, share in split.items():
+            generated.append({
+                "effective_from": effective, "store": store.id,
+                "product_id": p["product_id"], "product_name": p["product_name"],
+                "person": who, "share": str(share), "total_rate": str(total),
+                "note": plan.note or source,
+            })
+    for person, rate in store_level.items():
         generated.append({
             "effective_from": effective, "store": store.id,
             "product_id": "", "product_name": "",
-            "person": plan.fallback_person, "share": str(plan.fallback_rate),
-            "total_rate": str(plan.fallback_rate),
+            "person": person, "share": str(rate),
+            # 同一组里每条写一样的总数，加载时校验组内相加等于它。几个人分店铺
+            # 兜底时，总数就是几个人加起来。
+            "total_rate": str(total_fallback),
             "note": plan.note or "店铺兜底：没有单独归属的商品",
         })
 

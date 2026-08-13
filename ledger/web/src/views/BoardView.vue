@@ -5,10 +5,11 @@
  * 卡在哪。上一版把它做成了一张平铺的表，十几家店三个月就是几百个格子，
  * 什么都看得见等于什么都看不见。
  *
- * 所以顺序是：先四个数（全公司这个月），再按平台分组的店铺卡，最后才是完整矩阵。
- * 越往下越细，人可以在任何一层停下。
+ * 所以顺序是：先四个数（全公司这个月），再一张所有店的明细表。逐月对比是同一批
+ * 数字的另一种排法，收在标签页后面——两张表竖着摆的话，一屏之内看不完，人会以为
+ * 下面那张是别的东西。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { brief, count, money, percent } from '../format'
@@ -82,6 +83,13 @@ function label(c) {
   return '进行中'
 }
 
+const tab = ref('here')
+
+/** 平台分组拉平成一张表。分组抬头留着，但不再各占一张卡。 */
+const rows = computed(() =>
+  groups.value.flatMap((g) => [{ head: g.name, size: g.list.length }, ...g.list]),
+)
+
 function open(c) {
   if (!c) return
   app.pick({ store: c.store_id, period: c.period })
@@ -127,87 +135,92 @@ function open(c) {
         </div>
       </div>
 
-      <div v-for="g in groups" :key="g.platform" class="card" style="margin-top: var(--s4)">
-        <header>
-          <h2>{{ g.name }}</h2>
-          <span class="sub">{{ g.list.length }} 家店 · {{ period }}</span>
-        </header>
-        <n-table size="small" :bordered="false" :single-line="false">
-          <thead>
-            <tr>
-              <th>店铺</th>
-              <th class="right">销售收入</th>
-              <th class="right">利润</th>
-              <th class="right">利润率</th>
-              <th>状态</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in g.list" :key="c.store_id" style="cursor: pointer" @click="open(c)">
-              <td>{{ c.store }}</td>
-              <td class="right num">{{ money(c.revenue) }}</td>
-              <td class="right num" :class="{ neg: c.profit < 0 }">{{ money(c.profit) }}</td>
-              <td class="right num">
-                {{ c.revenue ? percent(c.profit / c.revenue) : '—' }}
-              </td>
-              <td>
-                <n-tag
-                  size="small"
-                  :type="c.state === 'closed' ? 'success' : c.blocking?.length ? 'error' : c.can_close ? 'info' : 'default'"
-                  :bordered="false"
-                >
-                  {{ label(c) }}
-                </n-tag>
-              </td>
-            </tr>
-          </tbody>
-        </n-table>
-      </div>
-
       <div class="card" style="margin-top: var(--s4)">
-        <header>
-          <h2>每家店每个月</h2>
-          <span class="sub">最近 {{ shown.length }} 个账期，点格子进去</span>
-        </header>
-        <div class="matrix">
-          <table>
-            <thead>
-              <tr>
-                <th />
-                <th v-for="p in shown" :key="p" class="num">{{ p }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in storeRows" :key="row.id">
-                <th style="white-space: nowrap">{{ row.name }}</th>
-                <td v-for="p in shown" :key="p">
-                  <button
-                    v-if="row.byPeriod[p]"
-                    class="cell"
-                    :class="{
-                      closed: row.byPeriod[p].state === 'closed',
-                      blocked: row.byPeriod[p].blocking?.length,
-                      stale: row.byPeriod[p].stale,
-                    }"
-                    @click="open(row.byPeriod[p])"
-                  >
-                    <div class="amt" :class="{ neg: row.byPeriod[p].profit < 0 }">
-                      {{ brief(row.byPeriod[p].profit) }}
-                    </div>
-                    <div class="state">{{ label(row.byPeriod[p]) }}</div>
-                  </button>
-                  <div v-else class="cell empty-cell">
-                    <div class="amt">—</div>
-                    <div class="state">没交表</div>
-                  </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="xs muted" style="margin-top: var(--s3)">
-          格子里是利润。{{ count(cells.length) }} 个店期。
-        </p>
+        <n-tabs v-model:value="tab" type="line" size="small">
+          <n-tab-pane name="here" :tab="`本月各店（${here.length}）`">
+            <div class="scroll tall">
+              <n-table size="small" :bordered="false" :single-line="false">
+                <thead>
+                  <tr>
+                    <th>店铺</th>
+                    <th class="right">销售收入</th>
+                    <th class="right">利润</th>
+                    <th class="right">利润率</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template v-for="r in rows">
+                    <tr v-if="r.head" :key="`h-${r.head}`" class="quiet">
+                      <td colspan="5" class="xs muted" style="padding-top: var(--s3)">
+                        {{ r.head }} · {{ r.size }} 家店
+                      </td>
+                    </tr>
+                    <tr v-else :key="r.store_id" style="cursor: pointer" @click="open(r)">
+                      <td>{{ r.store }}</td>
+                      <td class="right num">{{ money(r.revenue) }}</td>
+                      <td class="right num" :class="{ neg: r.profit < 0 }">{{ money(r.profit) }}</td>
+                      <td class="right num">
+                        {{ r.revenue ? percent(r.profit / r.revenue) : '—' }}
+                      </td>
+                      <td>
+                        <n-tag
+                          size="small"
+                          :type="r.state === 'closed' ? 'success' : r.blocking?.length ? 'error' : r.can_close ? 'info' : 'default'"
+                          :bordered="false"
+                        >
+                          {{ label(r) }}
+                        </n-tag>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </n-table>
+            </div>
+          </n-tab-pane>
+
+          <n-tab-pane name="months" :tab="`逐月对比（${shown.length} 个账期）`">
+            <div class="matrix scroll tall">
+              <table>
+                <thead>
+                  <tr>
+                    <th />
+                    <th v-for="p in shown" :key="p" class="num">{{ p }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in storeRows" :key="row.id">
+                    <th style="white-space: nowrap">{{ row.name }}</th>
+                    <td v-for="p in shown" :key="p">
+                      <button
+                        v-if="row.byPeriod[p]"
+                        class="cell"
+                        :class="{
+                          closed: row.byPeriod[p].state === 'closed',
+                          blocked: row.byPeriod[p].blocking?.length,
+                          stale: row.byPeriod[p].stale,
+                        }"
+                        @click="open(row.byPeriod[p])"
+                      >
+                        <div class="amt" :class="{ neg: row.byPeriod[p].profit < 0 }">
+                          {{ brief(row.byPeriod[p].profit) }}
+                        </div>
+                        <div class="state">{{ label(row.byPeriod[p]) }}</div>
+                      </button>
+                      <div v-else class="cell empty-cell">
+                        <div class="amt">—</div>
+                        <div class="state">没交表</div>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="xs muted" style="margin-top: var(--s3)">
+              格子里是利润。{{ count(cells.length) }} 个店期。
+            </p>
+          </n-tab-pane>
+        </n-tabs>
       </div>
 
       <DropZone style="margin-top: var(--s4)" />
