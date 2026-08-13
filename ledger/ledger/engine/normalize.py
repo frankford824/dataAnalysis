@@ -89,7 +89,31 @@ def _drop_total_rows(frame: pl.DataFrame, template: Template, notes: list[str]) 
     dropped = frame.height - kept.height
     if dropped:
         notes.append(f"丢掉 {dropped} 行合计行（{marker} 为空或写着合计）")
+        _note_total_gap(frame.filter(~keep), kept, template, notes)
     return kept
+
+
+def _note_total_gap(
+    total_rows: pl.DataFrame, kept: pl.DataFrame, template: Template, notes: list[str]
+) -> None:
+    """合计行说的数和明细行加起来对不上，说一声。
+
+    合计行是文件自己声明的正确答案，扔掉之前白拿一次核对。对不上有两种可能，
+    而这一层分不出是哪种，也不该替人分：要么解析漏了行，要么明细本来就不全——
+    拼多多推广表就是后者，它的合计含全店托管，而全店托管平台不给单个商品的花费。
+    两种都得有人知道，无声扔掉才是最坏的选择。
+    """
+    for role in _numeric_roles(template):
+        if role not in kept.columns:
+            continue
+        declared = total_rows.select(_number_expr(role, total_rows.schema[role]).sum()).item()
+        detail = kept.select(_number_expr(role, kept.schema[role]).sum()).item()
+        if declared is None or detail is None or abs(declared - detail) < 0.005:
+            continue
+        notes.append(
+            f"合计行的 {role} 说 {declared:,.2f}，明细行加起来 {detail:,.2f}，"
+            f"差 {declared - detail:+,.2f}"
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -432,7 +456,42 @@ def _normalize_time(frame: pl.DataFrame, template: Template, notes: list[str]) -
             .otherwise(pl.col(col))
             .alias(col)
         )
+    frame = _time_from_fallbacks(frame, template, notes)
     return _time_notes(frame, template, notes)
+
+
+def _time_from_fallbacks(
+    frame: pl.DataFrame, template: Template, notes: list[str]
+) -> pl.DataFrame:
+    """时间槽位还空着的行，按模板声明的兜底取法再补一次。见 `TimeFallback`。
+
+    只补空的，不覆盖已有的值：兜底的依据（订单号里的日期）比原列弱，
+    原列有值的时候拿它去覆盖，等于用推断替换事实。
+    """
+    for fb in template.time_fallbacks:
+        col = str(fb.slot)
+        if col not in frame.columns or fb.from_role not in frame.columns:
+            continue
+        src = pl.col(fb.from_role).cast(pl.Utf8)
+        picked = src.str.extract(fb.extract, 1) if fb.extract else src
+        parsed = (
+            picked.str.to_date(fb.format, strict=False)
+            if fb.format
+            else picked.map_elements(to_date, return_dtype=pl.Date)
+        )
+        before = int(frame.get_column(col).is_null().sum())
+        if not before:
+            continue
+        frame = frame.with_columns(
+            pl.when(pl.col(col).is_null()).then(parsed).otherwise(pl.col(col)).alias(col)
+        )
+        filled = before - int(frame.get_column(col).is_null().sum())
+        if filled:
+            notes.append(
+                f"{col} 有 {filled} 行原列是空的，日期从 {fb.from_role} 里取"
+                f"（{fb.note or fb.extract or '整个值'}）"
+            )
+    return frame
 
 
 def _time_notes(frame: pl.DataFrame, template: Template, notes: list[str]) -> pl.DataFrame:

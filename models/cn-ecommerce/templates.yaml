@@ -51,6 +51,73 @@
     抖店的对账表本身就是子订单级，所以抖音这条链路不需要收入分配率——
     这也解释了分配率为什么存在：它是淘宝对账表只到主订单级才需要的补丁。
 
+- id: jd_order_detail_v1
+  source: order_detail
+  name: 京东订单明细（交易-订单列表导出）
+  match_columns: [订单号, 商品ID, 订购数量, 商家应收, 订单状态, 商家SKUID]
+  parse: {header_row: 1}
+  total_row_marker: order_id
+  time_slots: {order_date: order_time, pay_date: pay_time}
+  bindings:
+    - {role: order_id, columns: [订单号]}
+    - {role: product_id, columns: [商品ID]}
+    - {role: product_name, columns: [商品名称], required: false}
+    - {role: quantity, columns: [订购数量], required: false}
+    # 京东的三个金额列：订单金额是买家看到的总价，应付金额是买家实付，商家应收是
+    # 平台答应给店铺的钱。取商家应收——它和对账表里的货款是同一个口径，实测按订单
+    # 去重后 65,229.54，对账表算出来的交易收款 65,000.93，差的 0.35% 是退掉的单。
+    - {role: buyer_paid, columns: [商家应收]}
+    - {role: order_state, columns: [订单状态], required: false}
+    - {role: order_time, columns: [下单时间]}
+    - {role: pay_time, columns: [付款确认时间], required: false}
+  note: >
+    没有主子订单结构，也没有运单号那一列。一个订单号占若干行（一行一个商品，
+    实测 3,726 行 2,981 个订单，最多一单 25 行），所以订单级的钱要按行数均分。
+
+    没有运单号意味着运费只能靠聚水潭回查：运费表的取键规则链第二环（查订单明细的
+    物流单号）对这个平台永远落空，第三环（查聚水潭的快递单号）才是实际生效的那条。
+    这和京东自己的规则表写的一致——它的运费回查只写了聚水潭这一条。
+
+- id: pdd_order_detail_v1
+  source: order_detail
+  name: 拼多多订单明细（发货管理-订单查询导出）
+  match_columns: [订单号, 商品id, 商家实收金额(元), 用户实付金额(元), 快递单号]
+  parse: {header_row: 1}
+  total_row_marker: order_id
+  time_slots: {order_date: order_time}
+  bindings:
+    - {role: order_id, columns: [订单号]}
+    - {role: product_id, columns: [商品id]}
+    - {role: product_name, columns: [商品], required: false}
+    - {role: quantity, columns: ["商品数量(件)"], required: false}
+    - {role: buyer_paid, columns: ["商家实收金额(元)"]}
+    - {role: sku, columns: [商家编码-规格维度], required: false}
+    - {role: order_state, columns: [订单状态], required: false}
+    - {role: tracking_no, columns: [快递单号], required: false}
+    - {role: order_time, columns: [订单成交时间]}
+  time_fallbacks:
+    - slot: order_date
+      from_role: order_id
+      extract: '^(\d{6})-'
+      format: '%y%m%d'
+      note: 订单号前六位就是下单日期
+  note: >
+    一行一个订单，订单号行级唯一（实测 2,297 行 2,297 个订单号）。所以订单级的钱
+    直接挂，不用分摊——这也正是它的规则表里对账那几项没有除以 countifs 的原因。
+
+    成交时间那一列有 127 行是空的，同一行的发货时间和确认收货时间也空着，
+    三列全空。规则表在这张表的说明里写了一句「订单成交时间所在列位置有变」，
+    这个导出的时间列本来就不稳。没有账期的订单会落进一个「无账期」的店期，
+    等于从这个月的损益表上消失，而消失的金额一处都不报错——这个月是 127 单。
+
+    所以账期从订单号兜底。依据不是猜：订单号形如 260531-607198974342268，
+    前六位是下单日期，实测有成交时间的 2,170 行里 2,167 行两者完全一致，
+    差的 3 行是临近午夜下的单。
+
+    表里有子订单收入、主订单收入、收入分配率三列，整列是空的。那是照淘宝那张表
+    抄过来的表头，拼多多这个导出没有主子订单结构，不要绑，绑了会让分摊逻辑
+    以为有分配率可用。
+
 - id: alibaba1688_order_detail_v1
   source: order_detail
   name: 1688 订单明细（已卖出货品导出）
@@ -317,10 +384,61 @@
     - {role: spend_time, columns: [日期], required: false}
   time_slots: {spend_date: spend_time}
 
+- id: promotion_jd_v1
+  source: promotion
+  name: 京东推广（京准通自定义报表）
+  match_columns: [跟单SKU ID, 跟单SKU名称, 花费, 展现数, 点击数]
+  parse: {header_row: 1}
+  bindings:
+    - {role: product_id, columns: [跟单SKU ID]}
+    - {role: product_name, columns: [跟单SKU名称], required: false}
+    - {role: spend, columns: [花费]}
+    - {role: spend_period, columns: [日期], required: false}
+  note: >
+    按跟单 SKU ID 匹配订单明细的商品ID，与淘宝按主体ID、拼多多按商品ID 是同一件事。
+
+    日期那一列不是日期，是「20260501~20260531」这样一个区间字符串，整张表 2,261 行
+    全是同一个值——这个报表是按所选时间段汇总的，本来就没有日次。所以它绑成一个
+    普通文本角色，不进时间槽位：账期跟着它挂上的订单走。硬当日期解会得到一整列空值
+    加一整列解析失败的告警，而告警是有代价的——一旦有人习惯了忽略它，
+    真正解析失败的那天也不会有人看。
+
+- id: promotion_pdd_v1
+  source: promotion
+  name: 拼多多推广（推广平台-报表下载）
+  match_columns: [商品ID, 商品名称, 推广场景, "总花费(元)", 曝光量, 点击量]
+  parse: {header_row: 1}
+  total_row_marker: spend_time
+  time_slots: {spend_date: spend_time}
+  bindings:
+    - {role: product_id, columns: [商品ID]}
+    - {role: product_name, columns: [商品名称], required: false}
+    # 成交花费只算直接成交的那部分，总花费是这个商品这一天真正花掉的钱。
+    - {role: spend, columns: ["总花费(元)"]}
+    - {role: spend_time, columns: [日期]}
+  note: >
+    一行一个商品一天。表底有一行总计（日期那格写着「总计」，靠 total_row_marker
+    丢掉）——不丢的话推广费正好翻倍，店铺那张手工表就是这么翻的：
+    实测商品行合计 1,871.01，含总计行一起加是 3,742.02，而他们订单明细里
+    推广费用那一列的合计恰好是 3,742.02。
+
+    规则表里的「全店推广」那一步没有照做。它写的是把（总计 − 各商品之和）按商品数
+    均摊，本意是分掉全店托管那部分没有商品明细的花费——表底的注释也写着
+    「合计数据包含全店托管，但全店托管不提供单个商品的花费」。本期这个差额是 0，
+    他们算出来的每商品 374.20 元全店推广，来源是把总计行自己也加进了「各商品之和」，
+    是上面那个翻倍的副产品，不是真的全店托管花费。
+
+    差额真的不为零的时候，丢合计行那一步会把它作为一条观察记下来（「合计行的 spend
+    说 X，明细行加起来 Y」），有人看得见再决定怎么摊。眼下先不摊：摊法只有规则表
+    那一句话，没有一行数据能验证它摊得对不对，而摊错了不会报错，只会让每个商品的
+    利润都偏一点。
+
 - id: brushing_v1
   source: brushing
   name: 刷单本金佣金
-  match_columns: [下单日期, 店铺, 订单号, 本金, 佣金, 总金额]
+  # 不要求总金额那一列：淘宝那份叫总金额，拼多多那份叫合计，同一个东西两种叫法。
+  # 写进必需列会让拼多多那份认不出来。
+  match_columns: [下单日期, 付款日期, 店铺, 订单号, 本金, 佣金]
   parse: {header_row: 1}
   time_slots: {order_date: order_time}
   bindings:
@@ -329,9 +447,11 @@
     - {role: principal, columns: [本金]}
     - {role: commission, columns: [佣金]}
     - {role: platform_fee, columns: [平台费], required: false}
-    - {role: total_cost, columns: [总金额]}
+    - {role: total_cost, columns: [总金额, 合计]}
     - {role: order_time, columns: [下单日期]}
-  note: 全公司一张表，必须按店铺筛，否则会把别的店的刷单算进来。
+  note: >
+    全公司一张表，必须按店铺筛，否则会把别的店的刷单算进来。
+    金额取现成的总金额/合计列，两个平台的规则表都写着它等于本金+佣金。
 
 - id: dropship_v1
   source: dropship
@@ -469,6 +589,84 @@
     销售支出=sumifs(对账表已付金额,关联订单号,订单号)/countifs(订单号)。
     场景明细有服务费、技术服务费缴纳、大分销抽佣、跨境供应链服务、仅退款补贴几种，
     合计只有 667.50 元，拆开对利润没有意义，保持和人工口径一致。
+
+- id: jd_settlement_v1
+  source: settlement
+  name: 京东对账（财务-对账中心导出）
+  match_columns: [订单编号, 父单号, 费用名称, 应结金额, 收支方向, 结算状态]
+  parse: {header_row: 1}
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: base_order_id, columns: [订单编号], occurrence: 0}
+    - {role: parent_order_id, columns: [父单号], required: false}
+    - {role: subject, columns: [费用名称]}
+    # 应结金额自带符号：支出为负。实测收入 5,281 行全正、支出 31,630 行全负。
+    - {role: income, columns: [应结金额]}
+    - {role: direction, columns: [收支方向]}
+    - {role: bill_status, columns: [结算状态]}
+    - {role: order_state, columns: [订单状态], required: false}
+    - {role: txn_id, columns: [结算单号], required: false}
+    - {role: remark, columns: [资金动账备注], required: false}
+    - {role: settle_time, columns: [到账时间]}
+  classify_rules:
+    - dictionary: true
+      note: >
+        查科目字典。本期 15 种费用名称全部命中——售后卖家赔付费和返利框架费
+        原先没有条目，按京东规则表「值填充为平台技术服务费」补进字典了，
+        写在字典里而不是写成一条模板规则，是因为它就是一条科目名到大类的映射。
+  reclassify:
+    - when_major: trade_receipt
+      and_when: {field: direction, equals: [支出]}
+      major: trade_refund
+      note: >
+        京东规则表第二步：费项为交易收款、收支方向为支出的，改判成交易退款。
+        实测命中 257 行、-6,173.83 元——货款退回 256 行，代收配送费退回 1 行。
+        不改判的话这笔钱会当成负的销售收入混进收入行，收入和退款两行都不对。
+  note: >
+    右边第 34-38 列是人工加的透视表（订单编号、交易收款、平台技术服务费、交易退款、
+    总计），不参与解析——而且它是错的：实测那张透视表的每一项都正好是原始行的两倍
+    （交易收款 213,416.10 对 106,708.05，技术服务费 -34,141.42 对 -17,070.71，
+    交易退款 -12,347.66 对 -6,173.83，总计 166,927.02 对 83,463.51）。
+    店铺那张订单明细的 SUMIFS 引的就是这张透视表，所以他们手工算出来的利润
+    每一项都翻了一倍，见 checks.yaml 里的对照。
+
+    只有已结算的算数（规则表写的「未结算和不结算的删掉」）。本期导出里 36,911 行
+    全是已结算，筛选写在指标的 where 上而不是这里，这样漏进来的行会显示成
+    未归类而不是无声消失。
+
+- id: pdd_settlement_v1
+  source: settlement
+  name: 拼多多对账（账户资金-对账中心导出）
+  match_columns: [商户订单号, 发生时间, 收入金额（+元）, 支出金额（-元）, 账务类型, 业务描述]
+  exclude_columns: [账务流水号]
+  parse: {header_row: 1}
+  sign: as_is
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: base_order_id, columns: [商户订单号], occurrence: 0}
+    - {role: subject, columns: [业务描述]}
+    - {role: income, columns: ["收入金额（+元）"]}
+    - {role: outgo, columns: ["支出金额（-元）"]}
+    - {role: biz_type, columns: [账务类型], required: false}
+    - {role: remark, columns: [备注], required: false}
+    - {role: settle_time, columns: [发生时间]}
+  classify_rules:
+    - dictionary: true
+      note: >
+        业务描述是「0010002|交易收入-订单收入」这种带编号的全称，字典里存的就是全称，
+        直接查得到。本期 16 种全部命中——合作费追回原先没有条目，比照同一组的
+        申诉追回归到交易赔付。
+  note: >
+    列名和淘宝支付宝账务明细撞了一半（收入金额、支出金额、商户订单号、业务描述），
+    靠 exclude_columns 里的账务流水号分开：淘宝那张有，这张没有。
+
+    右边第 12-19 列是人工加的透视表，不参与解析，而且和京东那张一样每项正好翻倍
+    （交易收款 214,087.12 对 107,043.56，交易退款 -43,690.92 对 -21,845.46，
+    提现 -175,200 对 -87,600）。
+
+    提现和转账-广告账户不是经营损益：字典把它们归到 withdrawal 和 ad_topup，
+    没有任何指标消费这两个口径项，所以它们进得来但不进利润。本期这两项
+    合计 -99,600 元，占对账表流水的大头，混进去的话利润会变成负十万。
 
 - id: douyin_settlement_v1
   source: settlement

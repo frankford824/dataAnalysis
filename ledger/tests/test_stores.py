@@ -147,8 +147,20 @@ class TestShippedRegistry:
 
     def test_loads(self):
         m = load_model(MODELS / "cn-ecommerce")
-        assert len(m.stores) == 3
-        assert {s.platform for s in m.stores} == {"taobao", "alibaba1688", "douyin"}
+        assert len(m.stores) == 5
+        assert {s.platform for s in m.stores} == {
+            "taobao", "alibaba1688", "douyin", "jd", "pdd",
+        }
+
+    def test_every_store_platform_is_registered(self):
+        """店铺的 platform 必须在平台清单里。
+
+        这条比数店数有用：拼错一个字（"taobao " 带空格）不会报错，只会让这家店的
+        平台专属规则一条都不生效——账少算，而界面全绿。
+        """
+        m = load_model(MODELS / "cn-ecommerce")
+        known = m.platform_ids()
+        assert [s.id for s in m.stores if s.platform not in known] == []
 
     def test_two_stores_share_one_entity(self):
         """1688星泽 和 抖音浅花涧 同属义乌星泽天成，这个关系推不出来只能配。
@@ -172,5 +184,24 @@ class TestShippedRegistry:
             "订单详情-抖音浅花涧节日装饰.xlsx",
             "对账-1688星泽气球派对.xlsx",
             "小额打款-抖音浅花涧节日装饰.xlsx",
+            "对账-京东皇莉诗.xlsx",
+            "订单明细-pdd快乐节庆.xlsx",
         ]:
             assert m.store_of(name) is not None, name
+
+    def test_company_wide_tables_name_stores_differently(self):
+        """全公司共用的那几张表里，店名的写法和文件名不一样，要靠别名认。
+
+        聚水潭和刷单表在店名前面挂运营的名字（叶真-京东皇莉诗），运费表写的是
+        平台上的店招（皇莉诗旗舰店）。少一个别名的后果是那张表整块认不到这家店，
+        不报错，只是那一项金额是 0。
+        """
+        m = load_model(MODELS / "cn-ecommerce")
+        for written, store_id in [
+            ("叶真-京东皇莉诗", "jd_huanglishi"),
+            ("皇莉诗旗舰店", "jd_huanglishi"),
+            ("徐芹-PDD快乐节庆用品", "pdd_kuailejieqing"),
+            ("快乐节庆用品", "pdd_kuailejieqing"),
+        ]:
+            got = m.store_of(written)
+            assert got is not None and got.id == store_id, written

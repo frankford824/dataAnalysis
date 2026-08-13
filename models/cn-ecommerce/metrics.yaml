@@ -152,6 +152,29 @@
       where:
         - {field: order_state, op: ne, value: 已取消, include_null: true}
 
+    # 京东和拼多多的聚水潭表都挂原始线上订单号，公式也都除了 countifs，
+    # 和 1688 一路。两家的规则表都写着「状态为已取消的数据进行清除」，
+    # 这条缺省的 where 正好就是它，所以不用覆盖。
+    - platform: jd
+      link: {key: original_order_id, to: order.order_id, grain: order}
+      allocate: {mode: even}
+      # 京东的订单明细没有运单号那一列，缺省那条「已发货才要求有成本」在这个平台
+      # 恒不成立，分母会变成全部订单，覆盖率显示 79.9%，而缺的那六百单压根没发货。
+      # 换成按订单状态判：出库前被取消的单子在聚水潭里本来就没有行。
+      #
+      # 数据是这么说的——「(删除)等待出库」617 单里 616 单没有成本，「(删除)暂停」33 单
+      # 全部没有，「(删除)等待付款确认」2 单全部没有；而「完成」2,735 单里 2,718 单有，
+      # 「(删除)等待确认收货」328 单里 288 单有。也就是说该排除的是没出过库的，
+      # 不是带「(删除)」前缀的——那个前缀里混着已经发货的单。
+      expect:
+        - {field: order_state, op: not_contains, value: 等待出库}
+        - {field: order_state, op: not_contains, value: 暂停}
+        - {field: order_state, op: not_contains, value: 等待付款确认}
+      expect_label: 已出库
+    - platform: pdd
+      link: {key: original_order_id, to: order.order_id, grain: order}
+      allocate: {mode: even}
+
 - id: dropship_cost
   name: 代发成本
   occasional: true
@@ -165,8 +188,10 @@
 
   by_platform:
     # 抖音按主订单号均分到子订单，和淘宝一样；1688 除以 countifs(订单号)，
-    # 也是同一个语义。三家其实一致，列在这里是为了让「都一样」这件事也有据可查。
+    # 也是同一个语义。五家其实一致，列在这里是为了让「都一样」这件事也有据可查。
     - {platform: alibaba1688, allocate: {mode: even}}
+    - {platform: jd, allocate: {mode: even}}
+    - {platform: pdd, allocate: {mode: even}}
 
 - id: reshipment_cost
   name: 补发成本
@@ -223,6 +248,10 @@
     - platform: douyin
       link: {key: sub_order_id, to: order.sub_order_id, grain: order, min_hit_rate: 0.0}
       direct: true
+    # 京东、拼多多都是 sumifs(运费表总金额, 订单号)/countifs(订单号)，组内均分。
+    # 京东的订单明细没有运单号列，回查只能走聚水潭那一级，见模板里的说明。
+    - {platform: jd, allocate: {mode: even}}
+    - {platform: pdd, allocate: {mode: even}}
 
 # ------------------------------------------------------------ 营销投入 --- #
 - id: ad_cost
@@ -239,6 +268,10 @@
   by_platform:
     # 1688 那张订单明细表的推广费用列写着「无公式，数值全补成 0」——这个店没有投放数据。
     - {platform: alibaba1688, disabled: true}
+    # 京东按跟单 SKU ID、拼多多按商品ID，两家的公式都是除以 countifs(商品ID)，
+    # 和缺省的按商品行数均分是同一件事。
+    - {platform: jd, allocate: {mode: even}}
+    - {platform: pdd, allocate: {mode: even}}
 
 - id: small_payment_cost
   name: 客服打款
@@ -251,9 +284,13 @@
   allocate: {mode: ratio, by: alloc_ratio}
 
   by_platform:
-    # 淘宝按收入分配率比例摊，1688 和抖音都是除以 countifs，即组内均分。
+    # 淘宝按收入分配率比例摊，其余四家都是除以 countifs，即组内均分。
     - {platform: alibaba1688, allocate: {mode: even}}
     - {platform: douyin, allocate: {mode: even}}
+    - {platform: jd, allocate: {mode: even}}
+    # 拼多多这家店本期没有小额打款，它的规则表在这一项旁边写着「目前该店铺无小额打款
+    # 故值设为 0」。指标照留：写死成 0 的话，哪天真发生了会一直算成 0。
+    - {platform: pdd, allocate: {mode: even}}
 
 - id: brushing_cost
   name: 本金佣金
@@ -298,6 +335,119 @@
   note: >
     保障服务、先采后付、交易技术服务费、赔付补贴全归这一条，不拆费项。
     人工口径就是不拆——1688 的订单明细表里只有「销售支出」一列。
+
+# ----------------------------------------------------------------- 京东 --- #
+# 口径来自京东那张订单明细表的公式，每一项都除以 countifs(订单号)，也就是同一订单的
+# 多行之间均摊。它的对账表只拆三项：交易收款、交易退款、平台技术服务费。
+#
+# 大类沿用淘宝那几个（trade_receipt / trade_refund / software_fee）。同名不串账：
+# 指标带平台限定，事实行先按 metric_id 认领再比大类，两个平台的同名大类各归各的。
+#
+# 三条都带「只算已结算」。京东规则表写的是「未结算和不结算的删掉」，本期导出里
+# 36,911 行全是已结算，这条筛选眼下一行都不筛，写着是为了哪天真混进来时不用等人发现。
+- id: trade_receipt_jd
+  name: 销售收入
+  source: settlement
+  platform: jd
+  major: trade_receipt
+  value: {op: sum, of: [income]}
+  where:
+    - {field: bill_status, op: eq, value: 已结算}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  expect:
+    - {field: order_state, op: not_in, value: [已取消]}
+  expect_label: 未取消
+  note: >
+    货款和代收配送费两个科目。收支方向为支出的那些已经在模板里改判成交易退款了，
+    所以这一条拿到的都是真收进来的钱。
+
+- id: trade_refund_jd
+  name: 销售退款
+  occasional: true
+  source: settlement
+  platform: jd
+  major: trade_refund
+  value: {op: sum, of: [income]}
+  where:
+    - {field: bill_status, op: eq, value: 已结算}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: 来自模板里的改判规则，不是字典。源数据本身是负数，直接用。
+
+- id: software_fee_jd
+  name: 平台服务费
+  source: settlement
+  platform: jd
+  major: software_fee
+  value: {op: sum, of: [income]}
+  where:
+    - {field: bill_status, op: eq, value: 已结算}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: >
+    京东叫平台技术服务费，含佣金、交易服务费、商品保险服务费、运费保险服务费、
+    综合违约金、随单送的京豆，以及规则表指定并到这里的售后卖家赔付费和返利框架费。
+    不设 occasional：这个平台每一单都有佣金和交易服务费，缺了就是对账表没交全。
+
+# --------------------------------------------------------------- 拼多多 --- #
+# 口径来自拼多多那张订单明细表的公式。和京东最大的差别是对账那四项都不除 countifs——
+# 因为它的订单明细一行就是一个订单，订单号行级唯一，没有可摊的对象。
+# 这里仍然写 allocate: even：一个订单只有一行时均摊等于直接挂，而万一哪天导出
+# 变成一单多行（换个导出口径就会），直接挂会把同一笔钱在每一行上各记一遍。
+- id: trade_receipt_pdd
+  name: 销售收入
+  source: settlement
+  platform: pdd
+  major: trade_receipt
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: 交易收入-订单收入，加上优惠券结算那部分。收入列和支出列相加取净额。
+
+- id: trade_refund_pdd
+  name: 销售退款
+  occasional: true
+  source: settlement
+  platform: pdd
+  major: trade_refund
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
+- id: software_fee_pdd
+  name: 平台服务费
+  source: settlement
+  platform: pdd
+  major: software_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: 技术服务费和基础技术服务费。费率很低，本期 7,847 行合计只有 -522.14 元。
+
+- id: trade_compensation_pdd
+  name: 交易赔付
+  occasional: true
+  source: settlement
+  platform: pdd
+  major: trade_compensation
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: >
+    售后费用那一组（运费补偿、售后补偿消费者、延迟发货、虚假发货、缺货、
+    发票服务承诺未兑现）加上其他收支那一组（申诉补回、合作费追回）。
 
 # --------------------------------------------------------------- 抖音净额 --- #
 - id: trade_net_douyin

@@ -49,6 +49,8 @@ jd,广告联合活动降扣佣金,广告联合活动降扣佣金,software_fee,0
 jd,综合违约金,综合违约金,software_fee,0
 jd,运费保险服务费,运费保险服务费,software_fee,0
 jd,随单送的京豆,随单送的京豆,software_fee,0
+jd,售后卖家赔付费,售后卖家赔付费,software_fee,0
+jd,返利框架费,返利框架费,software_fee,0
 jd,代收配送费,代收配送费,trade_receipt,0
 jd,货款,货款,trade_receipt,0
 jd_1688,0050002|保险支出-1688卖家版运费险,运费险,software_fee,0
@@ -77,6 +79,7 @@ pdd,0130005|其他收入-申诉补回,其他收入-申诉补回,trade_compensati
 pdd,0130010|其他收入-多单立减,其他收入-多单立减,trade_compensation,0
 pdd,0140002|其他支出-分账支出,其他支出-分账支出,trade_compensation,0
 pdd,0140022|其他支出-申诉追回,其他支出-申诉追回,trade_compensation,0
+pdd,0140028|其他支出-合作费追回,其他支出-合作费追回,trade_compensation,0
 pdd,0010002|交易收入-订单收入,交易收入-订单收入,trade_receipt,0
 pdd,0010005|交易收入-优惠券结算,交易收入-优惠券结算,trade_receipt,0
 pdd,0020002|交易退款-订单退款,交易退款-订单退款,trade_refund,0

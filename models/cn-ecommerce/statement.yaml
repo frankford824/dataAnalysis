@@ -16,10 +16,13 @@
 # 和下面利润率的分母保持同一个口径——两处不一致的话，同一张页面上会出现
 # 「营收 100 万、利润率按 80 万算」这种没法解释的组合。
 - {id: n_receipt, name: 销售收入, level: 2, headline: revenue,
-   formula: {op: add, of: [trade_receipt, trade_receipt_1688, trade_net_douyin]}}
-- {id: n_refund, name: 销售退款, level: 2, formula: {op: add, of: [trade_refund]}}
+   formula: {op: add, of: [trade_receipt, trade_receipt_1688, trade_net_douyin,
+                           trade_receipt_jd, trade_receipt_pdd]}}
+- {id: n_refund, name: 销售退款, level: 2,
+   formula: {op: add, of: [trade_refund, trade_refund_jd, trade_refund_pdd]}}
 - {id: n_expense, name: 平台综合支出, level: 2, formula: {op: add, of: [trade_expense_1688]}}
-- {id: n_software, name: 平台服务费, level: 2, formula: {op: add, of: [software_fee]}}
+- {id: n_software, name: 平台服务费, level: 2,
+   formula: {op: add, of: [software_fee, software_fee_jd, software_fee_pdd]}}
 # 这里原先有一行 n_logistics「平台物流费」，删掉了。理由见 metrics.yaml 里
 # logistics_fee 那一段：费项分类对照表五个平台加起来没有「物流运费」这个业务大类，
 # 唯一撑着它的集运货值赔付已经被业务改判成交易赔付，这一行没有来源了。
@@ -28,7 +31,8 @@
 # 没人产出的口径项、每个明细行都要点得开、报表行按平台适用性显隐。常量行
 # 三条全破——它会在 1688 和抖音的损益表上也冒出来，那两个平台根本没有这个概念。
 # 将来真有来源接进来，把指标和这一行一起加回去。
-- {id: n_compensation, name: 交易赔付, level: 2, formula: {op: add, of: [trade_compensation]}}
+- {id: n_compensation, name: 交易赔付, level: 2,
+   formula: {op: add, of: [trade_compensation, trade_compensation_pdd]}}
 - {id: n_marketing, name: 平台营销费用, level: 2, formula: {op: add, of: [marketing_fee]}}
 - {id: n_goods, name: 商品成本, level: 2, formula: {op: add, of: [goods_cost]}}
 - {id: n_dropship, name: 代发成本, level: 2, formula: {op: add, of: [dropship_cost]}}

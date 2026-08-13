@@ -70,3 +70,30 @@
   note: >
     主体取自抖音对账单的「商户主体名称」，1,782 行取值唯一，
     和 1688星泽气球派对 是同一家主体。
+
+- id: jd_huanglishi
+  name: 京东皇莉诗
+  platform: jd
+  entity: ""
+  aliases: [叶真-京东皇莉诗, 皇莉诗旗舰店]
+  commission_base: net_profit
+  commission_on_loss: deduct
+  note: >
+    主体待配：京东对账表里没有主体名那一列。
+
+    别名是全公司共用的那几张表里这家店的写法——聚水潭和代发表写「叶真-京东皇莉诗」
+    （前面是运营的名字），运费表的账单结算对象名称写「皇莉诗旗舰店」。
+    少一个别名的后果是那张表整块认不到这家店，而不是报错。
+
+- id: pdd_kuailejieqing
+  name: pdd快乐节庆
+  platform: pdd
+  entity: ""
+  aliases: [徐芹-PDD快乐节庆用品, PDD快乐节庆用品, 快乐节庆用品]
+  commission_base: net_profit
+  commission_on_loss: deduct
+  note: >
+    主体待配：拼多多对账表里没有主体名那一列。
+
+    别名同上——聚水潭和刷单表写「徐芹-PDD快乐节庆用品」，代发表写「快乐节庆用品」。
+    亏损订单按默认倒扣，这家店没有历史提成表可以反推政策，等业务确认。

@@ -41,6 +41,13 @@ TOLERANCE = 0.005
 #: 基线文件。放在仓库里，跟着代码走。
 BASELINE = Path(__file__).resolve().parent.parent / "tests" / "baseline" / "statements.json"
 
+#: 没有账期的那个店期在基线里叫什么。
+#:
+#: 订单明细里时间那一列整列空着就会出现它（拼多多那份有 127 行是这样）。
+#: 它必须占一个位置，因为那批订单的钱既不在任何月份里，也不该无声消失——
+#: 数量或金额变了得有人看见。
+NO_PERIOD = "(无账期)"
+
 #: 这些字段每次跑都不一样，比它们只会制造噪音。
 #:
 #: 目前只有一个：`sha` 之类的内容哈希不进 `slice_dict`，所以实际没有需要排除的。
@@ -180,9 +187,15 @@ def snapshot(model: Model, corpus: Path, store_ids: Iterable[str] | None = None)
         if not files:
             continue
         result = run(ingest([str(p) for p in files], model, [store.name]), store.platform)
+        # 账期可能是空的：订单明细里那一列时间整列空着，就会出现一个没有账期的店期。
+        # 这种店期照样要进基线——它代表着一批算不进任何月份的订单，数量变了必须有人
+        # 知道。键排序时得先把空的换成一个字符串，否则 sorted 拿 None 和 str 比大小
+        # 直接抛异常，整道回放门打不开，而打不开的表现和「没跑」一样。
         periods = {
-            sl.period: _strip(slice_dict(sl, store, model)
-                              | {"commission": _commission(result, model, store.id, sl.period)})
+            (sl.period or NO_PERIOD): _strip(
+                slice_dict(sl, store, model)
+                | {"commission": _commission(result, model, store.id, sl.period)}
+            )
             for sl in result.slices.values()
         }
         if periods:

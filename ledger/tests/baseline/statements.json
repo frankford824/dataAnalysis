@@ -1,6 +1,6 @@
 {
- "engine_version": "d0a0fcb",
- "note": "",
+ "engine_version": "7263e3a-dirty",
+ "note": "接京东皇莉诗、pdd快乐节庆两家店：新增两平台的订单明细/对账/推广模板，归类之后的改判原语，账期从订单号兜底",
  "stores": {
   "alibaba1688_xingze": {
    "2026-05": {
@@ -743,6 +743,937 @@
      }
     ],
     "unlinked_total": 0.0
+   }
+  },
+  "jd_huanglishi": {
+   "2026-05": {
+    "can_close": true,
+    "commission": {
+     "base_node": "net_profit",
+     "base_total": 22510.91,
+     "fallback_base": 0.0,
+     "negative_base": -5752.19,
+     "negative_orders": 1174,
+     "on_loss": "deduct",
+     "people": [],
+     "skipped_loss_base": 0.0,
+     "total": 0.0,
+     "unassigned_base": 22510.91
+    },
+    "entity": "",
+    "findings": [
+     {
+      "blocking": false,
+      "id": "chk_goods_coverage",
+      "message": "商品成本 覆盖了已出库的 2,415 笔订单里的 98.3%，正常",
+      "name": "订单拿到商品成本",
+      "passed": true
+     },
+     {
+      "blocking": false,
+      "id": "chk_receipt_coverage",
+      "message": "订单拿到销售收入：没有可比对的订单，跳过",
+      "name": "订单拿到销售收入",
+      "passed": true
+     },
+     {
+      "blocking": false,
+      "id": "chk_settlement_link",
+      "message": "对账流水挂上订单：这个月没有相关数据，跳过",
+      "name": "对账流水挂上订单",
+      "passed": true
+     },
+     {
+      "blocking": false,
+      "id": "chk_no_unclassified",
+      "message": "所有科目都认识",
+      "name": "没有未归类科目",
+      "passed": true
+     },
+     {
+      "blocking": false,
+      "id": "chk_sources_ready",
+      "message": "该到的数据都到了（4/4）",
+      "name": "数据源到齐",
+      "passed": true
+     },
+     {
+      "blocking": false,
+      "id": "chk_unlinked_disclosed",
+      "message": "有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。",
+      "name": "未归属金额已呈现",
+      "passed": true
+     }
+    ],
+    "missing_sources": [],
+    "period": "2026-05",
+    "platform": "jd",
+    "quality": [
+     {
+      "company_wide": true,
+      "coverage": 0.6718120805369128,
+      "covered": 2002,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": null,
+      "linked": 2014,
+      "metric": "freight_cost",
+      "name": "发货运费",
+      "occasional": false,
+      "rows": 299565,
+      "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": 0.9620805369127516,
+      "covered": 2867,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": 0.6062691338625342,
+      "linked": 22378,
+      "metric": "trade_receipt_jd",
+      "name": "销售收入",
+      "occasional": false,
+      "rows": 36911,
+      "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": 0.9620805369127516,
+      "covered": 2867,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": 0.6062691338625342,
+      "linked": 22378,
+      "metric": "software_fee_jd",
+      "name": "平台服务费",
+      "occasional": false,
+      "rows": 36911,
+      "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": 0.9834368530020704,
+      "covered": 2375,
+      "excluded": 0,
+      "expect_label": "已出库",
+      "expected": 2415,
+      "hit_rate": 0.6100090171325518,
+      "linked": 6765,
+      "metric": "goods_cost",
+      "name": "商品成本",
+      "occasional": false,
+      "rows": 11090,
+      "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 0,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": 0.0,
+      "linked": 0,
+      "metric": "dropship_cost",
+      "name": "代发成本",
+      "occasional": true,
+      "rows": 2,
+      "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2381,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": 0.6100090171325518,
+      "linked": 6765,
+      "metric": "reshipment_cost",
+      "name": "补发成本",
+      "occasional": true,
+      "rows": 11090,
+      "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 881,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 1445,
+      "hit_rate": 0.38965059708093763,
+      "linked": 881,
+      "metric": "ad_cost",
+      "name": "推广费用",
+      "occasional": true,
+      "rows": 2261,
+      "spine_total": 1445
+     },
+     {
+      "company_wide": true,
+      "coverage": null,
+      "covered": 11,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": null,
+      "linked": 11,
+      "metric": "small_payment_cost",
+      "name": "客服打款",
+      "occasional": true,
+      "rows": 2687,
+      "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2867,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": 0.6062691338625342,
+      "linked": 22378,
+      "metric": "trade_refund_jd",
+      "name": "销售退款",
+      "occasional": true,
+      "rows": 36911,
+      "spine_total": 2980
+     }
+    ],
+    "rows": 374008,
+    "sources": [
+     {
+      "arrived": true,
+      "id": "settlement",
+      "name": "对账（资金流水）",
+      "reason": ""
+     },
+     {
+      "arrived": true,
+      "id": "order_cost",
+      "name": "聚水潭成本",
+      "reason": ""
+     },
+     {
+      "arrived": true,
+      "id": "order_detail",
+      "name": "订单明细",
+      "reason": ""
+     },
+     {
+      "arrived": true,
+      "id": "freight",
+      "name": "运费",
+      "reason": ""
+     }
+    ],
+    "statement": [
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_revenue",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "收入",
+      "value": 60886.23
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_receipt",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "销售收入",
+      "value": 65000.93
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_refund",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "销售退款",
+      "value": -4114.7
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_platform",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "平台费用",
+      "value": -10436.36
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_software",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "平台服务费",
+      "value": -10436.36
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_goods",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "商品成本",
+      "value": -21790.1
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_goods",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "商品成本",
+      "value": -21619.84
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_dropship",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "代发成本",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_reshipment",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "补发成本",
+      "value": -170.26
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_fulfillment",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "履约成本",
+      "value": -3646.55
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_freight",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "发货运费",
+      "value": -3646.55
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_promotion",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "营销投入",
+      "value": -2502.31
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_ad",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "推广费用",
+      "value": -2388.61
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_small_payment",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "客服打款",
+      "value": -113.7
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_brushing",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "本金佣金",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": false,
+      "id": "gross_profit",
+      "is_total": true,
+      "level": 1,
+      "missing_sources": [],
+      "name": "毛利",
+      "value": 43210.83
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": false,
+      "id": "net_profit",
+      "is_total": true,
+      "level": 1,
+      "missing_sources": [],
+      "name": "利润",
+      "value": 22510.91
+     },
+     {
+      "available": true,
+      "display": "percent",
+      "drillable": false,
+      "id": "net_margin",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "利润率",
+      "value": 0.3463167373143738
+     }
+    ],
+    "store": "京东皇莉诗",
+    "store_id": "jd_huanglishi",
+    "unclassified": [],
+    "unlinked_buckets": [
+     {
+      "amount": -547297.48,
+      "count": 297551,
+      "label": "其他店的数据（公司级主表）"
+     }
+    ],
+    "unlinked_total": 0.0
+   }
+  },
+  "pdd_kuailejieqing": {
+   "2026-05": {
+    "can_close": false,
+    "commission": {
+     "base_node": "net_profit",
+     "base_total": 14246.81,
+     "fallback_base": 0.0,
+     "negative_base": -1324.97,
+     "negative_orders": 240,
+     "on_loss": "deduct",
+     "people": [],
+     "skipped_loss_base": 0.0,
+     "total": 0.0,
+     "unassigned_base": 14246.81
+    },
+    "entity": "",
+    "findings": [
+     {
+      "blocking": true,
+      "id": "chk_goods_coverage",
+      "message": "有 58 笔订单没有商品成本（已发货的 1,897 笔订单里覆盖 96.9%，要求 98%）。有订单没有商品成本，毛利会偏高。多半是聚水潭那边订单还没同步，或者「线上子订单编号」这一列的名字变了。",
+      "name": "订单拿到商品成本",
+      "passed": false
+     },
+     {
+      "blocking": false,
+      "id": "chk_receipt_coverage",
+      "message": "订单拿到销售收入：没有可比对的订单，跳过",
+      "name": "订单拿到销售收入",
+      "passed": true
+     },
+     {
+      "blocking": false,
+      "id": "chk_settlement_link",
+      "message": "对账流水挂上订单：这个月没有相关数据，跳过",
+      "name": "对账流水挂上订单",
+      "passed": true
+     },
+     {
+      "blocking": false,
+      "id": "chk_no_unclassified",
+      "message": "所有科目都认识",
+      "name": "没有未归类科目",
+      "passed": true
+     },
+     {
+      "blocking": false,
+      "id": "chk_sources_ready",
+      "message": "该到的数据都到了（4/4）",
+      "name": "数据源到齐",
+      "passed": true
+     },
+     {
+      "blocking": false,
+      "id": "chk_unlinked_disclosed",
+      "message": "有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。",
+      "name": "未归属金额已呈现",
+      "passed": true
+     }
+    ],
+    "missing_sources": [],
+    "period": "2026-05",
+    "platform": "pdd",
+    "quality": [
+     {
+      "company_wide": true,
+      "coverage": 0.812335266209805,
+      "covered": 1541,
+      "excluded": 0,
+      "expect_label": "已发货",
+      "expected": 1897,
+      "hit_rate": null,
+      "linked": 1551,
+      "metric": "freight_cost",
+      "name": "发货运费",
+      "occasional": false,
+      "rows": 299565,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": 0.943815331010453,
+      "covered": 2167,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.3202503509592887,
+      "linked": 5475,
+      "metric": "trade_receipt_pdd",
+      "name": "销售收入",
+      "occasional": false,
+      "rows": 17096,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": 0.943815331010453,
+      "covered": 2167,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.3202503509592887,
+      "linked": 5475,
+      "metric": "software_fee_pdd",
+      "name": "平台服务费",
+      "occasional": false,
+      "rows": 17096,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": 0.9694254085397996,
+      "covered": 1839,
+      "excluded": 0,
+      "expect_label": "已发货",
+      "expected": 1897,
+      "hit_rate": 0.2736154244306418,
+      "linked": 4229,
+      "metric": "goods_cost",
+      "name": "商品成本",
+      "occasional": false,
+      "rows": 15456,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 0,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.0,
+      "linked": 0,
+      "metric": "dropship_cost",
+      "name": "代发成本",
+      "occasional": true,
+      "rows": 13,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 1844,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.2736154244306418,
+      "linked": 4229,
+      "metric": "reshipment_cost",
+      "name": "补发成本",
+      "occasional": true,
+      "rows": 15456,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 3,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 223,
+      "hit_rate": 0.9893617021276596,
+      "linked": 93,
+      "metric": "ad_cost",
+      "name": "推广费用",
+      "occasional": true,
+      "rows": 94,
+      "spine_total": 223
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 0,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.0,
+      "linked": 0,
+      "metric": "brushing_cost",
+      "name": "本金佣金",
+      "occasional": true,
+      "rows": 4,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2167,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.3202503509592887,
+      "linked": 5475,
+      "metric": "trade_refund_pdd",
+      "name": "销售退款",
+      "occasional": true,
+      "rows": 17096,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2167,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.3202503509592887,
+      "linked": 5475,
+      "metric": "trade_compensation_pdd",
+      "name": "交易赔付",
+      "occasional": true,
+      "rows": 17096,
+      "spine_total": 2296
+     }
+    ],
+    "rows": 328480,
+    "sources": [
+     {
+      "arrived": true,
+      "id": "settlement",
+      "name": "对账（资金流水）",
+      "reason": ""
+     },
+     {
+      "arrived": true,
+      "id": "order_cost",
+      "name": "聚水潭成本",
+      "reason": ""
+     },
+     {
+      "arrived": true,
+      "id": "order_detail",
+      "name": "订单明细",
+      "reason": ""
+     },
+     {
+      "arrived": true,
+      "id": "freight",
+      "name": "运费",
+      "reason": ""
+     }
+    ],
+    "statement": [
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_revenue",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "收入",
+      "value": 28335.83
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_receipt",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "销售收入",
+      "value": 34865.58
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_refund",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "销售退款",
+      "value": -6529.75
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_platform",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "平台费用",
+      "value": -480.2
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_software",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "平台服务费",
+      "value": -174.76
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_compensation",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "交易赔付",
+      "value": -305.44
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_goods",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "商品成本",
+      "value": -9170.76
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_goods",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "商品成本",
+      "value": -9082.55
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_dropship",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "代发成本",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_reshipment",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "补发成本",
+      "value": -88.21
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_fulfillment",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "履约成本",
+      "value": -2567.06
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_freight",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "发货运费",
+      "value": -2567.06
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_promotion",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "营销投入",
+      "value": -1871.01
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_ad",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "推广费用",
+      "value": -1871.01
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_small_payment",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "客服打款",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_brushing",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "本金佣金",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": false,
+      "id": "gross_profit",
+      "is_total": true,
+      "level": 1,
+      "missing_sources": [],
+      "name": "毛利",
+      "value": 25694.82
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": false,
+      "id": "net_profit",
+      "is_total": true,
+      "level": 1,
+      "missing_sources": [],
+      "name": "利润",
+      "value": 14246.8
+     },
+     {
+      "available": true,
+      "display": "percent",
+      "drillable": false,
+      "id": "net_margin",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "利润率",
+      "value": 0.4086207658097183
+     }
+    ],
+    "store": "pdd快乐节庆",
+    "store_id": "pdd_kuailejieqing",
+    "unclassified": [],
+    "unlinked_buckets": [
+     {
+      "amount": -7.72,
+      "count": 7,
+      "label": "取不出订单号，要查归属"
+     },
+     {
+      "amount": -548376.97,
+      "count": 298014,
+      "label": "其他店的数据（公司级主表）"
+     },
+     {
+      "amount": -57600.0,
+      "count": 1,
+      "label": "提现"
+     },
+     {
+      "amount": -2000.0,
+      "count": 2,
+      "label": "万相台"
+     },
+     {
+      "amount": -5.0,
+      "count": 1,
+      "label": "售后费用-虚假发货"
+     },
+     {
+      "amount": 5066.7,
+      "count": 748,
+      "label": "其他账期的订单"
+     }
+    ],
+    "unlinked_total": -59612.72
    }
   },
   "taobao_xibishun": {

@@ -177,6 +177,58 @@ class ClassifyRule(Base):
         return self
 
 
+class TimeFallback(Base):
+    """某个时间槽位为空时，从别的列里把日期抠出来。
+
+    平台导出的时间列会整列空着——拼多多那份订单明细 2,297 行里有 127 行成交时间、
+    发货时间、确认收货时间三列全空。它们没有账期，于是落进一个「没有账期」的店期里，
+    也就是从这个月的损益表上消失，而消失的金额不会有任何一处报错。
+
+    抠日期这件事要有依据，不能靠猜。拼多多的订单号形如 260531-607198974342268，
+    前六位就是下单日期：实测有成交时间的 2,170 行里 2,167 行两者完全一致，
+    差的 3 行是临近午夜下的单。所以这不是启发式，是这个平台的编号规则。
+    """
+
+    slot: TimeSlot
+    #: 从哪个角色的值里抠。
+    from_role: str
+    #: 正则，取第 1 组。不写就整个值拿去解。
+    extract: str = ""
+    #: strptime 格式。不写就走通用的日期识别。
+    format: str = ""
+    note: str = ""
+
+    @field_validator("extract")
+    @classmethod
+    def _compilable(cls, v: str) -> str:
+        if v:
+            re.compile(v)
+        return v
+
+
+class Reclassify(Base):
+    """归类之后的改判。看的是归类结果加另一列，不是原始科目名。
+
+    规则链解决不了这种条件：它的每一环只看一列，而且第一条命中就收工。京东那条
+    「费项是交易收款、同时收支方向是支出，改判成交易退款」要同时看两处，其中一处
+    还是链条自己刚算出来的结果。硬塞进链条只能把科目名列举一遍——货款、代收配送费，
+    那等于把字典里「哪些科目算交易收款」抄了第二份，往后字典加一条这里就少一条，
+    而少掉的表现是一笔退款被当成收入，利润凭空高一截。
+
+    所以改判排在归类之后，按大类匹配。字典怎么长它都跟着走。
+    """
+
+    #: 原来归到哪个口径项。
+    when_major: str
+    #: 还要同时满足的条件。
+    and_when: FieldMatch
+    #: 改判成哪个口径项。
+    major: str
+    #: 细项跟着改。不写就保留原来的（通常是平台自己那个科目名，界面上要显示它）。
+    minor: str | None = None
+    note: str = ""
+
+
 class Predicate(Base):
     """过滤条件。对应 DAX 里 CALCULATE 的筛选参数。"""
 
@@ -348,10 +400,14 @@ class Template(Base):
     dedup: DedupRule = DedupRule()
     #: 时间槽位映射：槽位 → 字段角色。
     time_slots: dict[TimeSlot, str] = Field(default_factory=dict)
+    #: 时间槽位空着时的兜底取法。
+    time_fallbacks: tuple[TimeFallback, ...] = ()
     #: 取关联键的规则链。声明了就用它，指标的 link.key 只用于没有规则链的简单场合。
     key_rules: tuple[KeyRule, ...] = ()
     #: 归类的规则链。
     classify_rules: tuple[ClassifyRule, ...] = ()
+    #: 归类之后的改判。
+    reclassify: tuple[Reclassify, ...] = ()
     #: 表底合计行的特征：这个角色为空则整行是合计行，必须丢掉。
     #: 实测订单明细表底有一行合计，不丢会让每一列金额刚好翻倍。
     total_row_marker: str | None = None
@@ -373,6 +429,16 @@ class Template(Base):
         for i, rule in enumerate(self.classify_rules, 1):
             if rule.when and rule.when.field not in roles:
                 raise ValueError(f"{self.id}: 归类规则 {i} 引用了未定义的角色 {rule.when.field}")
+        for i, rule in enumerate(self.reclassify, 1):
+            if rule.and_when.field not in roles:
+                raise ValueError(f"{self.id}: 改判规则 {i} 引用了未定义的角色 {rule.and_when.field}")
+        for fb in self.time_fallbacks:
+            if fb.from_role not in roles:
+                raise ValueError(f"{self.id}: 时间兜底引用了未定义的角色 {fb.from_role}")
+            if fb.slot not in self.time_slots:
+                raise ValueError(
+                    f"{self.id}: 时间兜底给了槽位 {fb.slot}，但这个模板没声明这个槽位"
+                )
         return self
 
     @property
@@ -490,6 +556,9 @@ class PlatformRule(Base):
     where: tuple[Predicate, ...] | None = None
     #: 覆盖该平台的覆盖率分母。语义同 where：空列表表示按全部订单算。
     expect: tuple[Predicate, ...] | None = None
+    #: 分母怎么念给人听。换了分母不换说法的话，界面上会写着「已发货的 2,744 笔」，
+    #: 而这个平台判的根本不是发没发货。
+    expect_label: str = ""
     allocate: Allocation | None = None
     #: 该平台不分摊，源金额直接落到脊柱行。用来清掉缺省的分摊设置。
     #: （单靠 allocate 留空表达不了「不摊」，那和「不覆盖」分不开。）
@@ -567,6 +636,7 @@ class Metric(Base):
             "link": rule.link or self.link,
             "where": self.where if rule.where is None else rule.where,
             "expect": self.expect if rule.expect is None else rule.expect,
+            "expect_label": rule.expect_label or self.expect_label,
             "allocate": None if rule.direct else (rule.allocate or self.allocate),
             "major": rule.major or self.major,
         })
@@ -997,6 +1067,7 @@ class Model(Base):
         majors |= {
             r.major for t in self.templates for r in t.classify_rules if r.major
         }
+        majors |= {r.major for t in self.templates for r in t.reclassify}
         for m in self.metrics:
             if m.source not in source_ids:
                 errors.append(f"指标 {m.id} 指向不存在的数据源 {m.source}")

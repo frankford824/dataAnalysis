@@ -15,6 +15,7 @@ from ..model.schema import Model, Template, normalize_header
 from .rules import (
     ChainStats,
     CompiledClassifyRule,
+    Matcher,
     compile_classify_rules,
     resolve_class,
     text_expr,
@@ -49,7 +50,8 @@ def classify(
         return _passthrough(frame), ClassifyReport()
 
     if template is not None and template.classify_rules:
-        return _classify_by_chain(frame, model, platform, amount_column, template)
+        out, report = _classify_by_chain(frame, model, platform, amount_column, template)
+        return _reclassify(out, template), report
 
     report = ClassifyReport(total_rows=frame.height, classified_rows=frame.height)
     if ROLE_SUBJECT not in frame.columns:
@@ -86,16 +88,39 @@ def classify(
         classified += 1
 
     report.classified_rows = classified
-    return (
-        frame.with_columns(
-            pl.Series(COL_MAJOR, majors, dtype=pl.Utf8),
-            pl.Series(COL_MINOR, minors, dtype=pl.Utf8),
-            pl.Series(COL_CLASSIFIED, hits, dtype=pl.Boolean),
-            pl.Series(COL_EXCLUDED, [False] * frame.height, dtype=pl.Boolean),
-            pl.Series(COL_NATURAL_UNLINKED, naturals, dtype=pl.Boolean),
-        ),
-        report,
+    out = frame.with_columns(
+        pl.Series(COL_MAJOR, majors, dtype=pl.Utf8),
+        pl.Series(COL_MINOR, minors, dtype=pl.Utf8),
+        pl.Series(COL_CLASSIFIED, hits, dtype=pl.Boolean),
+        pl.Series(COL_EXCLUDED, [False] * frame.height, dtype=pl.Boolean),
+        pl.Series(COL_NATURAL_UNLINKED, naturals, dtype=pl.Boolean),
     )
+    return (_reclassify(out, template) if template else out), report
+
+
+def _reclassify(frame: pl.DataFrame, template: Template) -> pl.DataFrame:
+    """归类之后按大类改判。见 `Reclassify` 那段说明。
+
+    整列做完，不逐行：条件是「大类等于某值」加「另一列匹配」，两个都是列表达式。
+    多条改判按声明顺序叠，后一条看得见前一条的结果——和规则链「第一条命中的生效」
+    正相反，这里是流水线。写多条互相能触发的改判是自找麻烦，但语义得先说清楚。
+    """
+    if not template.reclassify or frame.is_empty():
+        return frame
+    for rule in template.reclassify:
+        if rule.and_when.field not in frame.columns:
+            continue
+        text = text_expr(frame.schema[rule.and_when.field], rule.and_when.field)
+        hit = (pl.col(COL_MAJOR) == rule.when_major) & Matcher(rule.and_when).mask(text)
+        frame = frame.with_columns(
+            pl.when(hit).then(pl.lit(rule.major)).otherwise(pl.col(COL_MAJOR)).alias(COL_MAJOR),
+            (
+                pl.when(hit).then(pl.lit(rule.minor)).otherwise(pl.col(COL_MINOR)).alias(COL_MINOR)
+                if rule.minor
+                else pl.col(COL_MINOR)
+            ),
+        )
+    return frame
 
 
 def _classify_by_chain(
