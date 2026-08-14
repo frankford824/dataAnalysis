@@ -98,6 +98,61 @@ class TestWhoTheRowBelongsTo:
         assert facts.get_column("period").to_list() == ["2026-05"]
 
 
+class TestAStoreNameNobodyRegisteredIsNotAStore:
+    """认不出的店名当没报，退回交表的那家店。
+
+    抖音对账表能给的最接近店铺的一列是「商户主体名称」，写的是
+    义乌星泽天成供应链管理有限公司——一个主体名。照着它记归属，挂不上订单的行
+    就落进一个根本不存在的店期，而切片按 (店, 账期) 取，于是这批行既不进损益表
+    也不进未归属清单：实测抖音 5 月有 1,606 行这样消失，其中 191 行、3,180.46 元
+    是销售收入，比这家店报出来的收入还多。
+    """
+
+    ROSTER = {"京东皇莉诗": "京东皇莉诗", "皇莉诗旗舰店": "京东皇莉诗",
+              "抖音浅花涧节日装饰": "抖音浅花涧节日装饰", "蔡果-抖店浅花涧": "抖音浅花涧节日装饰"}
+
+    def test_an_entity_name_is_not_a_store_name(self):
+        frame = _frame([{"amount": -10.0, "store_name": "义乌星泽天成供应链管理有限公司"}])
+        facts, notes = evaluate_metric(
+            frame, _metric(), _template(), "抖音浅花涧节日装饰", store_names=self.ROSTER,
+        )
+        assert facts.get_column("store").to_list() == ["抖音浅花涧节日装饰"]
+        assert any("不在店铺档案里" in n for n in notes), "换了归属要说出来，不能悄悄换"
+
+    def test_a_registered_alias_becomes_the_registered_name(self):
+        """别名要换成正名。
+
+        留着别名会犯和主体名一样的错：切片是按正名建的，「蔡果-抖店浅花涧」这个
+        写法登记过、认得出，可它照样不是任何一个切片的键。
+        """
+        frame = _frame([{"amount": -10.0, "store_name": "蔡果-抖店浅花涧"}])
+        facts, _ = evaluate_metric(
+            frame, _metric(), _template(), "淘宝喜必顺", store_names=self.ROSTER,
+        )
+        assert facts.get_column("store").to_list() == ["抖音浅花涧节日装饰"]
+
+    def test_the_name_must_match_whole_not_partly(self):
+        """不能像认文件名那样用包含匹配。
+
+        全公司的运费表里同时有「皇莉诗旗舰店」（京东那家）和「天猫皇莉诗旗舰店」
+        （天猫另一家店）。包含匹配会把后者的运费算到京东头上——一笔本不属于它的
+        成本，而且金额对得上、看不出错。
+        """
+        frame = _frame([{"amount": -10.0, "store_name": "天猫皇莉诗旗舰店"}])
+        facts, _ = evaluate_metric(
+            frame, _metric(), _template(), "京东皇莉诗", store_names=self.ROSTER,
+        )
+        assert facts.get_column("store").to_list() == ["京东皇莉诗"], (
+            "不该被当成京东那家店自己报的名字"
+        )
+
+    def test_without_a_roster_the_sheet_is_believed(self):
+        """没给名单就不改行为——引擎不许自己发明店铺档案。"""
+        frame = _frame([{"amount": -10.0, "store_name": "喜必顺旗舰店"}])
+        facts, _ = evaluate_metric(frame, _metric(), _template())
+        assert facts.get_column("store").to_list() == ["喜必顺旗舰店"]
+
+
 # --------------------------------------------------------------------------- #
 # 一行记录进没进账
 # --------------------------------------------------------------------------- #

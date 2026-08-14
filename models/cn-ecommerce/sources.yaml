@@ -92,7 +92,19 @@
   cadence: weekly
   required_for_close: false
   provides: [brushing_cost]
-  note: 从微盘获取，全公司一张表，要按店铺筛。
+  dedupe_key: [store_name, order_id, principal, commission]
+  company_wide: true
+  note: >
+    从微盘获取，全公司一张表，靠订单号落到店。
+
+    交上来的每一份都混着别家店：淘宝店长交的那份 1,202 行里有 8 家店的写法，
+    其中属于喜必顺的只有几十行。不声明公司级的后果不是算错钱——订单号挂不上
+    自然就不进这家店的利润——而是界面上这一项的命中率写着 3.9%，看着像整张表
+    九成六的数据都出了问题。一列常年通红，人就不再看它，真出问题那天也没人看见。
+
+    去重键取「哪家店、哪张单、本金多少、佣金多少」。实测四份文件 1,206 行
+    1,206 个键，没有一行重复，所以这个键是准确的；它防的是哪天两个店长交的
+    副本圈到了同一批行——直接拼接会让那部分刷单成本翻倍，而翻倍不报错。
 
 - id: dropship
   name: 代发
@@ -101,7 +113,12 @@
   cadence: weekly
   required_for_close: false
   provides: [dropship_cost]
-  note: 从微盘获取，全公司一张表，要按店铺筛。
+  dedupe_key: [store_name, order_id, total_cost]
+  company_wide: true
+  note: >
+    从微盘获取，全公司一张表，靠订单号落到店。理由与刷单那条相同：
+    淘宝店长交的那份 198 行里有 6 家店，命中率 48.5% 是假警报。
+    实测四份 233 行 233 个键，没有重复。
 
 - id: reshipment
   name: 补发
@@ -114,6 +131,21 @@
   note: >
     结构与聚水潭成本表相同，是从那张表按订单类型筛出补发订单另存的。
     1688 不单独报，补发成本已含在聚水潭成本里。
+
+- id: insurance
+  name: 权益保险（保费支出）
+  filename_hints: [权益保险, 保费支出]
+  platform: douyin
+  owner_role: shop_owner
+  cadence: weekly
+  required_for_close: false
+  provides: [insurance_cost_douyin]
+  note: >
+    抖店的保费支出流水，业务代号 J 表。一行一笔保费，带关联子订单号，按子订单直挂。
+
+    本期只有表头没有数据行。有模板和没模板不是一回事：没有的话这张表会被当成
+    认不出来的表拦下来，交表的人得去处理一张其实没有内容的表；有的话它是
+    「这个月保费确实是 0」。
 
 - id: small_payment
   name: 小额打款

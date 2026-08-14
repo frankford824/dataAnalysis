@@ -402,6 +402,12 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
     # 全部一起算会让 1688 的收支口径混进淘宝的账。下面两个循环都要按这份名单走。
     metrics = [r for r in (m.for_platform(platform) for m in model.metrics) if r is not None]
 
+    # 店铺档案里的每种写法 → 正名。核算时用来把表格自己报的店名归到登记的那家店，
+    # 认不出来的当没报，见 `calc._own_store`。
+    store_names = {
+        name: s.name for s in model.stores for name in (s.name, *s.aliases) if name
+    }
+
     for metric in metrics:
         items = ingestion.frames_of(metric.source)
         if not items:
@@ -432,7 +438,8 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
             hint_period = _first_hint(item.frame, "__hint_period__")
             try:
                 facts, fnotes = calc.evaluate_metric(
-                    frame, metric, item.template, hint_store or "", hint_period or ""
+                    frame, metric, item.template, hint_store or "", hint_period or "",
+                    store_names, model.source(metric.source).company_wide,
                 )
             except calc.CalculateError as exc:
                 notes.append(f"{item.ref.label()} 算 {metric.name} 出错：{exc}")

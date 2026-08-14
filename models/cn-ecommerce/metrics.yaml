@@ -449,16 +449,91 @@
     售后费用那一组（运费补偿、售后补偿消费者、延迟发货、虚假发货、缺货、
     发票服务承诺未兑现）加上其他收支那一组（申诉补回、合作费追回）。
 
-# --------------------------------------------------------------- 抖音净额 --- #
-- id: trade_net_douyin
+# --------------------------------------------------------------- 抖音收支 --- #
+# 抖音本来是「一条净额」：销售收入=sumifs(对账表动账金额,子订单号,子订单编号)，
+# 不拆费项、不分摊。业务补的新规则把它拆成了和另外四个平台一样的五项，
+# 并且挂钩键从子订单号换成主订单号、除以 countifs（即组内均分）：
+#
+#   交易收款/交易退款/软件服务费/交易赔付/保证金
+#     = sumifs(对账表该项, 对账表订单号, 主订单编号) / countifs(主订单编号)
+#
+# 换成拆项之后，这家店的损益表才和别家可比——原来抖音的「平台费用」整组是空的，
+# 界面上看不出它有没有交平台服务费。拆开之后费项归类走字典，那张对照表业务这次
+# 一并给了（20 条），和字典里已有的 20 条逐条相同，一条都不用改。
+- id: trade_receipt_douyin
   name: 销售收入
   source: settlement
   platform: douyin
-  major: trade_net_douyin
+  major: trade_receipt
   value: {op: sum, of: [income]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: >
+    动账金额自带符号，不取反。挂主订单号、组内均分。
+
+    换成主订单号是有得的：本期按子订单号挂能认领 186 行 3,069.91，按主订单号挂
+    认领 188 行 3,111.65，多出来的 41.74 是同一个主订单（6953149768301877000）
+    上的两笔——一笔的子订单号是空的，另一笔写的子订单号（…F00）在订单明细里
+    没有。这个主订单本身在脊柱上，有 4 个子订单。也就是说这 41.74 是这家店
+    真金白银的收款，按子订单挂会漏掉，而漏掉不报错。
+
+- id: trade_refund_douyin
+  name: 销售退款
+  occasional: true
+  source: settlement
+  platform: douyin
+  major: trade_refund
+  value: {op: sum, of: [income]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
+- id: software_fee_douyin
+  name: 平台服务费
+  occasional: true
+  source: settlement
+  platform: douyin
+  major: software_fee
+  value: {op: sum, of: [income]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: 偏远地区物流服务、上门取件运费、权益保险（运费险）三个动账场景。
+
+- id: trade_compensation_douyin
+  name: 交易赔付
+  occasional: true
+  source: settlement
+  platform: douyin
+  major: trade_compensation
+  value: {op: sum, of: [income]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: 消费者赔付、拦截费、欠票扣款、评价有礼那两项、其他费用。
+
+- id: insurance_cost_douyin
+  name: 权益保险
+  occasional: true
+  source: insurance
+  platform: douyin
+  value: {op: sum, of: [total_cost]}
+  sign: negate
   time_basis: settle_date
   link: {key: sub_order_id, to: order.sub_order_id, grain: order}
   note: >
-    抖音的销售收入是动账金额的净额，按子订单号直接挂，不分摊也不拆费项——
-    订单明细表的公式就是一句 sumifs(对账表动账金额,子订单号,子订单编号)。
-    入账（货款结算）为正、出账（货款直投千川、退款）为负，净额已经是这单赚到的钱。
+    保费支出表，业务代号 J 表。规则是
+    sumifs(J表金额, J表关联子订单号, 子订单编号)——按子订单直挂，没有 countifs，
+    所以不分摊。
+
+    本期这张表只有表头、没有数据行。留着模板和指标是因为空表和没有这张表是两件事：
+    没有模板时它会被当成认不出来的表拦在门外，而有模板时它是「这个月确实是 0」。
+
+    要留意一处可能重复：对账表里也有一个叫「权益保险」的动账场景，对照表把它
+    归到软件服务费（备注写着运费险）。两处同名不同表，本期 J 表为空所以不会重复，
+    等 J 表真有数据时要核对一遍是不是同一笔钱记了两次。

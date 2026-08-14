@@ -69,8 +69,15 @@ def evaluate_metric(
     template: Template,
     store_hint: str = "",
     period_hint: str = "",
+    store_names: dict[str, str] | None = None,
+    shared_table: bool = False,
 ) -> tuple[pl.DataFrame, list[str]]:
-    """把一张归一后的数据帧求值成事实行。"""
+    """把一张归一后的数据帧求值成事实行。
+
+    `store_names` 是「表里可能出现的写法 → 店铺档案里的正名」。用途见 `_own_store`。
+    `shared_table` 说明这份数据源是全公司一张表：那种表里出现没登记的店名是常态，
+    不必逐张提示。
+    """
     notes: list[str] = []
     if frame.is_empty():
         return _empty_facts(), notes
@@ -117,11 +124,7 @@ def evaluate_metric(
     )
     period = pl.coalesce(period, pl.lit(period_hint or None, dtype=pl.Utf8))
 
-    own_store = (
-        pl.col("store_name").cast(pl.Utf8)
-        if "store_name" in frame.columns
-        else pl.lit(None, dtype=pl.Utf8)
-    )
+    own_store = _own_store(frame, store_names or {}, notes if not shared_table else None)
     store = (
         pl.coalesce(pl.col("__spine_store__"), own_store)
         if "__spine_store__" in frame.columns
@@ -150,6 +153,45 @@ def evaluate_metric(
         pl.col(ANCHOR_ROW).alias("row_no"),
     ).filter(pl.col("amount") != 0.0)
     return facts, notes
+
+
+def _own_store(
+    frame: pl.DataFrame, store_names: dict[str, str], notes: list[str] | None
+) -> pl.Expr:
+    """表格自己报的店名，换成店铺档案里的正名。认不出来的当没报。
+
+    这一列的取值不受控：抖音对账表能给的最接近店铺的一列是「商户主体名称」，
+    写的是义乌星泽天成供应链管理有限公司——一个主体名，全公司几家店共用。
+    照着它记归属，挂不上订单的行就落进一个根本不存在的店期，而切片是按
+    (店, 账期) 取的，于是这批行既不进损益表也不进未归属清单：实测抖音 5 月有
+    1,606 行、其中 191 行 3,180.46 元是销售收入，界面上一处都看不见——
+    比这家店报出来的收入还多。
+
+    认不出就退回上传时认出的那家店（`store_hint`）。那不一定是这笔钱真正的归属，
+    但这些行至少会作为「挂不上的钱」摆在那一页上，让人看得见、查得着。
+
+    认得出的也要换成正名。别名原样留着会犯同一个错：代发表里这家店写作
+    「蔡果-抖店浅花涧」，那是登记过的别名，可切片是按正名建的，留着别名照样
+    落进一个取不到的店期。
+
+    名字要完全相等，不能像认文件名那样用包含匹配：全公司的运费表里同时有
+    「皇莉诗旗舰店」（京东那家）和「天猫皇莉诗旗舰店」（天猫另一家店），
+    包含匹配会把后者的运费算到京东头上。
+    """
+    if "store_name" not in frame.columns:
+        return pl.lit(None, dtype=pl.Utf8)
+    own = pl.col("store_name").cast(pl.Utf8)
+    if not store_names:
+        return own
+    written = set(frame.get_column("store_name").cast(pl.Utf8).drop_nulls().unique().to_list())
+    stray = sorted(written - set(store_names))
+    if stray and notes is not None:
+        notes.append(
+            f"店名列里有 {len(stray)} 种写法不在店铺档案里"
+            f"（{'、'.join(stray[:3])}{'…' if len(stray) > 3 else ''}），"
+            f"这些行的归属按交表的那家店记"
+        )
+    return own.replace_strict(store_names, default=None, return_dtype=pl.Utf8)
 
 
 def _empty_facts() -> pl.DataFrame:

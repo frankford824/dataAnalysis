@@ -1,6 +1,6 @@
 {
- "engine_version": "7263e3a-dirty",
- "note": "接京东皇莉诗、pdd快乐节庆两家店：新增两平台的订单明细/对账/推广模板，归类之后的改判原语，账期从订单号兜底",
+ "engine_version": "fd5fffd-dirty",
+ "note": "",
  "stores": {
   "alibaba1688_xingze": {
    "2026-05": {
@@ -149,7 +149,7 @@
       "spine_total": 1516
      }
     ],
-    "rows": 309001,
+    "rows": 309130,
     "sources": [
      {
       "arrived": true,
@@ -348,13 +348,13 @@
     "unclassified": [],
     "unlinked_buckets": [
      {
-      "amount": -548046.95,
-      "count": 298201,
+      "amount": -550320.5,
+      "count": 298325,
       "label": "其他店的数据（公司级主表）"
      },
      {
-      "amount": -136.71,
-      "count": 448,
+      "amount": -151.04,
+      "count": 453,
       "label": "其他账期的订单"
      }
     ],
@@ -366,21 +366,21 @@
     "can_close": true,
     "commission": {
      "base_node": "net_profit",
-     "base_total": 984.92,
-     "fallback_base": 1253.07,
-     "negative_base": -268.14,
-     "negative_orders": 75,
+     "base_total": 1026.66,
+     "fallback_base": 1286.45,
+     "negative_base": -259.78,
+     "negative_orders": 74,
      "on_loss": "skip",
      "people": [
       {
-       "amount": 62.65,
-       "base": 1253.07,
+       "amount": 64.32,
+       "base": 1286.45,
        "person": "蔡果",
        "products": 30
       }
      ],
-     "skipped_loss_base": -268.14,
-     "total": 62.65,
+     "skipped_loss_base": -259.78,
+     "total": 64.32,
      "unassigned_base": 0.0
     },
     "entity": "义乌星泽天成供应链管理有限公司",
@@ -434,18 +434,18 @@
     "quality": [
      {
       "company_wide": false,
-      "coverage": 0.7322834645669292,
-      "covered": 186,
+      "coverage": 0.7219917012448133,
+      "covered": 174,
       "excluded": 0,
       "expect_label": "",
-      "expected": 254,
-      "hit_rate": 0.10549943883277217,
-      "linked": 188,
-      "metric": "trade_net_douyin",
+      "expected": 241,
+      "hit_rate": 0.10662177328843996,
+      "linked": 190,
+      "metric": "trade_receipt_douyin",
       "name": "销售收入",
       "occasional": false,
       "rows": 1782,
-      "spine_total": 254
+      "spine_total": 241
      },
      {
       "company_wide": true,
@@ -478,13 +478,13 @@
       "spine_total": 254
      },
      {
-      "company_wide": false,
+      "company_wide": true,
       "coverage": null,
       "covered": 2,
       "excluded": 0,
       "expect_label": "",
       "expected": 241,
-      "hit_rate": 0.1,
+      "hit_rate": null,
       "linked": 2,
       "metric": "dropship_cost",
       "name": "代发成本",
@@ -536,9 +536,84 @@
       "occasional": true,
       "rows": 2687,
       "spine_total": 241
+     },
+     {
+      "company_wide": true,
+      "coverage": null,
+      "covered": 0,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 0,
+      "hit_rate": null,
+      "linked": 0,
+      "metric": "brushing_cost",
+      "name": "本金佣金",
+      "occasional": true,
+      "rows": 0,
+      "spine_total": 0
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 174,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 241,
+      "hit_rate": 0.10662177328843996,
+      "linked": 190,
+      "metric": "trade_refund_douyin",
+      "name": "销售退款",
+      "occasional": true,
+      "rows": 1782,
+      "spine_total": 241
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 174,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 241,
+      "hit_rate": 0.10662177328843996,
+      "linked": 190,
+      "metric": "software_fee_douyin",
+      "name": "平台服务费",
+      "occasional": true,
+      "rows": 1782,
+      "spine_total": 241
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 174,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 241,
+      "hit_rate": 0.10662177328843996,
+      "linked": 190,
+      "metric": "trade_compensation_douyin",
+      "name": "交易赔付",
+      "occasional": true,
+      "rows": 1782,
+      "spine_total": 241
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 0,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 0,
+      "hit_rate": 1.0,
+      "linked": 0,
+      "metric": "insurance_cost_douyin",
+      "name": "权益保险",
+      "occasional": true,
+      "rows": 0,
+      "spine_total": 0
      }
     ],
-    "rows": 300342,
+    "rows": 303716,
     "sources": [
      {
       "arrived": true,
@@ -575,7 +650,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "收入",
-      "value": 3068.35
+      "value": 3110.09
      },
      {
       "available": true,
@@ -586,7 +661,62 @@
       "level": 2,
       "missing_sources": [],
       "name": "销售收入",
-      "value": 3068.35
+      "value": 3111.65
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_refund",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "销售退款",
+      "value": -1.56
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "g_platform",
+      "is_total": false,
+      "level": 1,
+      "missing_sources": [],
+      "name": "平台费用",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_software",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "平台服务费",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_compensation",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "交易赔付",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_insurance",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "权益保险",
+      "value": 0.0
      },
      {
       "available": true,
@@ -707,7 +837,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "毛利",
-      "value": 1735.14
+      "value": 1778.44
      },
      {
       "available": true,
@@ -718,7 +848,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润",
-      "value": 984.92
+      "value": 1026.66
      },
      {
       "available": true,
@@ -729,7 +859,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润率",
-      "value": 0.32099336777095183
+      "value": 0.3299407066990182
      }
     ],
     "store": "抖音浅花涧节日装饰",
@@ -737,12 +867,22 @@
     "unclassified": [],
     "unlinked_buckets": [
      {
-      "amount": -550682.46,
-      "count": 299379,
+      "amount": -552975.21,
+      "count": 299505,
       "label": "其他店的数据（公司级主表）"
+     },
+     {
+      "amount": -357.06,
+      "count": 664,
+      "label": "货款直投千川"
+     },
+     {
+      "amount": 125.83,
+      "count": 5,
+      "label": "其他账期的订单"
      }
     ],
-    "unlinked_total": 0.0
+    "unlinked_total": -357.06
    }
   },
   "jd_huanglishi": {
@@ -870,13 +1010,13 @@
       "spine_total": 2980
      },
      {
-      "company_wide": false,
+      "company_wide": true,
       "coverage": null,
       "covered": 0,
       "excluded": 0,
       "expect_label": "",
       "expected": 2980,
-      "hit_rate": 0.0,
+      "hit_rate": null,
       "linked": 0,
       "metric": "dropship_cost",
       "name": "代发成本",
@@ -930,6 +1070,21 @@
       "spine_total": 2980
      },
      {
+      "company_wide": true,
+      "coverage": null,
+      "covered": 0,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 0,
+      "hit_rate": null,
+      "linked": 0,
+      "metric": "brushing_cost",
+      "name": "本金佣金",
+      "occasional": true,
+      "rows": 0,
+      "spine_total": 0
+     },
+     {
       "company_wide": false,
       "coverage": null,
       "covered": 2867,
@@ -945,7 +1100,7 @@
       "spine_total": 2980
      }
     ],
-    "rows": 374008,
+    "rows": 374138,
     "sources": [
      {
       "arrived": true,
@@ -1177,9 +1332,14 @@
     "unclassified": [],
     "unlinked_buckets": [
      {
-      "amount": -547297.48,
-      "count": 297551,
+      "amount": -549590.23,
+      "count": 297677,
       "label": "其他店的数据（公司级主表）"
+     },
+     {
+      "amount": -18.96,
+      "count": 4,
+      "label": "其他账期的订单"
      }
     ],
     "unlinked_total": 0.0
@@ -1310,13 +1470,13 @@
       "spine_total": 2296
      },
      {
-      "company_wide": false,
+      "company_wide": true,
       "coverage": null,
       "covered": 0,
       "excluded": 0,
       "expect_label": "",
       "expected": 2296,
-      "hit_rate": 0.0,
+      "hit_rate": null,
       "linked": 0,
       "metric": "dropship_cost",
       "name": "代发成本",
@@ -1355,13 +1515,13 @@
       "spine_total": 223
      },
      {
-      "company_wide": false,
+      "company_wide": true,
       "coverage": null,
       "covered": 0,
       "excluded": 0,
       "expect_label": "",
       "expected": 2296,
-      "hit_rate": 0.0,
+      "hit_rate": null,
       "linked": 0,
       "metric": "brushing_cost",
       "name": "本金佣金",
@@ -1400,7 +1560,7 @@
       "spine_total": 2296
      }
     ],
-    "rows": 328480,
+    "rows": 328481,
     "sources": [
      {
       "arrived": true,
@@ -1668,8 +1828,8 @@
       "label": "售后费用-虚假发货"
      },
      {
-      "amount": 5066.7,
-      "count": 748,
+      "amount": 5058.02,
+      "count": 749,
       "label": "其他账期的订单"
      }
     ],
@@ -1859,13 +2019,13 @@
       "spine_total": 15219
      },
      {
-      "company_wide": false,
+      "company_wide": true,
       "coverage": null,
       "covered": 91,
       "excluded": 0,
       "expect_label": "",
       "expected": 15219,
-      "hit_rate": 0.48484848484848486,
+      "hit_rate": null,
       "linked": 96,
       "metric": "dropship_cost",
       "name": "代发成本",
@@ -1919,13 +2079,13 @@
       "spine_total": 15219
      },
      {
-      "company_wide": false,
+      "company_wide": true,
       "coverage": null,
       "covered": 47,
       "excluded": 0,
       "expect_label": "",
       "expected": 15219,
-      "hit_rate": 0.039101497504159734,
+      "hit_rate": null,
       "linked": 47,
       "metric": "brushing_cost",
       "name": "本金佣金",
@@ -1934,7 +2094,7 @@
       "spine_total": 15219
      }
     ],
-    "rows": 927752,
+    "rows": 935489,
     "sources": [
      {
       "arrived": true,
@@ -2188,13 +2348,13 @@
     "unclassified": [],
     "unlinked_buckets": [
      {
-      "amount": 308.31,
-      "count": 5,
+      "amount": 150.5,
+      "count": 50,
       "label": "取不出订单号，要查归属"
      },
      {
-      "amount": -529795.17,
-      "count": 285469,
+      "amount": -542178.16,
+      "count": 285855,
       "label": "其他店的数据（公司级主表）"
      },
      {
@@ -2203,12 +2363,12 @@
       "label": "非经营流水（规则已排除）"
      },
      {
-      "amount": 175201.61,
-      "count": 31549,
+      "amount": 191782.91,
+      "count": 33051,
       "label": "其他账期的订单"
      }
     ],
-    "unlinked_total": 308.31
+    "unlinked_total": 150.5
    }
   }
  }
