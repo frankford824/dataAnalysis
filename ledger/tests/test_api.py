@@ -239,6 +239,65 @@ class _FakeWorkspace:
     def overview(self):
         return self._states
 
+    def state(self, store_id, period):
+        return next(
+            (s for s in self._states if s.store_id == store_id and s.period == period), None
+        )
+
+
+class TestGaps:
+    """所有店 × 所有账期的空值项与异常项。
+
+    做成一个接口而不是让前端逐个账期去问：十几家店三个月是几百次请求，而这一页
+    要回答的问题恰恰是「哪个店哪个月要处理」，得先全都拿到才回答得了。
+    """
+
+    def _snap(self, store_id, period, ad):
+        return PeriodState(
+            store_id=store_id, period=period, run_id=1,
+            result={"statement": [
+                {"id": "n_ad", "name": "推广费用", "value": ad, "available": True,
+                 "display": "amount", "is_total": False, "missing_sources": []},
+            ]},
+        )
+
+    @pytest.fixture
+    def stubbed(self, client, monkeypatch):
+        rows = [
+            # 四月有八万推广费，五月成了 0——只有并排看两个账期才看得出来。
+            self._snap("taobao_xibishun", "2026-04", -88091.88),
+            self._snap("taobao_xibishun", "2026-05", 0.0),
+            self._snap("alibaba1688_xingze", "2026-05", -1200.0),
+        ]
+        monkeypatch.setattr(api, "workspace", lambda: _FakeWorkspace(rows))
+        return client
+
+    def test_a_line_that_quietly_became_zero_shows_up(self, stubbed):
+        cells = {(c["store_id"], c["period"]): c for c in stubbed.get("/api/gaps").json()["cells"]}
+        got = cells[("taobao_xibishun", "2026-05")]
+        assert [g["kind"] for g in got["gaps"]] == ["dropped"]
+        assert got["odd"] == 1
+
+    def test_periods_are_compared_against_the_store_own_previous_one(self, stubbed):
+        """比的是同一家店的上一个账期。拿别家店的数去比会凭空报一堆缺口。"""
+        cells = {(c["store_id"], c["period"]): c for c in stubbed.get("/api/gaps").json()["cells"]}
+        assert cells[("alibaba1688_xingze", "2026-05")]["count"] == 0
+        assert ("taobao_xibishun", "2026-04") in cells
+
+    def test_worst_first(self, stubbed):
+        cells = stubbed.get("/api/gaps").json()["cells"]
+        assert cells[0]["count"] > 0, "有事要处理的店期必须排在没事的前面"
+
+    def test_filtering_by_store_still_compares_with_its_earlier_period(self, stubbed):
+        """按店筛掉的是输出，不是比对用的历史。筛完就比不出来的话，这条永远不响。"""
+        body = stubbed.get("/api/gaps", params={"store_id": "taobao_xibishun"}).json()
+        assert {c["period"] for c in body["cells"]} == {"2026-04", "2026-05"}
+        may = next(c for c in body["cells"] if c["period"] == "2026-05")
+        assert [g["kind"] for g in may["gaps"]] == ["dropped"]
+
+    def test_empty_workspace_is_not_an_error(self, client):
+        assert client.get("/api/gaps").json() == {"cells": []}
+
 
 class TestStoreDetail:
     def test_unknown_store_is_404(self, client):

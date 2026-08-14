@@ -186,6 +186,45 @@
   font-weight: 660;
 }
 
+/* 要看的：所有店期的空值项与异常项。
+ *
+ * 一格一条，默认全收起来只留一行标题。之前这些提示只在单店单账期页面里，
+ * 「哪个店哪个月有问题」得逐个点开才知道，于是实际上没人看。收成一张清单之后，
+ * 关键是别又摊平——一次只展开一格，展开的那一格才显示具体缺什么。 */
+.flaws { display: flex; flex-direction: column; gap: var(--s2); }
+
+.flaw {
+  border: 1px solid var(--n3);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.flaw .bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  cursor: pointer;
+  /* 左边一条色带表示这一格有多严重。整行铺底色的话，五六格排下来整页都是黄的，
+     红的那一格就不再显眼了。 */
+  border-left: 3px solid var(--warn);
+}
+.flaw .bar.blocking { border-left-color: var(--bad); }
+.flaw .bar:hover { background: var(--n1); }
+
+.flaw .who { display: flex; align-items: baseline; gap: var(--s3); min-width: 0; }
+.flaw .store { font-size: var(--t-sm); font-weight: 560; }
+.flaw .period { font-size: var(--t-xs); color: var(--n6); }
+.flaw .tags { display: flex; align-items: center; gap: var(--s2); white-space: nowrap; }
+
+.flaw .body {
+  padding: var(--s3) var(--s3) var(--s3) var(--s4);
+  border-top: 1px solid var(--n2);
+  background: var(--n1);
+}
+.flaw .body .foot { margin-top: var(--s3); }
+
 /* 一个月的细账弹框。 */
 .month-detail .sum {
   display: grid;
@@ -230,6 +269,29 @@
 
 @media (max-width: 720px) {
   .month-detail .sum { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* 上传说明里那排「认得出的店名」。一个名字一块，不能让它们连成一行字——
+   人是拿自己的文件名去比对这些名字的，两个店名之间要看得出边界。 */
+.chips { display: flex; flex-wrap: wrap; gap: var(--s2); margin-top: var(--s2); }
+.chip {
+  border: 1px solid var(--n3);
+  border-radius: var(--r-md);
+  padding: 3px var(--s3);
+  font-size: var(--t-sm);
+  background: var(--n1);
+}
+
+/* 自检里逐条列举的明细。压成一行时「缺三份表」和「缺一份表」看起来一样长，
+   一行一条才数得清。 */
+.bullets { margin: var(--s2) 0 0; padding-left: 1.1em; }
+.bullets li { margin-top: 2px; font-size: var(--t-xs); line-height: 1.6; }
+
+/* 「没进利润的钱」的合计行。这个合计只算要查的那一桶，和上面几行加起来不相等，
+   所以要用一条分隔线把它和明细断开——挨着摆会被当成竖列相加的结果。 */
+.rail tfoot td {
+  border-top: 2px solid var(--n8);
+  padding-top: var(--s3);
 }
 
 /* --------------------------------------------------------------------------

@@ -12,6 +12,7 @@
     checks.yaml      校验规则
     dictionary.csv   科目字典
     commission.csv   提成配置（商品-人-比例，按生效日期）
+    overheads.csv    公摊费用（账期 → 全公司总额，摊到各店）
 
 校验失败直接抛错。宁可启动不了，也不要带着错模型算钱。
 """
@@ -31,6 +32,7 @@ from .schema import (
     DictionaryEntry,
     Metric,
     Model,
+    Overhead,
     Platform,
     SourceContract,
     StatementNode,
@@ -90,6 +92,7 @@ def load_model(directory: str | Path) -> Model:
 
     payload["dictionary"] = _read_dictionary(root / "dictionary.csv")
     payload["commission"] = _read_commission(root / "commission.csv")
+    payload["overheads"] = _read_overheads(root / "overheads.csv")
 
     try:
         return Model(**payload)
@@ -165,6 +168,44 @@ def _read_commission(path: Path) -> tuple[CommissionRule, ...]:
             except ValidationError as exc:
                 raise ModelError(f"{path} 第 {lineno} 行有问题：\n{_explain(exc)}") from exc
     return tuple(rules)
+
+
+def _read_overheads(path: Path) -> tuple[Overhead, ...]:
+    """公摊费用（目前只有兼职工资）。业务维护的那张表就是「月份 → 总额」两列。
+
+    月份两种写法都认：2026-05 和 2605。历史文件里写的是 2605 那种四位数，
+    而系统内部一律用 2026-05；只认一种的后果是人照着旧表抄一遍全落不进任何账期，
+    而落不进不会报错，只会让兼职这一项静悄悄地是 0。
+    """
+    if not path.exists():
+        return ()
+    rows: list[Overhead] = []
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        for lineno, row in enumerate(csv.DictReader(fh), start=2):
+            period = _period(row.get("period"), path, lineno)
+            if not period:
+                continue
+            text = str(row.get("amount") or "").strip().replace(",", "")
+            try:
+                amount = float(text)
+            except ValueError:
+                raise ModelError(
+                    f"{path} 第 {lineno} 行的 amount 不是数字：{text!r}"
+                ) from None
+            rows.append(Overhead(period=period, amount=amount,
+                                 note=(row.get("note") or "").strip()))
+    return tuple(rows)
+
+
+def _period(value: Any, path: Path, lineno: int) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) == 4 and text.isdigit():
+        return f"20{text[:2]}-{text[2:]}"
+    if len(text) == 7 and text[4] == "-":
+        return text
+    raise ModelError(f"{path} 第 {lineno} 行的 period 看不懂：{text!r}。写成 2026-05 或 2605。")
 
 
 def _rate(value: Any, path: Path, lineno: int, column: str) -> float:

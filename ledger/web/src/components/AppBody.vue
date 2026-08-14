@@ -5,13 +5,13 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useApp } from '../store'
 import FilterBar from './FilterBar.vue'
 import IntakeResult from './IntakeResult.vue'
+import UploadPanel from './UploadPanel.vue'
 
 const props = defineProps({ dropped: { type: Array, default: null } })
 const emit = defineEmits(['taken'])
 
 const app = useApp()
 const message = useMessage()
-const picker = ref(null)
 
 const openCount = computed(
   () => (app.overview?.cells || []).filter((c) => c.state === 'open').length,
@@ -52,10 +52,7 @@ watch(
   },
 )
 
-function choose(e) {
-  take([...e.target.files])
-  e.target.value = ''
-}
+const explaining = ref(false)
 
 onMounted(() => {
   app.load().catch((e) => message.error(e.message, { duration: 6000 }))
@@ -88,16 +85,14 @@ defineExpose({ take })
       <header class="topbar">
         <FilterBar />
         <!-- 上传只有这一个固定入口，每一页都在同一个地方。上一版侧栏最下角那个
-             「交表」，位置和用词都在让人猜：交给谁、是不是报送、和结账什么关系。 -->
-        <n-button
-          size="small"
-          type="primary"
-          title="选平台导出的表，或者直接把文件拖到窗口里。店铺和账期从文件名认。"
-          @click="picker.click()"
-        >
+             「交表」，位置和用词都在让人猜：交给谁、是不是报送、和结账什么关系。
+
+             这里点开的是说明屏而不是直接弹选文件框：文件一旦送出去就没有再问
+             「传到哪家店哪个月」的机会了，而这两件事恰恰是不用人选的——不说清楚，
+             「不用选」看起来就是「没得选」。拖到窗口里的仍然直收，不经这一屏。 -->
+        <n-button size="small" type="primary" @click="explaining = true">
           上传表格
         </n-button>
-        <input ref="picker" type="file" multiple hidden @change="choose" />
       </header>
       <main class="page">
         <router-view />
@@ -115,6 +110,7 @@ defineExpose({ take })
       <span v-if="secs > 20" class="dim">别刷新</span>
     </div>
 
+    <UploadPanel v-model:show="explaining" />
     <IntakeResult />
   </div>
 </template>

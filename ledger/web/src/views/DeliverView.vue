@@ -19,6 +19,7 @@ import { useRouter } from 'vue-router'
 
 import { api } from '../api'
 import DropZone from '../components/DropZone.vue'
+import UploadPanel from '../components/UploadPanel.vue'
 import { ago, bytes, count, money } from '../format'
 import { useApp } from '../store'
 
@@ -30,6 +31,7 @@ const router = useRouter()
 const detail = ref({})
 const loading = ref(false)
 const adding = ref(false)
+const explaining = ref(false)
 const draft = ref({ name: '', platform: '' })
 //: 左栏选中的那家店记在全局里：切去别的页再回来，还停在刚才那家。每页各记各的
 //: 就是「回来又要重找一遍」，多店铺时这一步每天要重复十几次。
@@ -143,8 +145,18 @@ function open(id) {
         <div class="small muted">
           {{ count(shown.length) }} 家店。左边选一家，右边是它交过的表。
         </div>
+        <!-- 这一页列的是「哪家店交了哪些表」，人自然会在这儿找上传口。有表的店
+             不摆拖传框（同一个动作在每页长在不同位置，上一版就是这么乱的），
+             所以得在这儿说清楚上传在哪、以及表是怎么落到某家店名下的。 -->
+        <div class="xs muted" style="margin-top: var(--s1)">
+          表落到哪家店，看的是文件名里的店名；落到哪个账期，看的是表里的日期。
+          <button class="link" @click="explaining = true">怎么传</button>
+        </div>
       </div>
-      <n-button size="small" @click="adding = true">登记新店</n-button>
+      <n-space size="small">
+        <n-button size="small" type="primary" @click="explaining = true">上传表格</n-button>
+        <n-button size="small" @click="adding = true">登记新店</n-button>
+      </n-space>
     </div>
 
     <div class="cols list">
@@ -252,7 +264,13 @@ function open(id) {
       @positive-click="register"
     >
       <p class="small muted" style="margin-bottom: var(--s3)">
-        只要店名和平台。账期从文件名认，主体和税号等到要开票时再说。
+        只要店名和平台，主体和税号等到要开票时再说。
+      </p>
+      <!-- 店名不是个标签，它是认表用的钥匙：以后传上来的文件名里必须出现它，
+           否则那份表会被退回来说「认不出是哪家店」。登记的时候就得说清楚。 -->
+      <p class="xs muted" style="margin-bottom: var(--s3)">
+        店名要和导出文件名里写的一致——认表就是靠它。平台导出的名字五花八门的话，
+        先按其中一种登记，之后在店铺设置里把其余写法加成别名。
       </p>
       <n-space vertical>
         <n-input v-model:value="draft.name" placeholder="店铺名称，比如 淘宝喜必顺" />
@@ -263,5 +281,7 @@ function open(id) {
         />
       </n-space>
     </n-modal>
+
+    <UploadPanel v-model:show="explaining" />
   </n-spin>
 </template>

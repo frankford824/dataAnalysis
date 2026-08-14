@@ -97,9 +97,11 @@ def intake(
             continue
         store = model.store_of(name)
         if store is None:
+            # 说清楚是「文件名里没有已登记的店名」而不只是「认不出」：认表靠的就是
+            # 文件名，人知道了这一条才改得对——改文件名，或者去把这个写法登记成别名。
             out.rejected.append(Rejected(
                 file=name,
-                why="认不出是哪家店的，没进账",
+                why="文件名里没有出现任何已登记的店名，认不出是哪家店的，没进账",
                 suggest=suggest_store(name, model),
             ))
             continue

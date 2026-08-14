@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import onboard, ownership, progress, service, view
+from . import gaps, onboard, overhead, ownership, progress, service, view
 from . import search as search_mod
 from .model import propose
 from .model.config import (
@@ -206,9 +206,16 @@ def overview() -> dict:
     by_id = {s.id: s for s in model.stores}
     headline = {n.headline: n.id for n in model.statement if n.headline}
     cells = []
-    for st in ws.overview():
+    # 同一家店按账期排，让每个账期都能和它前一个比——「上个月有、这个月成了 0」
+    # 只能这样看出来。
+    states = sorted(ws.overview(), key=lambda st: (st.store_id, st.period))
+    before: dict[str, dict] = {}
+    for st in states:
         store = by_id.get(st.store_id)
         payload = st.result or {}
+        prev = before.get(st.store_id)
+        if payload:
+            before[st.store_id] = payload
         cells.append({
             "store_id": st.store_id,
             "store": store.name if store else st.store_id,
@@ -228,6 +235,9 @@ def overview() -> dict:
                 f["message"] for f in payload.get("findings", [])
                 if f.get("blocking") and not f.get("passed")
             ],
+            # 这一格有几处不对。总览摆不下清单本身，但摆得下这个数——没有它，
+            # 人得逐店逐月点进去才知道哪个月要看。
+            "gaps": gaps.summary(gaps.gaps(payload, model, prev)) if payload else None,
         })
     periods = sorted({c["period"] for c in cells}, reverse=True)
     return {
@@ -424,8 +434,71 @@ def period_detail(store_id: str, period: str) -> dict:
         "state": st.state, "stale": st.stale, "at": st.at, "run_id": st.run_id,
         "by": st.by, "note": st.note, "engine": st.engine,
         "history": workspace().history(store_id, period),
+        "gaps": gaps.gaps(st.result, model, _previous(store_id, period)),
         **view.reorder_statement(st.result, model),
     }
+
+
+def _previous(store_id: str, period: str) -> dict | None:
+    """这家店上一个算过账的账期的快照。给「上个月有、这个月成了 0」那条用。
+
+    取的是「比它早的里最近的一个」，不是「上一个自然月」：中间断月的时候，
+    拿不存在的那个月去比等于这条永远不响。
+    """
+    ws = workspace()
+    earlier = sorted(
+        (st.period for st in ws.overview()
+         if st.store_id == store_id and st.period < period and st.result),
+        reverse=True,
+    )
+    if not earlier:
+        return None
+    st = ws.state(store_id, earlier[0])
+    return st.result if st else None
+
+
+@app.get("/api/gaps")
+def all_gaps(platform: str = "", store_id: str = "", period: str = "") -> dict:
+    """所有店 × 所有账期的缺口清单。
+
+    做成一个接口而不是让前端逐个账期去问：十几家店三个月是几百次请求，而这一页
+    要回答的问题恰恰是「哪个店哪个月有问题」——得先全都拿到才能回答。
+    """
+    model = _model()
+    ws = workspace()
+    by_id = {s.id: s for s in model.stores}
+    # 同一家店的账期按时间排，好让每个账期都能拿到它前一个账期做比对。
+    states = sorted(
+        (st for st in ws.overview() if st.result),
+        key=lambda st: (st.store_id, st.period),
+    )
+    out = []
+    seen_before: dict[str, dict] = {}
+    for st in states:
+        store = by_id.get(st.store_id)
+        before = seen_before.get(st.store_id)
+        seen_before[st.store_id] = st.result or {}
+        if platform and (not store or store.platform != platform):
+            continue
+        if store_id and st.store_id != store_id:
+            continue
+        if period and st.period != period:
+            continue
+        rows = gaps.gaps(st.result or {}, model, before)
+        out.append({
+            "store_id": st.store_id,
+            "store": store.name if store else st.store_id,
+            "platform": store.platform if store else "",
+            "period": st.period,
+            "state": st.state,
+            **gaps.summary(rows),
+            "gaps": rows,
+        })
+    # 有问题的排前面，重的更前面。
+    out.sort(key=lambda c: (
+        gaps.SEVERITY_ORDER.get(c["worst"], 9), -c["count"], c["store"], c["period"],
+    ))
+    return {"cells": out}
 
 
 @app.post("/api/stores/{store_id}/recompute")
@@ -630,14 +703,30 @@ def commission_summary(period: str = "") -> dict:
     periods = sorted({st.period for st in states}, reverse=True)
     chosen = period or (periods[0] if periods else "")
 
+    # 兼职费用要在这里摊，不能在单店的快照里摊：一家店摊到多少取决于别家店这个月
+    # 卖了多少。放进快照的话，别家店重算一次，这家店已经冻住的数就悄悄地不对了。
+    # 这一页是「这个月要发多少」，所有店都在手上，正是摊它的地方。
+    here = [st for st in states if st.period == chosen]
+    revenue_node = next((n.id for n in model.statement if n.headline == "revenue"), "")
+    spread = overhead.allocate(
+        chosen,
+        model.overhead(chosen),
+        [(st.store_id, _node(st.result or {}, revenue_node) or 0.0) for st in here],
+    )
+
     people: dict[str, dict[str, Any]] = {}
     stores: list[dict[str, Any]] = []
-    for st in states:
-        if st.period != chosen:
-            continue
+    for st in here:
         payload = st.result or {}
         c = payload.get("commission") or {}
         store = by_id.get(st.store_id)
+        # 摊到的兼职从提成基数里减掉，各人金额按同一个比例缩。业务的口径是
+        # 提成利润 = 店铺利润 − 兼职，提成按提成利润算；每人按自己那份等比例缩，
+        # 等价于先减后分，而且各人加起来仍然等于缩过的合计。
+        cut = spread.of(st.store_id)
+        base_total = c.get("base_total", 0.0)
+        after = money_float(decimal_amount(base_total) - decimal_amount(cut))
+        keep = (after / base_total) if base_total else 1.0
         stores.append({
             "store_id": st.store_id,
             "store": store.name if store else st.store_id,
@@ -651,8 +740,13 @@ def commission_summary(period: str = "") -> dict:
             # 逐店记基数名，因为口径可以逐店配。整页共用一个表头的话，一家按毛利
             # 提、一家按利润提的时候，其中一列的标题就是错的。
             "base_name": c.get("base_name") or "",
-            "base_total": c.get("base_total", 0.0),
-            "total": c.get("total", 0.0),
+            "base_total": base_total,
+            # 摊到的兼职、扣完之后的基数、扣完之后要发的钱。三个数都给出来，
+            # 因为「为什么这个月比店铺利润算出来的少」这句话只有并排摆着才回答得了。
+            "overhead": cut,
+            "base_after": after,
+            "total": money_float(decimal_amount(c.get("total", 0.0)) * decimal_amount(keep)),
+            "total_before": c.get("total", 0.0),
             "unassigned_base": c.get("unassigned_base", 0.0),
             "fallback_base": c.get("fallback_base", 0.0),
             "negative_orders": c.get("negative_orders", 0),
@@ -661,9 +755,13 @@ def commission_summary(period: str = "") -> dict:
             "skipped_loss_base": c.get("skipped_loss_base", 0.0),
             "configured": bool(c.get("configured")),
             "notes": c.get("notes") or [],
-            "people": c.get("people") or [],
+            "people": [
+                p | {"amount": money_float(decimal_amount(p.get("amount") or 0.0)
+                                           * decimal_amount(keep))}
+                for p in c.get("people") or []
+            ],
         })
-        for p in c.get("people") or []:
+        for p in stores[-1]["people"]:
             slot = people.setdefault(p["person"], {"person": p["person"], "amount": 0.0,
                                                    "base": 0.0, "products": 0, "stores": []})
             slot["amount"] += p.get("amount") or 0.0
@@ -694,7 +792,27 @@ def commission_summary(period: str = "") -> dict:
         "total": money_float(sum(p["amount"] for p in ranked)),
         "unassigned_base": money_float(sum(s["unassigned_base"] for s in stores)),
         "rules": len(model.commission),
+        # 兼职费用怎么摊的。摊了多少、按什么摊、有没有摊出来，都要写在页面上：
+        # 这一步会让每个人到手的钱变少，不说清楚的话没人对得上账。
+        "overhead": {
+            "name": "兼职费用",
+            "total": spread.total,
+            "settled": spread.settled,
+            "basis_name": _base_label(model, "revenue") or "交易收款",
+            "basis_total": spread.basis_total,
+            "shares": [
+                {"store_id": s.store_id, "store": by_id[s.store_id].name
+                 if s.store_id in by_id else s.store_id,
+                 "basis": s.basis, "amount": s.amount}
+                for s in spread.shares
+            ],
+            "notes": list(spread.notes),
+        },
     }
+
+
+def _base_label(model: Model, headline: str) -> str:
+    return next((n.name for n in model.statement if n.headline == headline), "")
 
 
 def _base_name(model: Model, store_id: str = "") -> str:

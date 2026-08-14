@@ -39,6 +39,11 @@ function go(p) {
   router.push({ name: 'period', params: { id: p.store_id }, query: { period: p.period } })
 }
 
+function toStores() {
+  app.showIntake = false
+  router.push({ name: 'deliver' })
+}
+
 function onboard(t) {
   app.showIntake = false
   router.push({ name: 'onboard', params: { sha: t.sha }, query: { sheet: t.sheet } })
@@ -62,6 +67,13 @@ function onboard(t) {
         <span v-if="r.suggest" class="xs">
           像是「{{ r.suggest }}」的表——文件名改成带这个店名再传一次
         </span>
+        <!-- 猜不出是哪家店时更要给出路：认表只有文件名这一条线索，人不知道这一点
+             就会反复传同一份文件，以为是系统的问题。 -->
+        <span v-else class="xs">
+          认店只看文件名。要么把文件名改成带上店名再传一次，要么去
+          <button class="link" @click="toStores">数据与店铺</button>
+          把这个写法登记成那家店的别名。
+        </span>
       </div>
     </section>
 
@@ -84,6 +96,12 @@ function onboard(t) {
 
     <section v-if="periods.length" style="margin-bottom: var(--s4)">
       <h3 style="margin-bottom: var(--s2)">算了 {{ periods.length }} 个账期</h3>
+      <!-- 这张表回答的正是「我到底传到哪家店哪个月了」。账期是从表里的日期算出来的，
+           所以一份跨三个月的表会在这儿出现三行——不说的话看起来像重复算了。 -->
+      <p class="xs muted" style="margin-bottom: var(--s2)">
+        店铺认的是文件名里的店名，账期是按表里每一行的日期算出来的。
+        一份表跨了几个月，这里就有几行。
+      </p>
       <div class="scroll">
         <n-table size="small" :bordered="false">
           <thead>

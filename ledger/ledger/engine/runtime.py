@@ -16,7 +16,7 @@ from pathlib import Path
 
 import polars as pl
 
-from ..model.schema import Metric, Model, Template
+from ..model.schema import Metric, Model, ParseOptions, Template
 from . import calculate as calc
 from .audit import AuditResult, audit
 from .project import Projection, claims, project
@@ -250,9 +250,19 @@ def _ingest_file(
         template = model.template(recog.template_id)  # type: ignore[arg-type]
         item.template = template
         # 模板可能声明了不同的表头行或分隔符，需要按模板重解一次。
-        if _needs_reparse(template):
+        #
+        # 表头行用识别时试出来的那个，不用模板上写死的。同一份聚水潭导出里两张表
+        # 就不一样：主工作表第一行是「名称：聚水潭成本 路径：…」那段说明、表头在
+        # 第二行，而店长另存出来的那张表头就在第一行。照模板写死的行号重解，会把
+        # 第一条数据当成表头，然后报「模板要求的列没找到」——淘宝那份里这样落空的
+        # 是 42,232 行成本。而落空不报错，只在「认不出来的表」里留一条
+        # 「实际表头 14792373.0、5113185662925003221…」，没人看得懂那是什么。
+        options = template.parse
+        if header_row != options.header_row:
+            options = options.model_copy(update={"header_row": header_row})
+        if _needs_reparse(options):
             try:
-                tables_again = parse(path, template.parse, sha=sha)
+                tables_again = parse(path, options, sha=sha)
             except ParseError as exc:
                 item.error = str(exc)
                 items.append(item)
@@ -319,23 +329,38 @@ def _dedupe_across_files(result: Ingestion, model: Model) -> None:
                 item.notes.append(f"声明了去重键（{missing}）但数据里没有这些列，没法跨文件去重")
             continue
 
+        # 同一个键在各份文件里的类型可能不一样，比之前先统一。只有表头没有数据行的
+        # 那份，整列是空的、类型判成文本；有数据的那几份判成数字。Polars 拿类型不同的
+        # 两列做 join 会直接抛异常——1688 店交了一份空的代发表，四个平台的代发成本
+        # 就全都进不来，整批上传报一个看不懂的 SchemaError。
+        #
+        # 统一只发生在比对用的影子列上，各表自己的列原样不动：把金额列改成文本，
+        # 后面按它求和就全成 0 了。类型本来就一致时不铸型，走的还是原来那条路。
+        mixed = {k for k in keys if len({str(i.frame.schema[k]) for i in items}) > 1}
+        shadow = [f"__dedupe_{k}__" for k in keys]
+
         seen: pl.DataFrame | None = None
         for item in items:
-            frame = item.frame
+            frame = item.frame.with_columns(
+                [
+                    (pl.col(k).cast(pl.Utf8) if k in mixed else pl.col(k)).alias(alias)
+                    for k, alias in zip(keys, shadow, strict=True)
+                ]
+            )
             before = frame.height
             if seen is not None:
                 # nulls_equal：键里带空格子的行也要能认出是同一行。补充导出针对的
                 # 恰恰就是「成本价是空的」那批，不认空值等于对它们完全不去重。
-                frame = frame.join(seen, on=keys, how="anti", nulls_equal=True)
+                frame = frame.join(seen, on=shadow, how="anti", nulls_equal=True)
             kept = frame.height
             if kept < before:
                 item.notes.append(
                     f"按 {'+'.join(keys)} 去重，{before:,} 行留下 {kept:,} 行"
                     f"（去掉 {before - kept:,} 行与其他文件重复的数据）"
                 )
-            item.frame = frame
-            part = frame.select(keys)
+            part = frame.select(shadow)
             seen = part if seen is None else pl.concat([seen, part], how="vertical_relaxed")
+            item.frame = frame.drop(shadow)
 
 
 def _header_row_candidates(model: Model) -> list[int]:
@@ -368,8 +393,7 @@ def _recognize_any_header_row(
     return first, 0
 
 
-def _needs_reparse(template: Template) -> bool:
-    p = template.parse
+def _needs_reparse(p: ParseOptions) -> bool:
     return bool(p.sheet) or p.header_row != 0 or p.skip_after_header != 0 or bool(p.delimiter)
 
 

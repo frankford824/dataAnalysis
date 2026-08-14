@@ -209,6 +209,11 @@ const payTotal = computed(() =>
   app.storeId ? payPeople.value.reduce((a, p) => a + (p.amount || 0), 0) : pay.value?.total,
 )
 
+//: 兼职费用怎么摊的。它是唯一一张摊出来的公共表——没有订单号也没有运单号，
+//: 落不到单上，只能按各店交易收款占比摊。摊完从店铺利润里减掉才是提成基数，
+//: 所以这一段必须写在发放旁边：不说清楚的话，「为什么比店铺利润算出来的少」没人答得上。
+const overhead = computed(() => pay.value?.overhead || null)
+
 const stale = computed(() => {
   const latest = plan.value?.ownership_latest
   return latest && plan.value?.period && latest < plan.value.period ? latest : ''
@@ -442,7 +447,9 @@ function open(id) {
                     <thead>
                       <tr>
                         <th>店铺</th>
-                        <th class="right">基数</th>
+                        <th class="right">店铺利润</th>
+                        <th class="right">摊到的兼职</th>
+                        <th class="right">提成基数</th>
                         <th class="right">提成</th>
                         <th>说明</th>
                       </tr>
@@ -453,6 +460,10 @@ function open(id) {
                           <button class="link" @click="open(s.store_id)">{{ s.store }}</button>
                         </td>
                         <td class="right num">{{ money(s.base_total) }}</td>
+                        <td class="right num">
+                          {{ s.overhead ? `-${money(s.overhead)}` : '—' }}
+                        </td>
+                        <td class="right num">{{ money(s.base_after ?? s.base_total) }}</td>
                         <td class="right num">{{ money(s.total) }}</td>
                         <td class="xs muted">
                           <template v-if="!s.configured">还没配提成</template>
@@ -465,6 +476,21 @@ function open(id) {
                   </n-table>
                 </div>
                 <n-empty v-else description="这个账期还没有算过的店" size="small" />
+
+                <!-- 兼职费用怎么摊的。这一步会让每个人到手变少，必须有出处。 -->
+                <div v-if="overhead" class="why" style="margin-top: var(--s3)">
+                  <template v-if="overhead.settled">
+                    {{ overhead.name }}这个月全公司
+                    <b class="num">{{ money(overhead.total) }}</b>，
+                    是一张公共表、没有能落到订单的字段，所以按各店{{ overhead.basis_name }}占比摊：
+                    分母是 <span class="num">{{ money(overhead.basis_total) }}</span>。
+                    摊到店之后从店铺利润里减掉，剩下的才是提成基数。
+                  </template>
+                  <template v-else>
+                    {{ overhead.notes?.[0] || `${overhead.name}还没摊。` }}
+                    在这之前，提成基数就是店铺利润本身。
+                  </template>
+                </div>
               </div>
             </div>
           </n-tab-pane>

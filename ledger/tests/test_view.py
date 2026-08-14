@@ -11,7 +11,7 @@ import pytest
 
 from ledger.model.loader import load_model
 from ledger.model.schema import Metric, Model, SourceContract, StatementNode, ValueExpr
-from ledger.view import drill, node_metrics, oneline, statement_order
+from ledger.view import _finding_lines, drill, node_metrics, oneline, statement_order
 
 
 @pytest.fixture(scope="module")
@@ -532,3 +532,17 @@ def test_an_unknown_view_falls_back_to_the_safe_one():
 def test_oneline_does_not_leave_gaps_after_chinese_punctuation():
     """模型里的提示语用 YAML 折叠写法，换行变空格，中文标点后会留下夹缝。"""
     assert oneline("还没同步，\n或者导出时选窄了") == "还没同步，或者导出时选窄了"
+
+
+def test_a_checks_bullet_list_survives_being_flattened():
+    """检查结论里逐条列举的那几行，要在压成一行之前先拆出来。
+
+    `oneline` 把整段压成一行是对的（YAML 折叠写法会带进假换行），但压完之后
+    「缺三份表」和「缺一份表」在界面上一样长——三条明细连成了一堵墙。
+    """
+    lines = _finding_lines("还差 2 份数据：\n  · 运费 —— 物流\n  · 对账 —— 财务")
+    assert lines == ["运费 —— 物流", "对账 —— 财务"]
+
+
+def test_a_one_sentence_conclusion_has_no_bullets_to_pull_out():
+    assert _finding_lines("所有科目都认识") == []

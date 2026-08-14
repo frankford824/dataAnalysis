@@ -40,6 +40,7 @@ export const api = {
 
   overview: () => call('/api/overview'),
   trend: (params) => call(`/api/trend${query(params)}`),
+  gaps: (params) => call(`/api/gaps${query(params)}`),
   store: (id) => call(`/api/stores/${encodeURIComponent(id)}`),
   period: (id, period) =>
     call(`/api/stores/${encodeURIComponent(id)}/periods/${encodeURIComponent(period)}`),

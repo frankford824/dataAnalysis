@@ -29,8 +29,13 @@ async function choose(e) {
 <template>
   <div class="drop" @click="picker.click()">
     <div class="strong" style="color: var(--n8)">把表拖进来</div>
+    <!-- 「从文件名认」曾经只写了半句，人看完仍然要问账期怎么定。店和账期是两条
+         不同的规则，各认各的东西，缺一条就得靠猜。 -->
     <div class="small" style="margin-top: var(--s1)">
-      订单明细、对账、运费、推广都行，一次可以传多个。店铺和账期从文件名认。
+      订单明细、对账、运费、推广都行，一次可以传多个。
+    </div>
+    <div class="xs muted" style="margin-top: var(--s1)">
+      店铺看文件名里的店名，账期看表里的日期——不用先选店、也不用先建月份。
     </div>
     <input ref="picker" type="file" multiple hidden @change="choose" />
   </div>

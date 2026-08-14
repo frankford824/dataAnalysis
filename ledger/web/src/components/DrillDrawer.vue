@@ -203,6 +203,13 @@ function close() {
               行，共 {{ count(data.selection?.rows || 0) }}
             </span>
           </div>
+          <!-- 定位到行只解决了一半：人拿着行号翻到源文件，发现那儿确实不对，
+               然后就卡住了——这套东西不给改单元格，而「那改哪儿」界面上没写过。 -->
+          <p class="xs muted" style="margin-bottom: var(--s2)">
+            最后一列是它在源文件里的位置，照着行号能翻回原表核对。
+            核对下来确实不对的话，改的是表本身或者认表的口径，不是这里的数字——
+            账期页右上角「数字不对？」写了怎么改。
+          </p>
           <n-table size="small" :bordered="false">
             <thead>
               <tr>

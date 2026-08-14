@@ -232,25 +232,43 @@ def _check_unlinked_disclosed(check, model, facts, links, classify, completeness
     if not result.unlinked_buckets:
         return Finding(check.id, check.name, True, False, "没有挂不上订单的钱")
 
-    natural = [b for b in result.unlinked_buckets if b[0] != "看起来是订单的钱"]
-    suspicious = [b for b in result.unlinked_buckets if b[0] == "看起来是订单的钱"]
+    # 这里原先拿字符串 "看起来是订单的钱" 去比桶名。那个桶名早就改成了
+    # BUCKET_NEEDS_WORK，比对因此一条也匹配不上，`suspicious` 恒为空，这条检查
+    # 于是永远是绿的——一条永远通过的检查和没有这条检查是一回事，而它看起来还像在把关。
+    # 换成认常量，改桶名时这里跟着走。
+    explained = [b for b in result.unlinked_buckets if b[0] != BUCKET_NEEDS_WORK]
+    suspicious = [b for b in result.unlinked_buckets if b[0] == BUCKET_NEEDS_WORK]
     rows = sum(n for _, n, _ in result.unlinked_buckets)
+    # 要人查的那桶排最前，和界面上的顺序、和分桶时的排序都一致。它是这几行里唯一
+    # 需要行动的，排在三条「不用管」后面就等于没报。
     lines = [
-        f"  · {name} {n:,} 笔，{amount:,.2f} 元 —— 这类本来就没有订单号，不影响利润"
-        for name, n, amount in natural
-    ]
-    lines += [
-        f"  · {name} {n:,} 笔，{amount:,.2f} 元 —— 建议看一下"
+        f"  · {name} {n:,} 笔，{amount:,.2f} 元 —— 要人查清归属"
         for name, n, amount in suspicious
     ]
-    message = (
-        f"这个月有 {rows:,} 笔钱没对上订单，共 {result.unlinked_total:,.2f} 元。\n"
-        + "\n".join(lines)
-    )
+    lines += [
+        f"  · {name} {n:,} 笔，{amount:,.2f} 元 —— {BUCKET_WHY.get(name, '有解释，不影响利润')}"
+        for name, n, amount in explained
+    ]
+    # 第一行是结论，后面每一行是一桶。界面按这个结构摆：结论正常写，逐桶的那几行
+    # 列成条目。所以结论要一句写完，不能把「分几类看」单起一行——它会被当成第一个
+    # 条目，读起来像多出来一条没有金额的桶。
+    tally = f"这个月共 {rows:,} 笔钱没对上订单，分 {len(result.unlinked_buckets)} 类："
     passed = not suspicious
+    if passed:
+        head = tally
+    else:
+        # 数字由引擎给，建议由模型给，两者都要——和覆盖率那条同一个道理：
+        # 光有建议看不出有多少钱要查，光有数字不知道该拿它怎么办。
+        n = sum(c for _, c, _ in suspicious)
+        head = (
+            f"有 {n:,} 笔、{result.unlinked_total:,.2f} 元既取不出订单号、也没有规则认领。"
+            + (check.message or "这部分不能悄悄丢掉，也不能硬摊进利润。")
+            + tally
+        )
+    message = head + "\n" + "\n".join(lines)
     return Finding(
         check.id, check.name, passed=passed, blocking=check.blocking and not passed,
-        message=check.message or message,
+        message=message,
         detail={"buckets": [
             {"name": n, "rows": r, "amount": a} for n, r, a in result.unlinked_buckets
         ]},
@@ -299,6 +317,23 @@ BUCKET_OTHER_PERIOD = "其他账期的订单"
 
 #: 剩下的才是真要人查的：连订单号都取不出来，也没被规则认领。
 BUCKET_NEEDS_WORK = "取不出订单号，要查归属"
+
+#: 每一桶为什么挂不上，一句话。
+#:
+#: 写在这里而不是写在界面上，是因为桶名是这个文件定的：两边各存一份的话，
+#: 改个桶名界面就少一句解释，而少一句解释不会报错——界面上那一列曾经整列是空的，
+#: 就是这么来的（前端读的是 name，后端给的是 label）。
+BUCKET_WHY = {
+    BUCKET_OTHER_STORES: "运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
+    BUCKET_EXCLUDED_FLOW: "理财申购、银行间调拨、保证金进出、广告预充值——规则链认出来了并且决定不算",
+    BUCKET_OTHER_PERIOD: "订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
+    BUCKET_NEEDS_WORK: "连订单号都取不出来，也没有任何规则认领它。这一类要人去查",
+}
+
+#: 不算进未归属总额的那几桶。它们各有各的解释，加进总额只会把真正要查的那几百块
+#: 埋在几十万里。这份名单是 `_bucket_unlinked` 和对外结构共用的——两处各写一份的话，
+#: 界面上标着「不计入合计」的行和实际算进合计的行迟早会不是同一批。
+BUCKET_EXPLAINED = (BUCKET_OTHER_STORES, BUCKET_EXCLUDED_FLOW, BUCKET_OTHER_PERIOD)
 
 
 def _one_row_once(unlinked: pl.DataFrame, model: Model) -> pl.DataFrame:
@@ -392,8 +427,7 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
     #   其他账期的订单  账期边界，那笔钱属于别的月份，本期查不出结果
     # 否则真正需要查的那几百块会被埋在几十万里，谁也不会去看。
     total = float(sum_amounts(
-        a for label, _, a in buckets
-        if label not in (BUCKET_OTHER_STORES, BUCKET_EXCLUDED_FLOW, BUCKET_OTHER_PERIOD)
+        a for label, _, a in buckets if label not in BUCKET_EXPLAINED
     ))
     return buckets, total
 

@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from .engine.audit import BUCKET_EXPLAINED, BUCKET_WHY
 from .engine.calculate import NodeValue
 from .engine.project import claims
 from .engine.runtime import Slice
@@ -38,6 +39,21 @@ def oneline(text: str) -> str:
     直接压会留下「还没同步， 或者」这种夹缝。
     """
     return re.sub(r"(?<=[，。；：、！？）】」“”])\s+", "", " ".join(text.split()))
+
+
+def _finding_lines(text: str) -> list[str]:
+    """把检查结论里逐条列举的那几行拆出来。
+
+    检查的结论是「一句话结论 + 几条明细」，明细在引擎里是以「  · 」开头的独立行。
+    `oneline` 会把它们压成一长串，界面上就成了一堵墙——缺三份数据和缺一份数据看起来
+    一样长。这里在压之前先拆好，界面照着一行一行摆；界面自己去认「 · 」这个记号是
+    行不通的，桶名那一列整列空白就是两边各认一套记号认出来的。
+    """
+    return [
+        oneline(line.lstrip(" ·"))
+        for line in text.splitlines()[1:]
+        if line.strip()
+    ]
 
 
 def source_name(model: Model, source_id: str) -> str:
@@ -91,7 +107,9 @@ def slice_dict(sl: Slice, store: Store, model: Model) -> dict[str, Any]:
         "statement": _statement(sl, model),
         "findings": [
             {"id": f.check_id, "name": f.name, "passed": f.passed,
-             "blocking": f.blocking, "message": oneline(f.message)}
+             "blocking": f.blocking, "message": oneline(f.message),
+             "head": oneline(f.message.splitlines()[0] if f.message else ""),
+             "lines": _finding_lines(f.message)}
             for f in sl.audit.findings
         ],
         "sources": _sources(sl, model),
@@ -99,8 +117,15 @@ def slice_dict(sl: Slice, store: Store, model: Model) -> dict[str, Any]:
         "quality": _quality(sl, model),
         "unclassified": _unclassified(sl),
         "unlinked_total": sl.audit.unlinked_total,
+        # 每一桶都带上「为什么挂不上」和「算不算进合计」。
+        #
+        # 界面上这一列曾经整列是空的：前端读 name，这里给的是 label，谁也没报错。
+        # 光把列名改对还会剩下第二个坑——四行明细和顶上的合计差几个数量级，
+        # 因为合计只算要查的那一桶。所以解释和「算不算进合计」都由这里给，
+        # 界面照着摆就行，不必自己维护一份桶名清单。
         "unlinked_buckets": [
-            {"label": b[0], "count": b[1], "amount": b[2]}
+            {"label": b[0], "count": b[1], "amount": b[2],
+             "why": BUCKET_WHY.get(b[0], ""), "counted": b[0] not in BUCKET_EXPLAINED}
             for b in sl.audit.unlinked_buckets
         ],
         "rows": int(sl.facts.height),

@@ -77,11 +77,15 @@ function submit() {
       style="width: 180px"
       @update:value="onStore"
     />
+    <!-- 账期清单不是预先建好的月份表，是「有数据的月份」。人会问「怎么没有 7 月、
+         怎么不能先把明年的月份建出来」，答案得挂在这个下拉框本身上——不然只能
+         去别处找，或者以为是漏了。 -->
     <n-select
       :value="app.period"
       :options="periodOptions"
       size="small"
       style="width: 132px"
+      title="有数据的月份才会出现在这儿。账期不用预先建：表一交上来，它落在哪个月，哪个月就自己出现了。"
       @update:value="(v) => app.pick({ period: v })"
     />
 

@@ -16,6 +16,7 @@ import { api } from '../api'
 import { count, money, percent, signed, signedPct } from '../format'
 import { useApp } from '../store'
 import DropZone from '../components/DropZone.vue'
+import GapList from '../components/GapList.vue'
 
 const app = useApp()
 const router = useRouter()
@@ -257,6 +258,72 @@ const rows = computed(() =>
   groups.value.flatMap((g) => [{ head: g.name, size: g.list.length }, ...g.list]),
 )
 
+/* 要看的：所有店 × 所有账期的空值项和异常项。
+ *
+ * 这一块补的是之前一直缺的那一步。空值项和异常项本来只在单个账期页面里，等于
+ * 「哪个店哪个月有问题」这个问题只能靠逐店逐月点开来回答——十几家店三个月是
+ * 几百次点击，实际上没人会去点，于是等到对账那天才发现有一项一直是 0。
+ *
+ * 所以这里一次把所有店期的缺口列出来，重的在上。一屏之内先看到「哪几格要处理」，
+ * 点开才是「这一格具体缺什么」。
+ */
+const flaws = ref(null)
+const flawsBusy = ref(false)
+
+async function pullGaps() {
+  flawsBusy.value = true
+  try {
+    flaws.value = await api.gaps({ platform: app.platform, store_id: app.storeId })
+  } catch {
+    flaws.value = null
+  } finally {
+    flawsBusy.value = false
+  }
+}
+
+watch(
+  [tab, () => app.storeId, () => app.platform, () => app.overview],
+  () => {
+    if (tab.value === 'gaps') pullGaps()
+  },
+  { immediate: true },
+)
+
+/** 有缺口的店期，重的在上。没有缺口的不列——这一页是待处理清单，不是台账。 */
+const flawCells = computed(() => (flaws.value?.cells || []).filter((c) => c.count > 0))
+
+const flawTotals = computed(() => {
+  const list = flawCells.value
+  return {
+    cells: list.length,
+    empty: list.reduce((a, c) => a + c.empty, 0),
+    odd: list.reduce((a, c) => a + c.odd, 0),
+    blocking: list.filter((c) => c.worst === 'blocking').length,
+  }
+})
+
+//: 展开的是哪一格。一次只开一格：同时摊开五格等于又回到了平铺一长页。
+const openCell = ref('')
+
+function toggleCell(c) {
+  const key = `${c.store_id}/${c.period}`
+  openCell.value = openCell.value === key ? '' : key
+}
+
+function isOpen(c) {
+  return openCell.value === `${c.store_id}/${c.period}`
+}
+
+/** 本月各店那张表上的缺口数。总览一格摆不下清单，摆得下「这里有 3 处」。 */
+function gapText(c) {
+  const g = c.gaps
+  if (!g || !g.count) return ''
+  const parts = []
+  if (g.empty) parts.push(`空 ${g.empty}`)
+  if (g.odd) parts.push(`异 ${g.odd}`)
+  return parts.join(' · ')
+}
+
 function open(c) {
   if (!c) return
   // 从弹框里点进去要先关掉它。留着的话，浏览器一按返回，页面底下先冒出一个
@@ -321,13 +388,14 @@ watch([() => app.storeId, () => app.platform], () => {
                     <th class="right">销售收入</th>
                     <th class="right">利润</th>
                     <th class="right">利润率</th>
+                    <th>要看的</th>
                     <th>状态</th>
                   </tr>
                 </thead>
                 <tbody>
                   <template v-for="r in rows">
                     <tr v-if="r.head" :key="`h-${r.head}`" class="quiet">
-                      <td colspan="5" class="xs muted" style="padding-top: var(--s3)">
+                      <td colspan="6" class="xs muted" style="padding-top: var(--s3)">
                         {{ r.head }} · {{ r.size }} 家店
                       </td>
                     </tr>
@@ -337,6 +405,17 @@ watch([() => app.storeId, () => app.platform], () => {
                       <td class="right num" :class="{ neg: r.profit < 0 }">{{ money(r.profit) }}</td>
                       <td class="right num">
                         {{ r.revenue ? percent(r.profit / r.revenue) : '—' }}
+                      </td>
+                      <td class="nowrap">
+                        <n-tag
+                          v-if="gapText(r)"
+                          size="small"
+                          :bordered="false"
+                          :type="r.gaps.worst === 'blocking' ? 'error' : 'warning'"
+                        >
+                          {{ gapText(r) }}
+                        </n-tag>
+                        <span v-else class="xs muted">—</span>
                       </td>
                       <td>
                         <n-tag
@@ -416,6 +495,65 @@ watch([() => app.storeId, () => app.platform], () => {
                 </table>
               </div>
             </div>
+          </n-tab-pane>
+
+          <n-tab-pane name="gaps">
+            <template #tab>
+              要看的
+              <n-badge
+                v-if="flawTotals.cells"
+                :value="flawTotals.empty + flawTotals.odd"
+                :type="flawTotals.blocking ? 'error' : 'warning'"
+                style="margin-left: 6px"
+              />
+            </template>
+
+            <n-spin :show="flawsBusy">
+              <p class="xs muted" style="margin-bottom: var(--s3)">
+                <template v-if="flawTotals.cells">
+                  {{ flawTotals.cells }} 个店期里有事要处理：空值项
+                  {{ flawTotals.empty }} 处、异常项 {{ flawTotals.odd }} 处。
+                  空值项是没有数、要补表；异常项是有数但看着不对、要查。点一行展开看是哪几项。
+                </template>
+                <template v-else-if="!flawsBusy">
+                  所有店期都没找到空值项和异常项。
+                </template>
+              </p>
+
+              <div v-if="flawCells.length" class="flaws">
+                <div v-for="c in flawCells" :key="`${c.store_id}/${c.period}`" class="flaw">
+                  <div class="bar" :class="c.worst" @click="toggleCell(c)">
+                    <span class="who">
+                      <span class="store">{{ c.store }}</span>
+                      <span class="num period">{{ c.period }}</span>
+                      <span v-if="c.state === 'closed'" class="xs muted">已结账</span>
+                    </span>
+                    <span class="tags">
+                      <n-tag v-if="c.empty" size="small" :bordered="false" type="warning">
+                        空值项 {{ c.empty }}
+                      </n-tag>
+                      <n-tag
+                        v-if="c.odd"
+                        size="small"
+                        :bordered="false"
+                        :type="c.worst === 'blocking' ? 'error' : 'default'"
+                      >
+                        异常项 {{ c.odd }}
+                      </n-tag>
+                      <span class="xs muted">{{ isOpen(c) ? '收起' : '展开' }}</span>
+                    </span>
+                  </div>
+                  <div v-if="isOpen(c)" class="body">
+                    <GapList :gaps="c.gaps" />
+                    <div class="foot">
+                      <n-button size="tiny" @click="open(c)">
+                        去 {{ c.store }} 的 {{ c.period }} 处理
+                      </n-button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </n-spin>
           </n-tab-pane>
         </n-tabs>
       </div>

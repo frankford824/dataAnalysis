@@ -15,6 +15,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '../api'
 import DrillDrawer from '../components/DrillDrawer.vue'
 import DropZone from '../components/DropZone.vue'
+import FixPanel from '../components/FixPanel.vue'
+import GapList from '../components/GapList.vue'
 import { count, money, percent, stamp } from '../format'
 import { useApp } from '../store'
 
@@ -113,18 +115,49 @@ function openDrill(row) {
 }
 
 const bad = computed(() => (snap.value?.findings || []).filter((f) => !f.passed))
+//: 真正拦着结账的那几条。灰掉的结账按钮不说明理由，人只能猜是不是坏了。
+const blockers = computed(() => bad.value.filter((f) => f.blocking))
+const fixing = ref(false)
 const missingSources = computed(() =>
   (snap.value?.sources || []).filter((s) => !s.arrived).length,
 )
 
-// 右栏默认停在最需要人处理的那一块：有没过的检查就停在自检，有没交的表就停在
-// 该交的表。都没有的时候才停在质量。默认永远停在第一个标签的话，真正卡住结账
-// 的那条提示就藏在第二个标签后面。
-const rail = ref('checks')
+const gaps = computed(() => snap.value?.gaps || [])
+
+/* 没进利润的钱。
+ *
+ * 要查的那一桶排最前，其余按金额。后端已经按这个顺序给了，这里只补一件事：
+ * 让「算进合计的」和「不算进合计的」在视觉上分开——四行金额差几个数量级，
+ * 不分开的话人第一眼会以为合计算错了。 */
+const unlinkedRows = computed(() => snap.value?.unlinked_buckets || [])
+
+/* 「哪几桶算进合计」是后来才加进快照的字段，早先算的快照里没有，而已结账的账期
+ * 按设计就不会再重算——那份快照要一直保持结账那天的样子。所以这里不能默认「没写
+ * 就是不算」：那样合计的笔数会显示成 0，看起来像刚数错了一遍。老快照就老老实实
+ * 说不知道，金额照旧用快照里存着的那个总额。 */
+const unlinkedGraded = computed(() =>
+  unlinkedRows.value.some((b) => typeof b.counted === 'boolean'),
+)
+
+const unlinkedNeedsWork = computed(() => ({
+  count: unlinkedRows.value
+    .filter((b) => b.counted)
+    .reduce((a, b) => a + (b.count || 0), 0),
+}))
+
+/** 点一条缺口，直接落到损益表上那一行的下钻。 */
+function openGap(gap) {
+  const row = (snap.value?.statement || []).find((r) => r.id === gap.node)
+  if (row) openDrill(row)
+}
+
+// 右栏默认停在最需要人处理的那一块：有缺口就停在缺口，有没交的表就停在该交的表，
+// 都没有才停在质量。默认永远停在第一个标签的话，真正要人处理的那条就藏在后面。
+const rail = ref('gaps')
 watch(
   () => snap.value,
   () => {
-    rail.value = bad.value.length ? 'checks' : missingSources.value ? 'sources' : 'quality'
+    rail.value = gaps.value.length ? 'gaps' : missingSources.value ? 'sources' : 'quality'
   },
 )
 </script>
@@ -144,6 +177,7 @@ watch(
           </div>
         </div>
         <n-space>
+          <n-button size="small" @click="fixing = true">数字不对？</n-button>
           <n-button size="small" @click="recompute">重算</n-button>
           <n-button v-if="!closed" size="small" type="primary" :disabled="!snap?.can_close" @click="close">
             结账
@@ -177,6 +211,24 @@ watch(
           <template v-if="snap.stale"> · 之后又交了新表，数字还是结账那一版</template>
         </n-alert>
 
+        <!-- 结账按钮灰着而不说为什么，是最容易被理解成「系统坏了」的一种状态。
+             拦路的那几条本来就在自检里，但那是右栏第二个标签页，得先点开才看得见。 -->
+        <n-alert
+          v-else-if="blockers.length"
+          type="error"
+          :bordered="false"
+          title="这个账期还结不了"
+          style="margin-bottom: var(--s4)"
+        >
+          <div v-for="f in blockers" :key="f.id" class="small" style="margin-top: 2px">
+            {{ f.name }}：{{ f.head || f.message }}
+          </div>
+          <div class="row" style="margin-top: var(--s3)">
+            <n-button size="tiny" @click="rail = 'checks'">看自检明细</n-button>
+            <n-button size="tiny" @click="fixing = true">怎么改</n-button>
+          </div>
+        </n-alert>
+
         <div class="cols">
           <div class="card" style="margin-top: 0">
             <header>
@@ -205,6 +257,22 @@ watch(
 
           <div class="card rail" style="margin-top: 0">
             <n-tabs v-model:value="rail" type="line" size="small">
+              <n-tab-pane name="gaps">
+                <template #tab>
+                  要看的
+                  <n-badge
+                    v-if="gaps.length"
+                    :value="gaps.length"
+                    :type="gaps.some((g) => g.severity === 'blocking') ? 'error' : 'warning'"
+                    style="margin-left: 6px"
+                  />
+                </template>
+                <p class="xs muted" style="margin-bottom: var(--s3)">
+                  这个账期的空值项和异常项都在这儿。能点的点开就是它的来源明细。
+                </p>
+                <GapList :gaps="gaps" clickable @open="openGap" />
+              </n-tab-pane>
+
               <n-tab-pane name="checks">
                 <template #tab>
                   自检
@@ -215,14 +283,21 @@ watch(
                     style="margin-left: 6px"
                   />
                 </template>
+                <p class="xs muted" style="margin-bottom: var(--s3)">
+                  拦路的那条不解决就结不了账，提示的那条不拦结账，但数字会有偏差。
+                </p>
                 <n-alert
                   v-for="f in bad"
                   :key="f.id"
                   :type="f.blocking ? 'error' : 'warning'"
+                  :title="`${f.name}${f.blocking ? ' · 拦着结账' : ''}`"
                   :bordered="false"
                   style="margin-bottom: var(--s2)"
                 >
-                  {{ f.message }}
+                  {{ f.lines?.length ? f.head : f.message }}
+                  <ul v-if="f.lines?.length" class="bullets">
+                    <li v-for="(line, i) in f.lines" :key="i">{{ line }}</li>
+                  </ul>
                 </n-alert>
                 <n-alert v-if="!bad.length" type="success" :bordered="false">
                   {{ (snap.findings || []).length }} 项检查都过了
@@ -260,14 +335,16 @@ watch(
 
               <n-tab-pane v-if="snap.quality?.length" name="quality" tab="质量">
                 <p class="xs muted" style="margin-bottom: var(--s2)">
-                  挂钩率是这张表有多少行认到了订单，覆盖率是订单里有多少拿到了这项数。
+                  挂钩是这张表有多少行认到了订单，覆盖是订单里有多少拿到了这项数。
+                  百分比底下写的是它由哪两个数算出来的——光看 94% 不知道是差 7 笔还是差 767 笔。
+                  画横杠的那格不是零，是这项不适用：全公司表不评挂钩，偶发科目不评覆盖。
                 </p>
                 <div class="scroll">
                   <n-table size="small" :bordered="false">
                     <thead>
                       <tr>
                         <th>项目</th>
-                        <th class="right">行数</th>
+                        <th class="right">表里行数</th>
                         <th class="right">挂钩</th>
                         <th class="right">覆盖</th>
                       </tr>
@@ -276,13 +353,22 @@ watch(
                       <tr v-for="q in snap.quality" :key="q.metric">
                         <td class="small">
                           {{ q.name }}
-                          <span v-if="q.company_wide" class="xs muted">· 全公司表</span>
+                          <div v-if="q.company_wide || q.occasional" class="xs muted">
+                            {{ q.company_wide ? '全公司表' : '' }}{{ q.company_wide && q.occasional ? ' · ' : '' }}{{ q.occasional ? '偶发科目' : '' }}
+                          </div>
                         </td>
                         <td class="right num xs">{{ count(q.rows) }}</td>
-                        <td class="right num xs">{{ q.hit_rate === null ? '—' : percent(q.hit_rate) }}</td>
+                        <td class="right num xs">
+                          {{ q.hit_rate === null ? '—' : percent(q.hit_rate) }}
+                          <div v-if="q.hit_rate !== null" class="xs muted num">
+                            {{ count(q.linked) }}/{{ count(q.rows) }}
+                          </div>
+                        </td>
                         <td class="right num xs">
                           {{ q.coverage === null ? '—' : percent(q.coverage) }}
-                          <span v-if="q.expect_label" class="xs muted">（{{ q.expect_label }}）</span>
+                          <div v-if="q.coverage !== null" class="xs muted num">
+                            {{ count(q.covered) }}/{{ count(q.expected) }}{{ q.expect_label ? ` ${q.expect_label}` : '' }}
+                          </div>
                         </td>
                       </tr>
                     </tbody>
@@ -290,22 +376,51 @@ watch(
                 </div>
               </n-tab-pane>
 
-              <n-tab-pane v-if="snap.unlinked_total" name="unlinked" tab="没进利润的钱">
-                <p class="small" style="margin-bottom: var(--s2)">
-                  合计 <span class="num">{{ money(snap.unlinked_total) }}</span>
+              <n-tab-pane v-if="snap.unlinked_buckets?.length" name="unlinked" tab="没进利润的钱">
+                <p class="xs muted" style="margin-bottom: var(--s3)">
+                  挂不上任何订单的钱，按「为什么挂不上」分开摆——处置完全不同。
+                  排第一行的那类要人去查，灰掉的几类各有各的解释，摆出来是让人扫一眼确认「这些不用管」。
                 </p>
                 <div class="scroll">
                   <n-table size="small" :bordered="false">
+                    <thead>
+                      <tr>
+                        <th>为什么挂不上</th>
+                        <th class="right">笔数</th>
+                        <th class="right">金额</th>
+                      </tr>
+                    </thead>
                     <tbody>
-                      <tr v-for="(b, i) in snap.unlinked_buckets || []" :key="i">
+                      <tr
+                        v-for="(b, i) in unlinkedRows"
+                        :key="i"
+                        :class="{ quiet: unlinkedGraded && !b.counted }"
+                      >
                         <td class="small">
-                          {{ b.name || b.bucket }}<div class="xs muted">{{ b.why }}</div>
+                          {{ b.label }}
+                          <div v-if="b.why" class="xs muted">{{ b.why }}</div>
                         </td>
-                        <td class="right num xs">{{ money(b.amount) }}</td>
+                        <td class="right num xs">{{ count(b.count) }}</td>
+                        <td class="right num">{{ money(b.amount) }}</td>
                       </tr>
                     </tbody>
+                    <tfoot>
+                      <tr>
+                        <td class="small strong">要查归属的合计</td>
+                        <td class="right num xs">
+                          {{ unlinkedGraded ? count(unlinkedNeedsWork.count) : '—' }}
+                        </td>
+                        <td class="right num strong">{{ money(snap.unlinked_total) }}</td>
+                      </tr>
+                    </tfoot>
                   </n-table>
                 </div>
+                <p class="why" style="margin-top: var(--s3)">
+                  合计只算「要查归属」那一类，所以它和上面几行加起来不相等。
+                  几类相加得到的是一个没有业务含义的净额——别家店的运单、规则排除的非经营流水、
+                  别的账期的订单收款，三者相减的巧合。真正要人查的只有
+                  <b class="num">{{ money(snap.unlinked_total) }}</b>。
+                </p>
               </n-tab-pane>
             </n-tabs>
           </div>
@@ -331,6 +446,14 @@ watch(
       </p>
       <n-input v-model:value="why" type="textarea" :rows="3" placeholder="比如：运费表交漏了一张，补传后重算" />
     </n-modal>
+
+    <FixPanel
+      v-model:show="fixing"
+      :store-id="props.id"
+      :period="period"
+      :unclassified="snap?.unclassified || []"
+      @recompute="recompute"
+    />
 
     <DrillDrawer
       v-if="drill"

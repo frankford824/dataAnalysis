@@ -11,16 +11,23 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import polars as pl
 
 from ledger.engine.audit import (
     BUCKET_EXCLUDED_FLOW,
+    BUCKET_EXPLAINED,
     BUCKET_NEEDS_WORK,
     BUCKET_OTHER_PERIOD,
+    BUCKET_OTHER_STORES,
+    BUCKET_WHY,
     _bucket_unlinked,
+    _check_unlinked_disclosed,
 )
 from ledger.engine.link import EXCLUDED_KEY
 from ledger.model.schema import (
+    Check,
     Metric,
     Model,
     SourceContract,
@@ -216,3 +223,100 @@ class TestBucketsByReason:
         buckets, total = _bucket_unlinked(_facts(rows), _model(company_wide=("freight",)))
         assert total == 0.0
         assert "其他店" in buckets[0][0]
+
+
+class TestEveryBucketExplainsItself:
+    """每一桶都要带上「为什么挂不上」，而且解释和桶名必须出自同一处。
+
+    界面上这一列曾经整列是空的：后端给的是 label，前端读的是 name，两边谁也没报错，
+    用户看到的是四个没有任何说明的数字。桶名是 audit 定的，解释就也放在 audit——
+    界面自己维护一份桶名到解释的对照表，改桶名时少的那句解释同样不会报错。
+    """
+
+    def test_every_bucket_name_has_a_reason(self):
+        assert set(BUCKET_WHY) == {
+            BUCKET_OTHER_STORES, BUCKET_EXCLUDED_FLOW,
+            BUCKET_OTHER_PERIOD, BUCKET_NEEDS_WORK,
+        }
+        assert all(text.strip() for text in BUCKET_WHY.values())
+
+    def test_the_explained_ones_are_exactly_the_ones_left_out_of_the_total(self):
+        """标着「不计入合计」的那几桶，必须就是实际没算进合计的那几桶。
+
+        两处各写一份名单的话，界面上灰掉的行和真正没进合计的行迟早不是同一批，
+        而这种不一致看起来就像合计算错了。
+        """
+        rows = [
+            {"metric_id": "freight_cost", "source_id": "freight",
+             "amount": -542178.16, "row_no": 1},
+            {"metric_id": "trade_receipt", "link_key": EXCLUDED_KEY,
+             "amount": -477800.64, "row_no": 2},
+            {"metric_id": "trade_receipt", "link_key": "4502253026216007946",
+             "amount": 191782.91, "row_no": 3},
+            {"metric_id": "software_fee", "link_key": None, "amount": 150.50, "row_no": 4},
+        ]
+        buckets, total = _bucket_unlinked(_facts(rows), _model(company_wide=("freight",)))
+        counted = [(label, amount) for label, _, amount in buckets
+                   if label not in BUCKET_EXPLAINED]
+        assert [label for label, _ in counted] == [BUCKET_NEEDS_WORK]
+        assert sum(a for _, a in counted) == total
+
+
+class TestTheDisclosureCheckCanActuallyFail:
+    """这条检查曾经永远是绿的。
+
+    它拿字符串 "看起来是订单的钱" 去比桶名，而那个桶名早改成了「取不出订单号，要查归属」，
+    比对一条也匹配不上，于是「有钱要人查」这件事永远报成通过。一条永远通过的检查
+    比没有这条检查更坏——它看起来还像在把关。
+    """
+
+    def _finding(self, buckets, total):
+        check = Check(id="chk", name="未归属金额已呈现", kind="unlinked_disclosed",
+                      blocking=False, message="")
+        result = SimpleNamespace(unlinked_buckets=buckets, unlinked_total=total)
+        return _check_unlinked_disclosed(
+            check, _model(), None, None, None, None, None, result,
+        )
+
+    def test_money_that_needs_looking_into_fails_the_check(self):
+        f = self._finding([(BUCKET_NEEDS_WORK, 50, 150.50)], 150.50)
+        assert not f.passed
+        assert "150.50" in f.message and "50" in f.message
+
+    def test_fully_explained_money_passes(self):
+        """三类都有解释时这条检查该是绿的，否则又变成一条常年通红没人看的提醒。"""
+        f = self._finding([(BUCKET_EXCLUDED_FLOW, 64, -477800.64)], 0.0)
+        assert f.passed
+
+    def test_nothing_unlinked_passes(self):
+        assert self._finding([], 0.0).passed
+
+    def test_each_bucket_is_listed_with_its_reason(self):
+        """结论里要逐桶列出来，界面照着一行一行摆。"""
+        f = self._finding(
+            [(BUCKET_NEEDS_WORK, 50, 150.50), (BUCKET_EXCLUDED_FLOW, 64, -477800.64)],
+            150.50,
+        )
+        assert BUCKET_WHY[BUCKET_EXCLUDED_FLOW] in f.message
+        assert f.message.count("·") == 2
+
+    def test_the_first_line_is_a_whole_sentence_not_half_of_one(self):
+        """第一行是结论，后面每行是一桶——界面就是按这个结构摆的。
+
+        「分四类看：」单起一行的话，它会被当成第一个条目，显示成一条没有金额的桶。
+        """
+        f = self._finding(
+            [(BUCKET_NEEDS_WORK, 50, 150.50), (BUCKET_EXCLUDED_FLOW, 64, -477800.64)],
+            150.50,
+        )
+        head, *rest = f.message.splitlines()
+        assert "·" not in head
+        assert all(line.lstrip().startswith("·") for line in rest)
+
+    def test_the_bucket_that_needs_looking_into_is_listed_first(self):
+        """要人查的那桶排最前。排在三条「不用管」后面，等于没报。"""
+        f = self._finding(
+            [(BUCKET_NEEDS_WORK, 50, 150.50), (BUCKET_EXCLUDED_FLOW, 64, -477800.64)],
+            150.50,
+        )
+        assert f.message.splitlines()[1].lstrip().startswith(f"· {BUCKET_NEEDS_WORK}")

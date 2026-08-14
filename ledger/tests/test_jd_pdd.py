@@ -166,16 +166,37 @@ class TestTheTwoSettlementTablesDoNotGetConfused:
         ]
 
     def test_withdrawals_are_classified_but_never_reach_profit(self, model):
-        """提现和给广告账户转钱不是经营损益。
+        """提现、给广告账户转钱、保证金进出都不是经营损益。
 
-        本期这两项合计 -99,600 元，是拼多多对账表流水的大头。混进利润的话
+        本期提现和广告充值合计 -99,600 元，是拼多多对账表流水的大头。混进利润的话
         这家店会从赚一万四变成亏八万五。防线是：字典给它们独立的大类，
-        而没有任何指标消费那两个大类。
+        而没有任何指标消费那几个大类。
+
+        deposit 这一条要特别说一句，因为业务给抖音的利润公式里写着「+保证金」，
+        照着抄很容易就在抖音的损益表上加一行。不加是有理由的：归到 deposit 的
+        动账场景只有货款充值保证金一个，它是余额和保证金账户之间挪钱、不带订单号，
+        业务那一列本身也是 sumifs 按订单号取的，所以他们表上那一格恒为 0。
+        三个平台一个口径——拼多多的店铺/活动保证金同样在这里，淘宝那边业务也明确说过
+        「保证金-天猫-扣除转移」不计入费项。
         """
         parked = {"withdrawal", "ad_topup", "deposit", "misc_payment"}
         eaten = {m.major for m in model.metrics if m.major}
         assert not (parked & eaten), "有指标开始吃这些大类了，钱会串进利润"
         assert parked <= {e.major for e in model.dictionary}, "字典里没这几个大类了"
+
+    def test_the_douyin_deposit_scene_is_still_visible_even_though_it_is_parked(self, model):
+        """不进利润不等于看不见。
+
+        抖音的保证金不做成指标，前提是那笔钱在界面上还找得到。字典把它标成
+        天然无订单号，它就会出现在「没进利润的钱」里、单独挂在自己的名目下。
+        这个标记要是掉了，抖音的保证金就变成了既不进利润也不在任何一处露面。
+        """
+        entry = next(
+            e for e in model.dictionary
+            if e.platform == "douyin" and e.major == "deposit"
+        )
+        assert entry.raw == "货款充值保证金"
+        assert entry.naturally_unlinked, "标记掉了，这笔钱会从界面上消失"
 
 
 class TestPddPromotionTotalRow:

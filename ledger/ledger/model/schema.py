@@ -859,6 +859,35 @@ class CommissionRule(Base):
         return (self.store, self.product_id, self.effective_from)
 
 
+class Overhead(Base):
+    """一个月的公摊费用总额。目前只有一项：兼职工资。
+
+    为什么它不是数据源而是配置
+    ------------------------
+    另外四张公共表（代发、刷单、小额打款、发货运费）也是全公司一份，但它们每一行
+    都带订单号或运单号，能落到具体的店、具体的单，所以它们走正常的摄取链路。
+    兼职工资不带任何能落到订单的字段——业务维护的那张表就是「月份 → 总额」两列，
+    2501 是 443,343.25，2502 是 148,802。没有键就没法挂钩，摊销是唯一的出路。
+
+    摊法是从历史文件反解出来的：按各店当月交易收款占全公司的比例摊到店，
+    再从店铺利润里减掉，得到提成利润——也就是提成的基数。见 ledger/overhead.py。
+
+    金额记正数（花掉的钱），摊到店时才转成减项。表里写成负数也认，取绝对值——
+    「支出记正还是记负」这件事在业务表格里两种写法都有，靠录入的人记住早晚会错一次。
+    """
+
+    #: 账期，形如 2026-05。
+    period: str
+    #: 全公司这个月的总额，正数。
+    amount: float
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _positive(self) -> Overhead:
+        object.__setattr__(self, "amount", abs(self.amount))
+        return self
+
+
 class Platform(Base):
     """一个平台。
 
@@ -903,6 +932,14 @@ class Model(Base):
     dictionary: tuple[DictionaryEntry, ...] = ()
     checks: tuple[Check, ...] = ()
     commission: tuple[CommissionRule, ...] = ()
+    overheads: tuple[Overhead, ...] = ()
+
+    def overhead(self, period: str) -> float | None:
+        """这个账期的公摊总额。没配就返回 None——0 和「还没交这张表」是两件事。"""
+        for row in self.overheads:
+            if row.period == period:
+                return row.amount
+        return None
 
     # -- 索引 ------------------------------------------------------------- #
 

@@ -50,6 +50,35 @@ class TestKeyChainOrder:
         bridges = {"order_detail": {"SF001": "主订单-9"}}
         assert resolve_key({"sub_order_id": "", "tracking_no": "SF001"}, rules, bridges) == "主订单-9"
 
+    def test_a_lookup_that_returned_zero_is_not_a_key(self):
+        """xlookup 查不到时返回的 0 不是空，会把整条链堵死。
+
+        运费表那两列「子订单」「子订单2」是制表人用 xlookup 填出来的，查不到时
+        公式的第四个参数给的是 0——29.9 万行里 29.9 万行都写着 0.0。只判非空的话，
+        第一条规则对每一行都命中，取到的键是「0.0」：既挂不上任何订单，又因为
+        已经命中而不再往下试回查，后面三条规则全部形同虚设。表现不是报错，
+        是发货运费整列悄悄归零。所以两条自带键的规则都要求至少有一个非零数字。
+        """
+        rules = compile_key_rules((
+            KeyRule(when=FieldMatch(field="sub_order_id", matches=r"[1-9]")),
+            KeyRule(when=FieldMatch(field="sub_order_id_alt", matches=r"[1-9]")),
+            KeyRule(
+                when=FieldMatch(field="tracking_no", notnull=True),
+                via=Bridge(source="order_cost", match="tracking_no", take="original_order_id"),
+            ),
+        ))
+        bridges = {"order_cost": {"SF001": "原始订单-9"}}
+
+        zeros = {"sub_order_id": "0.0", "sub_order_id_alt": "0.0", "tracking_no": "SF001"}
+        assert resolve_key(zeros, rules, bridges) == "原始订单-9", "两列都是 0 时必须往下走到回查"
+
+        # 「子订单2 有值、子订单为 0 就补上」是业务的原话，第二条规则守的就是这句。
+        alt = {"sub_order_id": "0.0", "sub_order_id_alt": "子订单-2", "tracking_no": "SF001"}
+        assert resolve_key(alt, rules, bridges) == "子订单-2"
+
+        real = {"sub_order_id": "子订单-1", "sub_order_id_alt": "0.0", "tracking_no": "SF001"}
+        assert resolve_key(real, rules, bridges) == "子订单-1"
+
     def test_exclusion_must_come_first(self):
         """排除规则要排在最前面，否则会先被别的规则捞走。
 
