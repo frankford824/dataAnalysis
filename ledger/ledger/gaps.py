@@ -277,14 +277,20 @@ def _unlinked(payload: dict[str, Any]) -> list[dict[str, Any]]:
     只取审计口径的那个总额，不把四个桶都摊出来。另外三个桶（别家店的、规则排除的、
     别的账期的）都已经有解释，摆进「要处理的事」里等于让人白查一场。
     """
-    total = payload.get("unlinked_total")
-    if total is None or abs(total) < MIN_AMOUNT:
-        return []
     label = "取不出订单号，要查归属"
     bucket = next(
         (b for b in payload.get("unlinked_buckets") or [] if b.get("label") == label), None
     )
+    # 金额和笔数都取「要查」那一桶，取不到才退回总额。
+    #
+    # 未归属总额里还含着提现、保证金这类天然没有订单号的钱：天猫皇莉诗 2026-06 的
+    # 总额是 -127,193.12，其中 -124,071.03 是两笔提现，真要查的只有 -3,122.09。
+    # 卡片上写「有 127,193.12 挂不上订单，396 行取不出订单号」，两个数不是同一批钱，
+    # 而人是照着金额决定这件事值不值得查的。
+    total = bucket.get("amount") if bucket else payload.get("unlinked_total")
     count = bucket.get("count") if bucket else None
+    if total is None or abs(total) < MIN_AMOUNT:
+        return []
     # 标题里写绝对值。这个总额是净额，可能是负的，而「有 -357.06 挂不上订单」
     # 得在脑子里绕一圈才知道是三百多块钱没落地。方向留给金额那一栏去表达。
     return [_gap(

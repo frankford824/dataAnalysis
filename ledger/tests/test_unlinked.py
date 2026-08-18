@@ -28,14 +28,36 @@ from ledger.engine.audit import (
 from ledger.engine.link import EXCLUDED_KEY
 from ledger.model.schema import (
     Check,
+    DictionaryEntry,
     Metric,
     Model,
     SourceContract,
     ValueExpr,
 )
 
+#: 字典里标着「天然无订单号」的几条。前三条的大类没有任何指标认领，第四条有——
+#: 拼多多的售后费用归到交易赔付，而交易赔付是损益表上的一行。
+#:
+#: 后面四条不是天然无号的，写在这里是因为模型校验要求每个指标的口径项都得有科目
+#: 会归到它。这条校验本身是对的：一个没有任何科目喂给它的指标恒为空。
+NATURAL = (
+    DictionaryEntry(platform="taobao", raw="其他支出\\收入", minor="提现",
+                    major="withdrawal", naturally_unlinked=True),
+    DictionaryEntry(platform="taobao", raw="万相台", minor="万相台",
+                    major="ad_topup", naturally_unlinked=True),
+    DictionaryEntry(platform="pdd", raw="0070001|转账-店铺保证金", minor="转账-店铺保证金",
+                    major="deposit", naturally_unlinked=True),
+    DictionaryEntry(platform="pdd", raw="0040004|售后费用-延迟发货", minor="售后费用-延迟发货",
+                    major="trade_compensation", naturally_unlinked=True),
+) + tuple(
+    DictionaryEntry(platform="taobao", raw=major, minor=major, major=major)
+    for major in ("trade_receipt", "software_fee", "logistics_fee", "freight_cost")
+)
 
-def _model(*, company_wide: tuple[str, ...] = ()) -> Model:
+
+def _model(
+    *, company_wide: tuple[str, ...] = (), dictionary: tuple[DictionaryEntry, ...] = (),
+) -> Model:
     sources = tuple(
         SourceContract(
             id=sid, name=sid, owner_role="shop_owner", cadence="monthly",
@@ -48,14 +70,16 @@ def _model(*, company_wide: tuple[str, ...] = ()) -> Model:
             id=mid, name=mid, source="settlement",
             value=ValueExpr(op="sum", of=["income"]), major=mid,
         )
-        for mid in ("trade_receipt", "software_fee", "logistics_fee")
+        for mid in ("trade_receipt", "software_fee", "logistics_fee", "trade_compensation")
     ) + (
         Metric(
             id="freight_cost", name="发货运费", source="freight",
             value=ValueExpr(op="sum", of=["amount"]), major="freight_cost",
         ),
     )
-    return Model(id="t", name="t", sources=sources, metrics=metrics)
+    return Model(
+        id="t", name="t", sources=sources, metrics=metrics, dictionary=dictionary,
+    )
 
 
 def _facts(rows: list[dict]) -> pl.DataFrame:
@@ -225,6 +249,89 @@ class TestBucketsByReason:
         assert "其他店" in buckets[0][0]
 
 
+class TestMoneyWithNoOrderConceptAtAll:
+    """提现、保证金、广告充值不该出现在「要人查」那一桶里。
+
+    这类钱本来就没有订单号，让人去查一笔银行搬运的归属是查不出结果的。而它们进得来
+    不进损益，金额还可能很大：天猫皇莉诗那两笔提现 -124,071.03 元比这家店整月利润
+    还大，落进「要查归属」之后一桶四笔钱看起来像十二万的窟窿，而真要查的只有三千。
+
+    判据是两条一起：大类没有任何指标认领（说明它一处都不进损益）、并且字典标了
+    天然无订单号（说明业务自己也认为这类钱没有订单）。只按后者反推大类不行——
+    拼多多的售后费用标着天然无号，大类却是交易赔付，那会把整个交易赔付大类都放行。
+    """
+
+    def _rows(self, major: str, minor: str | None):
+        return [{"metric_id": "trade_receipt", "major": major, "minor": minor,
+                 "link_key": None, "amount": -124071.03, "row_no": 1}]
+
+    def test_a_rule_assigned_withdrawal_is_not_something_to_investigate(self):
+        """规则链定的大类也算。
+
+        微信账单那 6,251 行业务描述整列是空的，字典无从查起，提现是模板按入账类型
+        判出来的——只认科目名的话这条路一个都认不出。
+        """
+        buckets, _total = _bucket_unlinked(
+            _facts(self._rows("withdrawal", "提现")), _model(dictionary=NATURAL),
+        )
+        assert [label for label, _, _ in buckets] == ["提现"]
+
+    def test_it_is_still_listed_so_the_money_stays_visible(self):
+        """不进「要查」那一桶，但金额要照实列出来——人要核对提现和银行流水对得上。"""
+        buckets, total = _bucket_unlinked(
+            _facts(self._rows("withdrawal", "提现")), _model(dictionary=NATURAL),
+        )
+        assert buckets[0][2] == -124071.03
+        assert total == -124071.03, "有解释不等于不用披露"
+
+    def test_a_major_that_a_metric_claims_is_still_something_to_investigate(self):
+        """交易赔付进损益表，挂不上订单就是真要查——不能因为拼多多那几条售后费用
+        标了天然无号，就把所有平台的交易赔付都放行。
+        """
+        buckets, total = _bucket_unlinked(
+            _facts([{"metric_id": "trade_compensation", "major": "trade_compensation",
+                     "link_key": None, "amount": 24.40, "row_no": 1}]),
+            _model(dictionary=NATURAL),
+        )
+        assert [label for label, _, _ in buckets] == [BUCKET_NEEDS_WORK]
+        assert total == 24.40
+
+    def test_what_it_is_beats_which_period_it_belongs_to(self):
+        """备注里带着订单号也一样，报的是「这是保证金」而不是「订单不在本期」。
+
+        后者会暗示换个账期这笔钱就该进损益，而保证金无论哪个账期都不进。
+        这个顺序和字典认出来的那条分支一致：两条判的是同一件事，只是一条靠科目名、
+        一条靠大类，摆在链条里的位置不该不一样。
+        """
+        rows = [{"metric_id": "trade_receipt", "major": "deposit", "minor": "转账-店铺保证金",
+                 "link_key": "4502253026216007946", "amount": -6110.50, "row_no": 1}]
+        buckets, _total = _bucket_unlinked(_facts(rows), _model(dictionary=NATURAL))
+        assert [label for label, _, _ in buckets] == ["转账-店铺保证金"]
+
+    def test_the_subject_and_the_major_branches_agree(self):
+        """同一笔钱，一行靠科目名认出、一行靠大类认出，必须落进同一个桶。"""
+        rows = [
+            {"metric_id": "trade_receipt", "subject": "其他支出\\收入", "minor": "提现",
+             "major": "withdrawal", "amount": -1.0, "row_no": 1},
+            {"metric_id": "trade_receipt", "subject": None, "minor": "提现",
+             "major": "withdrawal", "amount": -1.0, "row_no": 2},
+        ]
+        buckets, _total = _bucket_unlinked(_facts(rows), _model(dictionary=NATURAL))
+        assert buckets == [("提现", 2, -2.0)]
+
+    def test_the_bucket_is_named_in_words_not_in_engine_codes(self):
+        """桶名要是人在自己表上见过的词。没有细项时退回科目名，两者都没有才用大类，
+        而大类是 `withdrawal` 这种内部代号——它会一路显示到界面上。
+        """
+        buckets, _total = _bucket_unlinked(
+            _facts([{"metric_id": "trade_receipt", "major": "withdrawal", "minor": None,
+                     "subject": "其他支出\\收入", "link_key": None,
+                     "amount": -195711.65, "row_no": 1}]),
+            _model(dictionary=NATURAL),
+        )
+        assert [label for label, _, _ in buckets] == ["其他支出\\收入"]
+
+
 class TestEveryBucketExplainsItself:
     """每一桶都要带上「为什么挂不上」，而且解释和桶名必须出自同一处。
 
@@ -282,6 +389,21 @@ class TestTheDisclosureCheckCanActuallyFail:
         f = self._finding([(BUCKET_NEEDS_WORK, 50, 150.50)], 150.50)
         assert not f.passed
         assert "150.50" in f.message and "50" in f.message
+
+    def test_the_headline_counts_and_amount_come_from_the_same_bucket(self):
+        """笔数和金额必须是同一批钱。
+
+        原先笔数取「要查」那桶、金额取未归属总额，而总额里含着提现这类有解释的钱：
+        天猫皇莉诗那句话是「396 笔、-133,546.41 元」，其中 -124,071.03 是两笔提现，
+        真要查的只有 -3,122.09。人照着这个金额去查，先查到的是不需要查的东西。
+        """
+        f = self._finding(
+            [(BUCKET_NEEDS_WORK, 396, -3122.09), ("提现", 2, -124071.03)],
+            -127193.12,
+        )
+        head = f.message.splitlines()[0]
+        assert "396" in head and "-3,122.09" in head
+        assert "127,193.12" not in head and "133,546.41" not in head
 
     def test_fully_explained_money_passes(self):
         """三类都有解释时这条检查该是绿的，否则又变成一条常年通红没人看的提醒。"""

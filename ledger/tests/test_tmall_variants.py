@@ -119,6 +119,91 @@ class TestAHumanFormulaColumnMustNotBeRequired:
         assert model.metric("brushing_cost").value.of == ("principal", "commission")
 
 
+class TestTheSameThingSpelledTwoWays:
+    """同一列在不同店的导出里用不同的词写同一件事，过滤条件必须两个都认。
+
+    这一类错误的共同形状是：过滤条件看起来在把关，实际一行也匹配不上，而它不报错。
+    一条永远匹配不上的过滤条件，和没有这条过滤是一回事。
+    """
+
+    @staticmethod
+    def _values(predicates) -> set[str]:
+        out: set[str] = set()
+        for p in predicates:
+            out |= set(p.value) if isinstance(p.value, (list, tuple)) else {p.value}
+        return out
+
+    def test_cancelled_orders_are_excluded_under_both_spellings(self, model) -> None:
+        """聚水潭这一列在天猫那份写「取消」，别的四家写「已取消」。
+
+        原先只认「已取消」，于是天猫那 9,203 行取消订单的成本 79,999.07 元
+        （落进 2026-06 的是 6,074 行、54,622.45 元）被当成真成本计了进去，
+        利润凭空少这么多。前四家店没暴露这个问题不是因为条件写对了，是因为那四家的
+        店长按导表说明手工删掉了取消行。
+        """
+        for metric_id in ("goods_cost", "reshipment_cost"):
+            states = [
+                p for p in model.metric(metric_id).where if p.field == "order_state"
+            ]
+            assert states, f"{metric_id} 少了排除取消订单那条"
+            values = self._values(states)
+            assert {"取消", "已取消"} <= values, f"{metric_id} 只认了一种写法：{values}"
+
+    def test_the_1688_override_keeps_excluding_cancelled_orders(self, model) -> None:
+        """1688 那条 by_platform 覆盖了整个 where（它的商品成本口径含补发），
+        取消那条必须自己带上，否则覆盖时会被一起清掉。
+        """
+        rule = next(
+            r for r in model.metric("goods_cost").by_platform if r.platform == "alibaba1688"
+        )
+        states = [p for p in rule.where if p.field == "order_state"]
+        assert {"取消", "已取消"} <= self._values(states)
+
+    def test_an_empty_state_still_counts_as_cost(self, model) -> None:
+        """不知道状态不等于已取消。因为不知道就丢掉一笔成本，账上只表现为利润高一点。"""
+        state = next(
+            p for p in model.metric("goods_cost").where if p.field == "order_state"
+        )
+        assert state.include_null
+
+
+class TestOrderIdsHiddenBehindEnglishWords:
+    """备注里的订单号不总是写在中文说法后面。
+
+    取号规则链原先七条全是中文（订单号、订单编号、关联订单号、交易单号），淘宝联盟
+    的代扣把订单号写成 `tradeid:***`，于是皇莉诗那 408 行代扣一条都挂不上。金额很碎
+    （净 -206.05 元），但笔数在「要查归属」那一桶里排第一——几百笔查不动的碎账
+    会让人学会无视整个提示，而那一桶是拦着结账的。
+    """
+
+    #: 真实备注，从对账支付宝-天猫皇莉诗旗舰店.xlsx 抄下来的。
+    REMARK = ("代扣款（扣款用途：淘宝联盟佣金代扣 tradeid:3302710287203084298 "
+              "memberid:3792292908 fee:0.49，付款方：杭州阿里妈妈淘联信息技术有限公司）")
+
+    def _rules(self, model):
+        return model.template("taobao_settlement_alipay_v1").key_rules
+
+    def test_the_tradeid_rule_pulls_the_order_id_out(self, model) -> None:
+        import re
+        rule = next(
+            r for r in self._rules(model)
+            if r.when.field == "remark" and "tradeid" in (r.when.extract or "")
+        )
+        assert re.search(rule.when.extract, self.REMARK).group(1) == "3302710287203084298"
+
+    def test_it_does_not_shadow_the_exclusion_rules(self, model) -> None:
+        """排除非经营流水那条必须仍在最前面。它排在取号规则后面的话，
+        余利宝申购、网商银行调拨会先被抓个订单号出来，排除就永远轮不到。
+        """
+        rules = self._rules(model)
+        excluding = next(i for i, r in enumerate(rules) if r.exclude)
+        tradeid = next(
+            i for i, r in enumerate(rules)
+            if r.when.field == "remark" and "tradeid" in (r.when.extract or "")
+        )
+        assert excluding < tradeid
+
+
 class TestStoreNamesThatContainEachOther:
     """「天猫皇莉诗旗舰店」整个包含着京东那家的别名「皇莉诗旗舰店」。
 

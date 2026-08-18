@@ -119,10 +119,18 @@
   value: {op: sum_product, of: [unit_cost, quantity]}
   where:
     - {field: order_type, op: not_in, value: [补发订单]}
-    # 已取消的单子没有成本。当前三家店的导出里一行都没有，但两份规则表都写了这一条，
-    # 写进来是为了哪天真出现时不用等人发现。空状态要留下：不知道状态不等于已取消，
-    # 因为不知道就丢掉一笔成本，账上只会表现为利润高了一点。
-    - {field: order_state, op: ne, value: 已取消, include_null: true}
+    # 取消的单子没有成本。空状态要留下：不知道状态不等于已取消，因为不知道就丢掉
+    # 一笔成本，账上只会表现为利润高了一点。
+    #
+    # 两个词都要认。聚水潭这一列在天猫皇莉诗那份导出里写的是「取消」两个字，
+    # 别的四家店写的是「已取消」——而原先这条只认「已取消」，于是天猫那 9,203 行
+    # 取消订单的成本 79,999.07 元（落进 2026-06 的是 6,074 行、54,622.45 元）
+    # 一直被当成真成本计进去了，利润凭空少这么多。
+    #
+    # 之前四家店没暴露这个问题，不是因为条件写对了，是因为那四家的店长按导表说明
+    # 「注3：对于订单状态已取消的需删除对应行数据」手工删掉了取消行——一条永远
+    # 匹配不上的过滤条件，和没有这条过滤是一回事，而它看起来像在把关。
+    - {field: order_state, op: not_in, value: [已取消, 取消], include_null: true}
   sign: negate
   time_basis: order_date
   link: {key: sub_order_id, to: order.sub_order_id, grain: order}
@@ -148,9 +156,9 @@
       # 所以缺省要排除，否则两边都算会重复。这个店的 132 行补发订单成本 501.59 元，
       # 沿用淘宝的排除就会全部漏掉。
       #
-      # 补发那条不要，已取消那条要留着——清空整个 where 会把它一起清掉。
+      # 补发那条不要，取消那条要留着——清空整个 where 会把它一起清掉。
       where:
-        - {field: order_state, op: ne, value: 已取消, include_null: true}
+        - {field: order_state, op: not_in, value: [已取消, 取消], include_null: true}
 
     # 京东和拼多多的聚水潭表都挂原始线上订单号，公式也都除了 countifs，
     # 和 1688 一路。两家的规则表都写着「状态为已取消的数据进行清除」，
@@ -201,7 +209,7 @@
   value: {op: sum_product, of: [unit_cost, quantity]}
   where:
     - {field: order_type, op: in, value: [补发订单]}
-    - {field: order_state, op: ne, value: 已取消, include_null: true}
+    - {field: order_state, op: not_in, value: [已取消, 取消], include_null: true}
   sign: negate
   time_basis: order_date
   link: {key: original_order_id, to: order.order_id, grain: order}

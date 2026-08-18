@@ -259,9 +259,15 @@ def _check_unlinked_disclosed(check, model, facts, links, classify, completeness
     else:
         # 数字由引擎给，建议由模型给，两者都要——和覆盖率那条同一个道理：
         # 光有建议看不出有多少钱要查，光有数字不知道该拿它怎么办。
+        #
+        # 笔数和金额要取自同一桶。原先笔数取「要查的那桶」、金额取未归属总额，
+        # 而总额里还含着提现、保证金这些有解释的钱：天猫皇莉诗那句话写的是
+        # 「395 笔、-133,546.41 元」，其中 -124,071.03 是两笔提现，真要查的
+        # 只有 -3,146.49。人照着这个数去查，先查到的是一个不需要查的东西。
         n = sum(c for _, c, _ in suspicious)
+        amount = float(sum_amounts(a for _, _, a in suspicious))
         head = (
-            f"有 {n:,} 笔、{result.unlinked_total:,.2f} 元既取不出订单号、也没有规则认领。"
+            f"有 {n:,} 笔、{amount:,.2f} 元既取不出订单号、也没有规则认领。"
             + (check.message or "这部分不能悄悄丢掉，也不能硬摊进利润。")
             + tally
         )
@@ -390,6 +396,25 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
     natural = {
         e.raw for e in model.dictionary if e.naturally_unlinked
     }
+    # 天然无订单号也可以由大类判定，不是只看科目名。
+    #
+    # 原先只认两件事：科目名在字典里标了，或者整个指标标了。可归类规则链同样能定大类——
+    # 微信账单里那四笔提现的业务描述整列是空的，字典无从查起，是模板规则按入账类型
+    # 判成提现的。于是 -195,711.65 元（其中 2026-06 占 -124,071.03）落进了
+    # 「取不出订单号，要查归属」，比这家店整月利润还大，而且它是拦着结账的那一桶。
+    # 提现本来就没有订单号，让人去查一笔银行搬运的归属是查不出结果的。
+    #
+    # 两个条件都要满足，不能只看字典标没标。字典的这个标记挂在具体科目上而不是大类上：
+    # 拼多多那四条「售后费用-延迟发货」之类标着天然无号，它们的大类是 trade_compensation,
+    # 只按大类反推就会把整个交易赔付大类都豁免掉——淘宝的「保证金-天猫-出账缴存」
+    # 58 笔 -6,110.50 和「记账本转账」45 笔会跟着一起被放行，而那些是真该查的。
+    # 加上「没有任何指标认领这个大类」这一条之后，剩下的正好是提现、保证金、广告充值、
+    # 往来款：它们进得来但一处都不进损益，问它们挂不挂得上订单没有意义。
+    claimed_majors = {m.major for m in model.metrics if m.major}
+    natural_majors = {
+        e.major for e in model.dictionary
+        if e.naturally_unlinked and e.major and e.major not in claimed_majors
+    }
     naturally_unlinked_metrics = {m.id for m in model.metrics if m.naturally_unlinked}
     company_wide = {s.id for s in model.sources if s.company_wide}
 
@@ -404,6 +429,8 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
         .then(pl.coalesce(pl.col("minor"), pl.col("subject"), pl.lit("其他")))
         .when(pl.col("subject").is_in(list(natural)))
         .then(pl.coalesce(pl.col("minor"), pl.col("subject")))
+        .when(pl.col("major").is_in(list(natural_majors)))
+        .then(pl.coalesce(pl.col("minor"), pl.col("subject"), pl.col("major")))
         .when(has_key)
         .then(pl.lit(BUCKET_OTHER_PERIOD))
         .otherwise(pl.lit(BUCKET_NEEDS_WORK))
