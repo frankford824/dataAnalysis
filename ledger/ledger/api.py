@@ -162,9 +162,9 @@ def upload(files: Annotated[list[UploadFile], File()], token: str = "") -> dict:
         result = service.intake(
             ws, model, uploads, by=ANONYMOUS, report=progress.Reporter(token),
         )
-    except Exception:
+    except Exception as exc:
         progress.close(token, "出错了")
-        raise
+        raise HTTPException(500, f"交表算账时出错：{exc}") from exc
     progress.close(token)
     return {
         "summary": result.summary(),

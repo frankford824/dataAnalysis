@@ -186,7 +186,14 @@ def recompute(
     # 这一段说不出份数：挂钩、归类、核算是把全店的行放在一起算的，没有「第几份」
     # 可报。硬报个 0/9 会让人以为它卡在第零份上。
     report(f"归类核算 · {where}")
-    result = run(ing, store.platform)
+    try:
+        result = run(ing, store.platform)
+    except Exception as exc:  # noqa: BLE001 — 交表接口不能 500，原因写进回执
+        out.failure = {
+            "store": store.name,
+            "why": f"核算这一步没跑完：{exc}",
+        }
+        return out
 
     if not result.slices:
         out.failure = {

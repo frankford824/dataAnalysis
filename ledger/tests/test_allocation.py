@@ -104,19 +104,34 @@ class TestRatioAllocation:
         proj = project(_facts([("A", 100.0)]), metric, spine)
         assert any("大于 1" in n and "为负" in n for n in proj.notes)
 
-    def test_missing_ratio_column_fails_loudly(self):
-        """脊柱上没有分摊率列就该报错，不能默默按 1 分。
+    def test_missing_ratio_column_falls_back_to_even_not_one(self):
+        """脊柱上没有分摊率列时按笔数均摊，合计守恒。
 
-        默默按 1 会让每条脊柱行都拿到全额，主订单有几个子订单就把钱记几遍。
+        绝不能默默按 1：主订单有几个子订单就把钱记几遍。天猫千牛导出经常
+        没有「收入分配率」这一列，缺列就崩成 500 更糟——表已经收下了，人只看到
+        Internal Server Error，下次重传还会撞同一面墙。
         """
-        spine = _spine([{"order_id": "A", "store": "s", "period": "p"}])
+        spine = _spine([
+            {"order_id": "A", "store": "s", "period": "p"},
+            {"order_id": "A", "store": "s", "period": "p"},
+        ])
         metric = _metric(Allocation(mode="ratio", by="alloc_ratio"))
-        try:
-            project(_facts([("A", 100.0)]), metric, spine)
-        except ValueError as e:
-            assert "分摊比例必须来自脊柱" in str(e)
-        else:
-            raise AssertionError("缺分摊率列必须报错")
+        proj = project(_facts([("A", 100.0)]), metric, spine)
+        got = proj.facts.get_column("amount").to_list()
+        assert got == [50.0, 50.0]
+        assert any("笔数均摊" in n for n in proj.notes)
+
+    def test_missing_ratio_uses_buyer_paid_when_present(self):
+        """能从买家实付推占比就推，比均摊更接近淘宝原来的收入分配率。"""
+        spine = _spine([
+            {"order_id": "A", "buyer_paid": 70.0, "store": "s", "period": "p"},
+            {"order_id": "A", "buyer_paid": 30.0, "store": "s", "period": "p"},
+        ])
+        metric = _metric(Allocation(mode="ratio", by="alloc_ratio"))
+        proj = project(_facts([("A", 100.0)]), metric, spine)
+        got = [round(x, 2) for x in proj.facts.get_column("amount").to_list()]
+        assert got == [70.0, 30.0]
+        assert any("买家实付" in n for n in proj.notes)
 
 
 class TestNoAllocation:

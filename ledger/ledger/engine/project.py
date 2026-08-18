@@ -132,7 +132,7 @@ def project(
 
     proj = Projection(
         facts=facts.filter(pl.col("amount") != 0.0),
-        notes=ratio_health(keyed, metric),
+        notes=ratio_health(keyed, metric) + _ratio_fallback_notes(keyed, metric),
         orphan_amount=money_float(orphan_amount),
         orphan_keys=len(orphan_keys),
         uncovered_rows=keyed.height - covered,
@@ -145,20 +145,41 @@ def project(
     return proj
 
 
+def _even() -> pl.Expr:
+    """组内均分：除数是脊柱里共享同一个键的行数。"""
+    return 1.0 / pl.len().over("link_key").cast(pl.Float64)
+
+
 def _factor(keyed: pl.DataFrame, metric: Metric) -> pl.Expr:
     """每条脊柱行拿到的比例。"""
     alloc = metric.allocate
     if alloc is None:
         return pl.lit(1.0)
     if alloc.mode == "ratio":
-        if alloc.by not in keyed.columns:
-            raise ValueError(
-                f"指标 {metric.id} 要按 {alloc.by} 分摊，但脊柱上没有这一列。"
-                f"分摊比例必须来自脊柱。"
+        if alloc.by in keyed.columns:
+            return pl.col(alloc.by).cast(pl.Float64, strict=False).fill_null(0.0)
+        # 天猫千牛导出经常没有「收入分配率」这一列。绝不能按 1 填——
+        # 一个主订单有几个子订单，钱就会被记几遍，利润凭空翻倍。
+        # 有买家实付就按金额占比推；没有就退回笔数均摊。合计都守恒。
+        if "buyer_paid" in keyed.columns:
+            paid = pl.col("buyer_paid").cast(pl.Float64, strict=False).fill_null(0.0)
+            total = paid.sum().over("link_key")
+            return (
+                pl.when(total == 0)
+                .then(_even())
+                .otherwise(paid / total)
             )
-        return pl.col(alloc.by).cast(pl.Float64, strict=False).fill_null(0.0)
-    # 组内均分：除数是脊柱里共享同一个键的行数
-    return (1.0 / pl.len().over("link_key").cast(pl.Float64))
+        return _even()
+    return _even()
+
+
+def _ratio_fallback_notes(keyed: pl.DataFrame, metric: Metric) -> list[str]:
+    alloc = metric.allocate
+    if alloc is None or alloc.mode != "ratio" or alloc.by in keyed.columns:
+        return []
+    if "buyer_paid" in keyed.columns:
+        return [f"{metric.name}：订单明细没有收入分配率，已按买家实付金额占比分摊"]
+    return [f"{metric.name}：订单明细没有收入分配率，已按子订单笔数均摊"]
 
 
 def ratio_health(keyed: pl.DataFrame, metric: Metric) -> list[str]:
