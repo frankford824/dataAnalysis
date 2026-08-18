@@ -301,6 +301,35 @@ class TestTopUpVersusCompensation:
         )
 
 
+class TestWechatAndAlipayUseTheSameFeeName:
+    """同一段业务描述，支付宝和微信必须落到同一个费项名。
+
+    天猫皇莉诗两边都写「0530288T|技术&服务费-大服饰跨境服务增值费」。支付宝走字典，
+    细项是「跨境增值费」；微信原先备注里「淘宝天猫跨境服务增值费」先命中，只写下
+    大类、细项空着，界面退回显示整段编码。按费项对账对不上。
+    """
+
+    SUBJECT = "0530288T|技术&服务费-大服饰跨境服务增值费"
+    REMARK = "淘宝天猫跨境服务增值费(3308892457653023287)端内扣款"
+
+    def test_the_dictionary_runs_before_the_remark_keyword(self, model) -> None:
+        for tid in ("taobao_settlement_wechat_v1", "taobao_settlement_wechat_v2"):
+            rules = model.template(tid).classify_rules
+            dictionary = next(i for i, r in enumerate(rules) if r.dictionary)
+            remark = next(
+                i for i, r in enumerate(rules)
+                if r.when and r.when.field == "remark"
+                and "淘宝天猫跨境服务增值费" in (r.when.contains or [])
+            )
+            assert dictionary < remark, f"{tid} 字典排在备注关键词后面"
+
+    def test_the_coded_subject_is_the_short_fee_name(self, model) -> None:
+        hit = model.lookup("taobao", self.SUBJECT)
+        assert hit is not None
+        assert hit.major == "software_fee"
+        assert hit.minor == "跨境增值费"
+
+
 class TestStoreNamesThatContainEachOther:
     """「天猫皇莉诗旗舰店」整个包含着京东那家的别名「皇莉诗旗舰店」。
 

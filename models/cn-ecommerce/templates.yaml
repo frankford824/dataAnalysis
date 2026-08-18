@@ -369,6 +369,13 @@
     - when: {field: remark, extract: '[{(（]\s*(\d{15,25})\s*[})）]'}
       note: 备注里「订单{***}打款」或「基础软件服务费(***)扣款」
   classify_rules:
+    # 字典必须排在备注关键词前面。业务描述有值时两边写的是同一套编码
+    # （0530288T|技术&服务费-大服饰跨境服务增值费），字典把它收成「跨境增值费」。
+    # 原先备注里「淘宝天猫跨境服务增值费」先命中，只写下大类、细项空着，界面退回
+    # 显示整段业务描述——支付宝走字典显示「跨境增值费」，微信显示编码全称，
+    # 同一笔费对账对不上。业务描述为空的那几千行字典查不到，下面备注规则照收。
+    - dictionary: true
+      note: 业务描述有值就走字典，和支付宝同一套细项名
     - when: {field: remark, contains: [基础软件服务费, 淘宝天猫跨境服务增值费, 消费券代付资金扣回]}
       major: software_fee
     - when: {field: remark, extract: '^订单.*打款$'}
@@ -379,8 +386,6 @@
       major: marketing_fee
     - when: {field: remark, extract: '^订单.*退款$'}
       major: trade_refund
-    - dictionary: true
-      note: 前面四条都没命中再查字典
     - when: {field: biz_type, equals: [交易收款]}
       major: trade_receipt
       note: 实测 3,642 行业务描述和备注都为空，只能靠入帐类型
@@ -422,7 +427,12 @@
     - when: {field: remark, extract: '[{(（]\s*(\d{15,25})\s*[})）]'}
       note: 列为空的 4 行走备注
   classify_rules:
-    # 这张表 6,251 行业务描述是空的，费项只能从备注和入账类型里读。
+    # 这张表 6,251 行业务描述是空的，费项只能从备注和入账类型里读——那些行字典
+    # 查不到，会落到下面的备注规则。业务描述有值的行必须先走字典：支付宝同一套
+    # 编码（0530288T|…跨境服务增值费）字典收成「跨境增值费」，微信原先被备注
+    # 「淘宝天猫跨境服务增值费」抢走，细项空着，界面上就出现两个费项名。
+    - dictionary: true
+      note: 业务描述有值就走字典，和支付宝同一套细项名
     - when:
         field: remark
         contains: [基础软件服务费, 淘宝天猫跨境服务增值费, 消费券代付资金扣回, 先用后付技术服务费]
@@ -435,8 +445,6 @@
       major: marketing_fee
     - when: {field: remark, extract: '^订单.*退款$'}
       major: trade_refund
-    - dictionary: true
-      note: 前面四条都没命中再查字典
     - when: {field: biz_type, equals: [交易收款]}
       major: trade_receipt
     - when: {field: biz_type, equals: ["交易退款(售后)"]}

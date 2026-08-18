@@ -267,6 +267,24 @@ def test_drill_groups_by_subject_when_present():
     assert d["by_subject"][0]["count"] == 1
 
 
+def test_drill_merges_the_same_fee_under_two_raw_names():
+    """字典收过的和原始科目本身就叫这个名字的，界面上是同一行。
+
+    天猫皇莉诗平台服务费下钻曾经并排出两行「类目软件服务费」：33,017 行的原始
+    科目带着 0030003|，另外 323 行原始科目就叫「类目软件服务费」。按两列分
+    它们是两组，显示名却一样，按费项对账对不上。
+    """
+    d = drill(_facts([
+        {"metric_id": "m1", "amount": -42.0, "minor": "类目软件服务费",
+         "subject": "0030003|软件服务费-类目软件服务费（原天猫佣金）"},
+        {"metric_id": "m1", "amount": -0.2, "minor": "类目软件服务费",
+         "subject": "类目软件服务费"},
+    ]), _tree(), "d1")
+    assert [x["subject"] for x in d["by_subject"]] == ["类目软件服务费"]
+    assert d["by_subject"][0]["count"] == 2
+    assert d["by_subject"][0]["amount"] == pytest.approx(-42.2)
+
+
 def test_drill_says_when_it_truncated():
     rows = [{"metric_id": "m1", "amount": float(-i), "row_no": i} for i in range(1, 12)]
     d = drill(_facts(rows), _tree(), "d1", limit=5)

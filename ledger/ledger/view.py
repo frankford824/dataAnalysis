@@ -493,8 +493,18 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
     named = scope.filter(
         pl.col("minor").is_not_null() | pl.col("subject").is_not_null()
     )
+    # 按界面上那一行的名字分，不按 (细项, 原始科目) 两列分。
+    #
+    # 界面显示的是 coalesce(minor, subject)。按两列分的话，同一件费会出现两行
+    # 同名：「类目软件服务费」33,017 行是字典收过的（原始科目带着 0030003|），
+    # 另外 323 行原始科目本身就叫这个名字，细项也是这个名字——人看见两个
+    # 「类目软件服务费」，按费项对账对不上。点进去筛的已经是显示名，汇总却按
+    # 原始科目切开，两边口径不一致。
     by_subject = (
-        named.group_by("minor", "subject")
+        named.with_columns(
+            pl.coalesce(pl.col("minor"), pl.col("subject")).alias("shown")
+        )
+        .group_by("shown")
         .agg(pl.len().alias("count"), money.sum().alias("amount"))
         .sort("amount")
         if not named.is_empty()
@@ -540,8 +550,8 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
         #: 它们不进这家店的账，但删掉就没法回答「这笔钱去哪了」。
         "uncounted": _uncounted(out_rows, out_amount),
         "by_subject": [
-            {"subject": r["minor"] or r["subject"],
-             "raw": r["subject"], "count": r["count"], "amount": r["amount"]}
+            {"subject": r["shown"], "raw": r["shown"],
+             "count": r["count"], "amount": r["amount"]}
             for r in by_subject.to_dicts()
         ],
         "by_file": [
