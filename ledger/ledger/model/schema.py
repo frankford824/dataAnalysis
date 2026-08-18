@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict
+from collections.abc import Iterable
 from functools import lru_cache
 from typing import Annotated, Literal
 
@@ -785,7 +786,12 @@ class Store(Base):
     note: str = ""
 
     def owns(self, filename: str) -> bool:
-        """这个文件名是不是这家店的。"""
+        """这个文件名里有没有出现这家店的名字或别名。
+
+        只是包含判断，不是归属判断：店名互相包含时几家店会同时答是。
+        要问「这个文件归谁」用 `Model.store_of`，要挑「这家店的文件」用
+        `Model.files_of`，两处都按最长匹配定唯一一家。
+        """
         return any(a and a in filename for a in (self.name, *self.aliases))
 
 
@@ -995,6 +1001,19 @@ class Model(Base):
                 if alias and alias in filename and len(alias) > best_len:
                     best, best_len = s, len(alias)
         return best
+
+    def files_of(self, store_id: str, filenames: Iterable[str]) -> list[str]:
+        """这批文件里属于这家店的那些。
+
+        必须走 `store_of` 而不是逐店问 `Store.owns`：`owns` 只答「我的名字在不在
+        这个文件名里」，两家店名互相包含时两家都会答是，于是同一份表被两家各算一遍。
+        「天猫皇莉诗旗舰店」包含着京东那家的别名「皇莉诗旗舰店」，实测天猫那份
+        支付宝对账（1,459,425.47 元、49,182 行）会同时落进京东皇莉诗的账里，
+        表现是京东那边凭空多出一堆「字典里没有的费项」——因为拿京东的字典去查
+        淘宝的科目名，一条都查不中。交表那条路一直是最长匹配的，是回放和验收
+        这两道闸门自己走了另一套归属规则，于是闸门量的不是产品的行为。
+        """
+        return [f for f in filenames if (s := self.store_of(f)) and s.id == store_id]
 
     def active_stores(self) -> tuple[Store, ...]:
         """在营的店。归档店不参与新账期，但历史账仍可重算。"""

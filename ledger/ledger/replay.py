@@ -183,7 +183,9 @@ def snapshot(model: Model, corpus: Path, store_ids: Iterable[str] | None = None)
     out: dict[str, dict[str, Any]] = {}
     for store_id in ids:
         store = model.store(store_id)
-        files = sorted(p for p in corpus.rglob("*.xlsx") if store.owns(p.name))
+        found = sorted(corpus.rglob("*.xlsx"), key=lambda p: p.name)
+        mine = set(model.files_of(store_id, (p.name for p in found)))
+        files = [p for p in found if p.name in mine]
         if not files:
             continue
         result = run(ingest([str(p) for p in files], model, [store.name]), store.platform)

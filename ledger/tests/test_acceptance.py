@@ -65,7 +65,9 @@ def _run_store(store_id: str):
 
     model = load_model(MODELS / "cn-ecommerce")
     store = model.store(store_id)
-    files = [p for p in PLATFORM_DATA.rglob("*.xlsx") if store.owns(p.name)]
+    found = list(PLATFORM_DATA.rglob("*.xlsx"))
+    mine = set(model.files_of(store_id, (p.name for p in found)))
+    files = [p for p in found if p.name in mine]
     assert files, f"{store.name} 一个文件都没找到"
     result = run(ingest(files, model, [store.name]), store.platform)
     assert result.slices, f"{store.name} 没算出结果"

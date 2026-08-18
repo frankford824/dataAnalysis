@@ -147,7 +147,7 @@ class TestShippedRegistry:
 
     def test_loads(self):
         m = load_model(MODELS / "cn-ecommerce")
-        assert len(m.stores) == 5
+        assert len(m.stores) == 6
         assert {s.platform for s in m.stores} == {
             "taobao", "alibaba1688", "douyin", "jd", "pdd",
         }
@@ -186,8 +186,22 @@ class TestShippedRegistry:
             "小额打款-抖音浅花涧节日装饰.xlsx",
             "对账-京东皇莉诗.xlsx",
             "订单明细-pdd快乐节庆.xlsx",
+            "对账支付宝-天猫皇莉诗旗舰店.xlsx",
+            "对账微信-天猫皇莉诗旗舰店.xlsx",
         ]:
             assert m.store_of(name) is not None, name
+
+    def test_the_longer_store_name_wins(self):
+        """「天猫皇莉诗旗舰店」和「皇莉诗旗舰店」是两个平台上的两家店。
+
+        后者是 jd_huanglishi 的别名，而它整个包含在前者里面。认文件按最长匹配，
+        所以带「天猫」的文件归天猫那家、只写店招的归京东那家。这条钉住的是最长匹配
+        本身：一旦退回成「谁先匹配上算谁」，天猫的整月对账会静静地记到京东名下——
+        两家店的账同时错，而界面上一个红字都不会有。
+        """
+        m = load_model(MODELS / "cn-ecommerce")
+        assert m.store_of("对账支付宝-天猫皇莉诗旗舰店.xlsx").id == "taobao_msy387nx"
+        assert m.store_of("运费-皇莉诗旗舰店.xlsx").id == "jd_huanglishi"
 
     def test_company_wide_tables_name_stores_differently(self):
         """全公司共用的那几张表里，店名的写法和文件名不一样，要靠别名认。

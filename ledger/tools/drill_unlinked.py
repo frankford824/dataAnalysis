@@ -40,7 +40,9 @@ def show(df: pl.DataFrame, by: str, indent: str = "  ", top: int = 20) -> None:
 def main() -> None:
     model = load_model(MODELS / "cn-ecommerce")
     store = model.store("taobao_xibishun")
-    files = [p for p in DATA.rglob("*.xlsx") if store.owns(p.name)]
+    found = list(DATA.rglob("*.xlsx"))
+    mine = set(model.files_of(store.id, (p.name for p in found)))
+    files = [p for p in found if p.name in mine]
     result = run(ingest(files, model, [store.name]), store.platform)
 
     unl = _one_row_once(result.facts.filter(~pl.col("linked")), model)

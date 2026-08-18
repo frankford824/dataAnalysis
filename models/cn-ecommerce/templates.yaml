@@ -241,9 +241,15 @@
         「服财务费」，微信同一科目拼写正常。两种写法都要认。
     - when:
         field: remark
-        contains: [品牌新享新品孵化软件服务费, 品牌新享-首单拉新计划, 限时红包代商家垫付扣回]
+        contains: [品牌新享, 限时红包代商家垫付扣回]
       major: marketing_fee
-      note: 费项2 归营销费用。费项那一列归服务费，见上面的口径分歧说明。
+      note: >
+        费项2 归营销费用。费项那一列归服务费，见上面的口径分歧说明。
+
+        按「品牌新享」前缀一条盖住，不再逐个列举。字典里 12 条品牌新享开头的科目
+        全都是营销费用，逐个列举只是把同一件事写两遍，还漏掉了新出的那几种——
+        天猫皇莉诗这张表里「品牌新享-天猫营销托管软件服务费」有 2 行业务描述为空，
+        字典查不到、列举里也没有，就落在未归类里。
     - when: {field: remark, contains: [商家集运中转操作费, 商家集运物流服务费]}
       major: software_fee
       note: 费项2 归软件服务费。费项那一列归物流运费，业务上后者更合理。
@@ -263,6 +269,23 @@
         理财申购与银行间调拨，钱换了个存放地方，不是损益。
         实测余利宝申购 88 行 81.30 万、转出网商银行 1 行 1.30 万，
         之前一直挂在未归类里拦着结账。
+    - when: {field: merchant_order_id, contains: [MYBK]}
+      exclude: true
+      note: >
+        钱从网商银行回来的那条腿。备注只写两个字「退回」，上面按备注排除的规则
+        一条都碰不到它，于是天猫皇莉诗有 49,246.16 元卡在未归类里——比这张表上
+        所有其他未归类加起来还多两百倍。
+
+        判据是商户订单号里的 MYBK（网商银行的清算标识），不是金额也不是日期：
+        实测这两张对账表里带 MYBK 的一共 3 行，全都是网商银行的进出腿
+        （皇莉诗 -500,000 转出、+49,246.16 退回，喜必顺 -13,000 转出），
+        没有一行是经营流水。
+    - when: {field: remark, contains: [淘宝联盟佣金代扣, 淘宝联盟推广佣金返还]}
+      major: marketing_fee
+      note: >
+        淘宝联盟（阿里妈妈）的推广佣金，代扣是支出、返还是冲回，同一个口径两个方向。
+        实测皇莉诗 450 行、净 -181 元，笔数不小金额很碎；不归类的话它们既进不了
+        损益表也算不进覆盖率，只是让未归类的笔数一直挂着。
     - when: {field: remark, contains: [售后退款追缴消费券返还金额]}
       major: marketing_fee
       note: >
@@ -324,13 +347,77 @@
       exclude: true
       note: 提现是资金搬运，不是损益
 
+- id: taobao_settlement_wechat_v2
+  source: settlement
+  name: 淘宝对账-微信账单（天猫八列版）
+  # 同一个千牛入口能导出两种表头。喜必顺那份 14 列，带商家昵称、主/子订单id 两列、
+  # 入「帐」类型；天猫皇莉诗这份 8 列，只有一列「淘宝订单编号」、写的是入「账」类型。
+  # 一个字之差和少了六列，v1 的必需列只对上 1/5，连「接近」都报不出来，
+  # 界面上只说「没见过这种表头（8 列）」。整条微信渠道因此不进账——本期这家店
+  # 微信侧 4,009 笔交易收款、146,132.59 元一分都没算进收入。
+  match_columns: [入账时间, 支付流水号, 淘宝订单编号, 入账类型, 业务描述, 备注]
+  sign: as_is
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: txn_id, columns: [支付流水号]}
+    - {role: subject, columns: [业务描述], required: false}
+    - {role: income, columns: ["收入金额（元）", "收入金额(元)"]}
+    # 和 v1 同一个坑：支出列写的是正数（实测 7,764 行全正）。不取反就变成收入。
+    - {role: outgo, columns: [支出金额, "支出金额(元)"], negate: true}
+    - {role: base_order_id, columns: [淘宝订单编号], required: false}
+    - {role: remark, columns: [备注], required: false}
+    - {role: biz_type, columns: [入账类型], required: false}
+    - {role: settle_time, columns: [入账时间]}
+  key_rules:
+    - when: {field: base_order_id}
+      note: >
+        淘宝订单编号就是主订单号：全表 11,795 行里有 11,705 行和备注括号里的
+        订单号完全一致。剩下 85 行是退款和扣款退回，两处指向一对主/子订单，
+        以列为准和 v1 保持同一口径。
+    - when: {field: remark, extract: '[{(（]\s*(\d{15,25})\s*[})）]'}
+      note: 列为空的 4 行走备注
+  classify_rules:
+    # 这张表 6,251 行业务描述是空的，费项只能从备注和入账类型里读。
+    - when:
+        field: remark
+        contains: [基础软件服务费, 淘宝天猫跨境服务增值费, 消费券代付资金扣回, 先用后付技术服务费]
+      major: software_fee
+    - when: {field: remark, extract: '^订单.*打款$'}
+      major: trade_receipt
+    # 品牌新享底下有四种叫法（首单拉新 1,909、新品孵化 191、超级老客 77、
+    # 加上 18 行扣款退回），按前缀一条盖住，字典里这四条也都是营销费用。
+    - when: {field: remark, contains: [品牌新享, 限时红包代商家垫付扣回]}
+      major: marketing_fee
+    - when: {field: remark, extract: '^订单.*退款$'}
+      major: trade_refund
+    - dictionary: true
+      note: 前面四条都没命中再查字典
+    - when: {field: biz_type, equals: [交易收款]}
+      major: trade_receipt
+    - when: {field: biz_type, equals: ["交易退款(售后)"]}
+      major: trade_refund
+    - when: {field: biz_type, equals: [保证金扣款]}
+      major: trade_compensation
+      note: 备注写「保证金管控资金使用」，和字典里「交易赔付（保证金扣款）」同一件事
+    - when: {field: biz_type, equals: [提现]}
+      major: withdrawal
+      note: >
+        提现只有 4 行，但是 -195,711.65 元，比这家店整月利润还大。归成提现口径
+        进得来不进利润，在「没算进利润的钱」里看得见。v1 那条写的是显式排除，
+        排掉之后这笔钱在界面上一处都找不到，人没法核对提现和银行流水对不对上。
+
 # ======================================================================== #
 # 成本各源
 # ======================================================================== #
 - id: jushuitan_cost_v1
   source: order_cost
   name: 聚水潭订单成本
-  match_columns: [内部订单号, 线上订单号, 线上子订单编号, 原始线上订单号, 成本价, 总成本]
+  # 不要求「总成本」那一列。它是人手加的公式列（总成本=成本价*数量），算账根本不读它——
+  # goods_cost 自己拿成本价乘数量。可它写在必需列里的后果非常重：天猫皇莉诗那份
+  # 聚水潭导出没有这一列（146,738 行），于是这张模板匹配不上，表头相同的
+  # 「补发订单成本」接了过去，结果是商品成本整项为空、毛利和利润都算不出来，
+  # 而界面上这张表显示「认出来了」。
+  match_columns: [内部订单号, 线上订单号, 线上子订单编号, 原始线上订单号, 成本价]
   parse: {header_row: 1}
   time_slots: {order_date: order_time}
   bindings:
@@ -345,7 +432,7 @@
     - {role: sku, columns: [商品编码]}
     - {role: quantity, columns: [数量]}
     - {role: unit_cost, columns: [成本价]}
-    - {role: total_cost, columns: [总成本]}
+    - {role: total_cost, columns: [总成本], required: false}
     - {role: order_time, columns: [下单时间]}
   note: >
     列名必须是「线上子订单编号」，写成「线上子订单号」会让覆盖率归零。
@@ -457,11 +544,15 @@
     - {role: principal, columns: [本金]}
     - {role: commission, columns: [佣金]}
     - {role: platform_fee, columns: [平台费], required: false}
-    - {role: total_cost, columns: [总金额, 合计]}
+    - {role: total_cost, columns: [总金额, 合计], required: false}
     - {role: order_time, columns: [下单日期]}
   note: >
     全公司一张表，必须按店铺筛，否则会把别的店的刷单算进来。
-    金额取现成的总金额/合计列，两个平台的规则表都写着它等于本金+佣金。
+
+    金额自己按本金+佣金加，不读现成的总金额/合计列。两个平台的规则表都写着
+    总金额=本金+佣金，实测也一分不差，所以那一列没有信息量，只有风险：
+    天猫皇莉诗那份刷单表没有它，而它原先是必需绑定，整张表因此解析失败，
+    本金佣金恒为 0——而界面上只说「认不出来的表」，不会说少算了哪一项。
 
 - id: dropship_v1
   source: dropship
