@@ -204,6 +204,103 @@ class TestOrderIdsHiddenBehindEnglishWords:
         assert excluding < tradeid
 
 
+class TestTheOrderIdColumnThatHoldsSomethingElse:
+    """「业务基础订单号」这一列偶尔放的不是订单号。
+
+    规则链第 2 条原先无条件采用这一格。记账本转账（支付宝转账小额打款给买家）那一格
+    写的是打款流水号 FP301_8587437774500402，两家店共 105 行。后果不是挂不上，
+    是挂着一个永远挂不上的键，落进「订单号取到了、只是订单不在本期」那一桶——
+    一句说得通但不成立的解释，人会照着它去查跨期结算。
+
+    真订单号就在备注里，规则链第 6 条（关联订单号：***）一条全收。人工表算这批钱：
+    它自己那张对账表的费项2 列写的是交易赔付，32 行 -214.87。
+    """
+
+    FP301 = "FP301_8587437774500402"
+    REMARK = "支付宝转账小额打款-关联订单号：3303671307562048393"
+
+    def _rule(self, model):
+        return next(
+            r for r in model.template("taobao_settlement_alipay_v1").key_rules
+            if r.when.field == "base_order_id"
+        )
+
+    def test_a_payment_serial_number_is_not_taken_as_an_order_id(self, model) -> None:
+        import re
+        assert re.search(self._rule(model).when.extract, self.FP301) is None
+
+    def test_a_real_order_id_still_goes_through(self, model) -> None:
+        import re
+        found = re.search(self._rule(model).when.extract, "3303671307562048393")
+        assert found and found.group(1) == "3303671307562048393"
+
+    def test_the_whole_cell_must_be_digits(self, model) -> None:
+        """必须整格匹配。只要求「含有一串数字」的话，FP301_8587437774500402 里
+        那串数字会被抓出来当订单号，等于什么都没改。
+        """
+        import re
+        assert re.search(self._rule(model).when.extract, "abc3303671307562048393") is None
+        assert re.search(self._rule(model).when.extract, "3303671307562048393x") is None
+
+    def test_the_remark_rule_picks_up_what_it_dropped(self, model) -> None:
+        import re
+        rule = next(
+            r for r in model.template("taobao_settlement_alipay_v1").key_rules
+            if r.when.field == "remark" and "关联订单号" in (r.when.extract or "")
+        )
+        assert re.search(rule.when.extract, self.REMARK).group(1) == "3303671307562048393"
+
+
+class TestTopUpVersusCompensation:
+    """保证金充值和保证金赔付在同一个科目下，只有备注分得开。
+
+    对账表公式说明的条件 8 写着「如备注项**为**保证金解冻/天猫保证金-充值（代扣）则
+    清楚对应费项单元格内容」。「为」是精确相等：备注后面挂了赔付原因的（-延迟发货、
+    -物流轨迹超时、-邮费争议…）是平台按这个原因赔了买家、再从余额把保证金补回来，
+    钱真出去了，人工表照样算（喜必顺那份表的费项2 列写着交易赔付，27 行 -150.02）。
+
+    两个方向都会错账，所以两个方向都钉：
+      一条都不排 → 天猫皇莉诗 2026-06 多出 -2,090.32 元不存在的赔付；
+      按科目全排 → 那 27 行真赔付被一起丢掉，账面上只表现为利润高一点。
+    """
+
+    PURE_TOP_UP = "天猫保证金-充值（代扣）"
+    WITH_REASON = "天猫保证金-充值（代扣）-延迟发货"
+
+    def _rules(self, model):
+        return model.template("taobao_settlement_alipay_v1").classify_rules
+
+    def _top_up_rule(self, model):
+        return next(
+            r for r in self._rules(model)
+            if r.exclude and r.when and self.PURE_TOP_UP in (r.when.equals or ())
+        )
+
+    def test_a_pure_top_up_is_excluded(self, model) -> None:
+        assert self._top_up_rule(model).exclude
+
+    def test_it_matches_on_equality_not_containment(self, model) -> None:
+        rule = self._top_up_rule(model)
+        assert rule.when.equals and not rule.when.contains, (
+            "写成 contains 会把带赔付原因的那 27 行真赔付一起排掉"
+        )
+        assert self.WITH_REASON not in (rule.when.equals or ())
+
+    def test_it_runs_before_the_dictionary(self, model) -> None:
+        """字典里「保证金-天猫-出账缴存 → 交易赔付」查得到，字典一命中就轮不到排除。"""
+        rules = self._rules(model)
+        top_up = rules.index(self._top_up_rule(model))
+        dictionary = next(i for i, r in enumerate(rules) if r.dictionary)
+        assert top_up < dictionary
+
+    def test_the_unfreeze_leg_is_still_excluded(self, model) -> None:
+        """充值和解冻是同一件事的两个方向，条件 8 一起写的，不能只剩一条。"""
+        assert any(
+            r.exclude and r.when and "天猫保证金-解冻" in (r.when.contains or ())
+            for r in self._rules(model)
+        )
+
+
 class TestStoreNamesThatContainEachOther:
     """「天猫皇莉诗旗舰店」整个包含着京东那家的别名「皇莉诗旗舰店」。
 

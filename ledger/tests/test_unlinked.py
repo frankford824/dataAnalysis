@@ -332,6 +332,70 @@ class TestMoneyWithNoOrderConceptAtAll:
         assert [label for label, _, _ in buckets] == ["其他支出\\收入"]
 
 
+class TestMoneyThatFoundItsOrderAndStillWentNowhere:
+    """挂上了订单、但归到的口径项一处都不进损益的钱，也要披露。
+
+    这份清单原先只收挂不上订单的行，于是有一类钱能同时躲过两边：损益表没有它
+    （没有指标认领这个口径项），这份清单也没有它（它挂上了订单）。
+
+    真事：保证金-天猫-出账缴存改判成不进损益的那一版里，天猫皇莉诗 2026-06 有 159 行、
+    -2,090.32 元就这样消失了——它们带着正常的订单号；同一个科目挂不上的另外 58 行
+    -6,110.50 反而看得见。一笔钱在界面上出不出现，取决于它有没有订单号，
+    这件事没法跟人解释。
+    """
+
+    def test_it_shows_up_even_though_it_linked(self):
+        rows = [{"metric_id": "trade_receipt", "major": "deposit", "minor": "转账-店铺保证金",
+                 "link_key": "3306332715605037467", "linked": True,
+                 "amount": -2090.32, "row_no": 1}]
+        buckets, total = _bucket_unlinked(_facts(rows), _model(dictionary=NATURAL))
+        assert buckets == [("转账-店铺保证金", 1, -2090.32)]
+        assert total == -2090.32
+
+    def test_linked_and_unlinked_rows_of_the_same_subject_land_together(self):
+        """同一个科目，一半挂上了一半没挂上，界面上要是一行而不是两处。"""
+        rows = [
+            {"metric_id": "trade_receipt", "major": "deposit", "minor": "转账-店铺保证金",
+             "link_key": "3306332715605037467", "linked": True, "amount": -2090.32,
+             "row_no": 1},
+            {"metric_id": "trade_receipt", "major": "deposit", "minor": "转账-店铺保证金",
+             "link_key": None, "linked": False, "amount": -6110.50, "row_no": 2},
+        ]
+        buckets, _total = _bucket_unlinked(_facts(rows), _model(dictionary=NATURAL))
+        assert buckets == [("转账-店铺保证金", 2, -8200.82)]
+
+    def test_money_that_does_reach_profit_is_not_dragged_in(self):
+        """挂上了订单、而且有指标认领的钱，不属于这份清单——它已经在损益表上了。
+        拉进来的表现是未归属凭空多出一大笔，而那个数是拦着结账的。
+        """
+        rows = [{"metric_id": "software_fee", "major": "software_fee", "minor": "服务费",
+                 "link_key": "3306332715605037467", "linked": True,
+                 "amount": -9798.55, "row_no": 1}]
+        buckets, total = _bucket_unlinked(_facts(rows), _model(dictionary=NATURAL))
+        assert buckets == []
+        assert total == 0.0
+
+    def test_a_major_no_metric_declares_is_not_enough_on_its_own(self):
+        """判据仍是两条一起，不能只看「没有指标声明这个大类」。
+
+        代发成本的大类 dropship_cost 同样没有任何指标声明——代发成本走自己那张表，
+        指标不写 major，major 只在对账表里用（一张表供给多个指标，靠它区分）。
+        只按「没人声明」判的话，代发成本会被当成不进损益的钱，而它实实在在进利润。
+        """
+        rows = [{"metric_id": "freight_cost", "source_id": "freight",
+                 "major": "dropship_cost", "minor": "代购代发",
+                 "link_key": "3306332715605037467", "linked": True,
+                 "amount": -3514.12, "row_no": 1}]
+        buckets, total = _bucket_unlinked(
+            _facts(rows),
+            _model(dictionary=(*NATURAL, DictionaryEntry(
+                platform="alibaba1688", raw="代购代发", minor="代购代发",
+                major="dropship_cost"))),
+        )
+        assert buckets == []
+        assert total == 0.0
+
+
 class TestEveryBucketExplainsItself:
     """每一桶都要带上「为什么挂不上」，而且解释和桶名必须出自同一处。
 

@@ -388,11 +388,6 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
     """
     if facts.is_empty():
         return [], 0.0
-    unlinked = facts.filter(~pl.col("linked"))
-    if unlinked.is_empty():
-        return [], 0.0
-    unlinked = _one_row_once(unlinked, model)
-
     natural = {
         e.raw for e in model.dictionary if e.naturally_unlinked
     }
@@ -406,10 +401,15 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
     #
     # 两个条件都要满足，不能只看字典标没标。字典的这个标记挂在具体科目上而不是大类上：
     # 拼多多那四条「售后费用-延迟发货」之类标着天然无号，它们的大类是 trade_compensation,
-    # 只按大类反推就会把整个交易赔付大类都豁免掉——淘宝的「保证金-天猫-出账缴存」
-    # 58 笔 -6,110.50 和「记账本转账」45 笔会跟着一起被放行，而那些是真该查的。
+    # 只按大类反推就会把整个交易赔付大类都豁免掉——淘宝的「记账本转账」那 45 笔会跟着
+    # 一起被放行，而那些是真该查的（订单号在备注里，取号规则漏了）。
     # 加上「没有任何指标认领这个大类」这一条之后，剩下的正好是提现、保证金、广告充值、
     # 往来款：它们进得来但一处都不进损益，问它们挂不挂得上订单没有意义。
+    #
+    # 反过来「没有指标声明这个大类」单独也不够，不能省掉字典那个标记：代发成本的大类
+    # dropship_cost 同样没有任何指标声明——代发成本走的是自己那张表，指标不写 major，
+    # major 这个字段只在对账表里用（一张表供给多个指标，靠它区分）。只按「没人声明」
+    # 判的话，代发成本会被当成不进损益的钱豁免掉，而它是实实在在进利润的。
     claimed_majors = {m.major for m in model.metrics if m.major}
     natural_majors = {
         e.major for e in model.dictionary
@@ -417,6 +417,20 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
     }
     naturally_unlinked_metrics = {m.id for m in model.metrics if m.naturally_unlinked}
     company_wide = {s.id for s in model.sources if s.company_wide}
+
+    # 收进来的不只是挂不上订单的行，还有「挂上了订单、但归到的口径项一处都不进损益」
+    # 的行。后者不进这份清单的话，它在界面上一处都不出现：损益表没有它（没人认领），
+    # 「没进利润的钱」也没有它（那份原先只收挂不上的行）。
+    #
+    # 实测出来的：保证金-天猫-出账缴存改判成充值之后，天猫皇莉诗 2026-06 有 159 行、
+    # -2,090.32 元就这样消失了——它们带着正常的订单号，挂得上，于是躲过了这份清单。
+    # 同一个科目挂不上的另外 58 行 -6,110.50 反而看得见。一笔钱在界面上出不出现，
+    # 取决于它有没有订单号，这件事没法跟人解释。
+    unclaimed = pl.col("major").is_in(list(natural_majors)).fill_null(False)
+    unlinked = facts.filter(~pl.col("linked") | unclaimed)
+    if unlinked.is_empty():
+        return [], 0.0
+    unlinked = _one_row_once(unlinked, model)
 
     has_key = pl.col("link_key").is_not_null() & (pl.col("link_key").cast(pl.Utf8) != "")
     tagged = unlinked.with_columns(
