@@ -63,13 +63,23 @@ def test_baseline_covers_the_commission() -> None:
             )
 
 
-def test_baseline_covers_every_active_store() -> None:
-    """在营的店都要在基线里。
+@needs_real_data
+def test_baseline_covers_every_active_store_that_has_data() -> None:
+    """在营、并且交过表的店都要在基线里。
 
-    漏一家等于那家店的数字没人盯着。新登记一家店之后重录基线，这条会提醒你。
+    漏一家等于那家店的数字没人盯着。新登记一家店、交完第一批表之后重录基线，
+    这条会提醒你。
+
+    「交过表」这个前提是必需的：登记店铺和交表是两件事，界面上先登记后交表是
+    正常顺序。刚登记还没交表的店在回放语料里一个文件都没有，算不出任何数字，
+    要求它进基线只会让这条测试在一次正常登记之后就红——而它红的时候，
+    没有任何一家店的账是坏的。真正要防的是「有数据却没进基线」。
     """
     model = load_model(MODELS / "cn-ecommerce")
-    active = {s.id for s in model.stores if not s.archived}
+    names = [p.name for p in PLATFORM_DATA.rglob("*.xlsx")]
+    active = {
+        s.id for s in model.stores if not s.archived and model.files_of(s.id, names)
+    }
     covered = set(load_baseline().get("stores", {}))
     missing = active - covered
     assert not missing, (

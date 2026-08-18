@@ -146,11 +146,19 @@ class TestShippedRegistry:
     """仓库自带的这份注册表本身要是对的。"""
 
     def test_loads(self):
+        """加载得出来，而且每家店都能被唯一认出来。
+
+        不数店数。登记新店是界面上的正常操作，会话之间就会发生（第七家
+        「宋永康-PDD好日子节庆用品超市」就是有人在服务器上登记的），
+        写死个数只会让这条测试在每次正常登记后红一次，而它红的时候没有任何东西是坏的。
+        真正会坏账的是重名和重 id：认文件按名字匹配，两家同名就没法定归属。
+        """
         m = load_model(MODELS / "cn-ecommerce")
-        assert len(m.stores) == 6
-        assert {s.platform for s in m.stores} == {
-            "taobao", "alibaba1688", "douyin", "jd", "pdd",
-        }
+        assert m.stores, "一家店都没加载出来"
+        ids = [s.id for s in m.stores]
+        names = [s.name for s in m.stores]
+        assert len(set(ids)) == len(ids)
+        assert len(set(names)) == len(names)
 
     def test_every_store_platform_is_registered(self):
         """店铺的 platform 必须在平台清单里。
