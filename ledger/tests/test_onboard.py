@@ -388,3 +388,26 @@ class TestDryRunCatchesTotalRowTraps:
         _check_drop_rate(table, tpl, out)
         assert out.errors, "丢掉 95% 的行必须拦住，否则账里只剩零头"
         assert "%" in out.errors[0], "得把丢掉的比例说出来，光说「有问题」没法查"
+
+
+class TestPddLikePromotionOpensTheWizard:
+    """拼多多推广表同时有「总花费」和「成交花费」，向导不能因此打不开。"""
+
+    def test_only_one_spend_column_is_mapped(self):
+        from conftest import MODELS
+        from ledger.model.loader import load_model
+
+        model = load_model(MODELS / "cn-ecommerce")
+        headers = [
+            "日期", "商品ID", "商品名称", "推广场景", "成交花费(元)",
+            "总花费(元)", "曝光量", "点击量",
+        ]
+        draft = propose(
+            headers,
+            [["2026-05-01", "1", "接考横幅", "稳定成本推广", "10", "12", "100", "8"]],
+            model,
+            source_hint="promotion",
+        )
+        spends = [c.column for c in draft.columns if c.role == "spend"]
+        assert spends == ["总花费(元)"], spends
+        draft.template("tmp_id", source="promotion")

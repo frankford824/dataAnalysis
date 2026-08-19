@@ -28,8 +28,8 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from .loader import ModelError, load_model
-from .schema import SourceContract, Store, Template
+from .loader import FEE_RULE_COLUMNS, FEE_RULES, ModelError, load_model
+from .schema import FeeRule, SourceContract, Store, Template
 from .transaction import locked_model
 
 #: 店铺的哪些字段允许改。
@@ -300,6 +300,47 @@ def _commission_text(rows: list[dict[str, str]]) -> str:
     out.write(",".join(COMMISSION_COLUMNS) + "\n")
     for r in rows:
         out.write(",".join(csv_cell(r.get(c, "")) for c in COMMISSION_COLUMNS) + "\n")
+    return out.getvalue()
+
+
+@locked_model
+def replace_fee_rules(model_dir: str | Path, rules: list[FeeRule]) -> int:
+    """整份换掉界面配的归类规则。返回写进去的条数。
+
+    为什么是整份换
+    --------------
+    规则链的语义是「第一条命中的生效」，所以正确性在整份的次序上，不在单条上。
+    「把第 3 条挪到第 1 条」这种动作没法按增量校验——单看每一条都合法。
+    传上来先整体加载校验，过了才落盘。校验不过还原成原样，一个字节都不留下：
+    一份加载不了的 fee-rules.csv 会让整个系统起不来。
+
+    条与条之间的相对次序就是文件里的行序，写回时不得按任何一列排序。
+    """
+    root = Path(model_dir)
+    path = root / FEE_RULES
+    before = {path: (path.read_bytes() if path.exists() else None)}
+    text = _fee_rules_text(rules)
+    try:
+        _atomic_text(path, text)
+        model = load_model(root)
+    except BaseException:
+        _restore(before)
+        raise
+    return len(model.fee_rules)
+
+
+def _fee_rules_text(rules: list[FeeRule]) -> str:
+    out = io.StringIO()
+    out.write(",".join(FEE_RULE_COLUMNS) + "\n")
+    for r in rules:
+        cells = []
+        for col in FEE_RULE_COLUMNS:
+            value = getattr(r, col)
+            if isinstance(value, bool):
+                cells.append("1" if value else "")
+            else:
+                cells.append(csv_cell(value))
+        out.write(",".join(cells) + "\n")
     return out.getvalue()
 
 

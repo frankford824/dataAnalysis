@@ -130,3 +130,11 @@
 
     提成基数没写，走缺省。上面 pdd_kuailejieqing 写的是按净利润，两家都是拼多多，
     等业务确认这家是不是同一个口径——不要照抄，那家的政策也还是待确认状态。
+
+- id: douyin_mszr2dhn
+  name: 蔡果-抖店烘焙
+  platform: douyin
+  commission_on_loss: deduct
+  note: >
+    2026-08-19 从 finance 上同步回来的。有人在界面上登了这家店，仓库里没有，
+    不写进来下一次部署会把它盖掉。

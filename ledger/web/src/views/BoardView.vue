@@ -21,7 +21,9 @@ import GapList from '../components/GapList.vue'
 const app = useApp()
 const router = useRouter()
 
-const period = computed(() => app.period || app.periods[0] || '')
+const period = computed(
+  () => app.period || app.overview?.default_period || app.periods[0] || '',
+)
 
 const cells = computed(() =>
   (app.overview?.cells || []).filter(
@@ -379,7 +381,7 @@ watch([() => app.storeId, () => app.platform], () => {
 
       <div class="card" style="margin-top: var(--s4)">
         <n-tabs v-model:value="tab" type="line" size="small">
-          <n-tab-pane name="here" :tab="`本月各店（${here.length}）`">
+          <n-tab-pane name="here" :tab="`${period} 各店（${here.length}）`">
             <div class="scroll tall">
               <n-table size="small" :bordered="false" :single-line="false">
                 <thead>

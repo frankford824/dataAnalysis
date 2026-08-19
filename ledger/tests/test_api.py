@@ -162,6 +162,7 @@ class TestOverview:
         body = client.get("/api/overview").json()
         assert body["cells"] == []
         assert body["stores"], "还没数据也要把已登记的店列出来"
+        assert body["default_period"] == ""
 
     def test_lists_stores_and_periods(self, client):
         data = _xlsx_bytes([["订单号"], ["A001"]])
@@ -170,6 +171,36 @@ class TestOverview:
         # 这份表算不出账期也没关系，重点是矩阵结构成立。
         assert isinstance(body["periods"], list)
         assert isinstance(body["totals"], list)
+
+    def test_default_period_is_the_month_most_stores_have(self, client, monkeypatch):
+        """有「(未知账期)」和更早那个月时，默认不能落到只剩一家店的那一格。"""
+        def cell(store_id, period):
+            return PeriodState(store_id=store_id, period=period, run_id=1, result={})
+
+        rows = [
+            cell("taobao_xibishun", "(未知账期)"),
+            cell("taobao_xibishun", "2026-05"),
+            cell("alibaba1688_xingze", "2026-05"),
+            cell("taobao_xibishun", "2026-08"),
+        ]
+        monkeypatch.setattr(api, "workspace", lambda: _FakeWorkspace(rows))
+        body = client.get("/api/overview").json()
+        assert "(未知账期)" in body["periods"]
+        assert body["periods"][0] == "2026-08"
+        assert body["default_period"] == "2026-05"
+
+    def test_working_period_prefers_real_months(self):
+        assert api.working_period(
+            ["2026-08", "2026-05", "(未知账期)"],
+            [
+                {"period": "(未知账期)"},
+                {"period": "2026-05"},
+                {"period": "2026-05"},
+                {"period": "2026-08"},
+            ],
+        ) == "2026-05"
+        assert api.working_period(["(未知账期)"], [{"period": "(未知账期)"}]) == "(未知账期)"
+        assert api.working_period([], []) == ""
 
 
 class TestTrend:

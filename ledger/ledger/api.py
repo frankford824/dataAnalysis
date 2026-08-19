@@ -13,15 +13,17 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from . import gaps, onboard, overhead, ownership, progress, service, view
+from . import assist, fees as fees_mod, gaps, onboard, overhead, ownership, progress, service, view
 from . import search as search_mod
 from .model import propose
 from .model.config import (
@@ -32,10 +34,11 @@ from .model.config import (
     add_store,
     commission_column,
     replace_commission,
+    replace_fee_rules,
     update_store,
 )
 from .model.loader import ModelError, load_model
-from .model.schema import Model, SourceContract, Store, Template
+from .model.schema import FeeRule, Model, SourceContract, Store, Template
 from .model.transaction import model_revision
 from .money import decimal_amount, money_float
 from .web import STATIC, page
@@ -243,12 +246,34 @@ def overview() -> dict:
     return {
         "cells": cells,
         "periods": periods,
+        "default_period": working_period(periods, cells),
         "stores": [
             view.store_dict(s) for s in model.stores
             if not s.archived or any(c["store_id"] == s.id for c in cells)
         ],
         "totals": _totals(cells),
     }
+
+
+_YM = re.compile(r"^\d{4}-\d{2}$")
+
+
+def working_period(periods: list[str], cells: list[dict]) -> str:
+    """总览默认落在哪一个月。
+
+    账期列表是新的在前。前端曾经取最后一个，最后一个经常是「(未知账期)」或者
+    最早那个月（往往只有一家店刚交过表）。人选「全部账期」时又退回最新一个月，
+    于是同一页会在一家店和全部店之间来回跳。
+
+    规则：优先有 `YYYY-MM` 的月份；在这些月份里取店数最多的，并列取更新的。
+    只有认不出月份的格子时，才退回那一格。
+    """
+    if not periods:
+        return ""
+    real = [p for p in periods if _YM.match(p or "")]
+    pool = real or list(periods)
+    counts = Counter(c.get("period") for c in cells if c.get("period") in pool)
+    return max(pool, key=lambda p: (counts[p], p))
 
 
 def _node(payload: dict, wanted: str | None) -> float | None:
@@ -435,8 +460,17 @@ def period_detail(store_id: str, period: str) -> dict:
         "by": st.by, "note": st.note, "engine": st.engine,
         "history": workspace().history(store_id, period),
         "gaps": gaps.gaps(st.result, model, _previous(store_id, period)),
-        **view.reorder_statement(st.result, model),
+        **_period_payload(st.result, model),
     }
+
+
+def _period_payload(result: dict, model) -> dict:
+    """快照加上自检的落点。落点按当前模型现算，已结账的老快照也能点进去。"""
+    payload = view.reorder_statement(result, model)
+    payload["findings"] = [
+        view.finding_action(f, model, payload) for f in payload.get("findings") or []
+    ]
+    return payload
 
 
 def _previous(store_id: str, period: str) -> dict | None:
@@ -1250,6 +1284,169 @@ _LOOKS_LIKE_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
 
 # --------------------------------------------------------------------------- #
+# 费项规则
+# --------------------------------------------------------------------------- #
+
+
+class FeeRuleIn(BaseModel):
+    platform: str = "*"
+    field: str = "subject"
+    how: str = "exact"
+    value: str = ""
+    major: str = ""
+    minor: str = ""
+    exclude: bool = False
+    count_without_order: bool = False
+    stage: str = "after"
+    note: str = ""
+    by: str = ""
+    at: str = ""
+
+
+class FeeRulesBody(BaseModel):
+    rules: list[FeeRuleIn]
+    note: str = ""
+    store_id: str = ""
+    recompute: bool = True
+
+
+class FeeSuggestIn(BaseModel):
+    label: str
+    field: str = "subject"
+
+
+@app.get("/api/fees")
+def fees_catalog() -> dict:
+    """费项台账：引擎认识什么、这个月认不出什么、界面上配了哪些规则。"""
+    model = _model()
+    known = fees_mod.known_fees(model)
+    return {
+        "majors": fees_mod.major_options(model),
+        "fields": [{"id": i, "name": n} for i, n in fees_mod.FEE_FIELDS],
+        "hows": [{"id": i, "name": n} for i, n in fees_mod.FEE_HOWS],
+        "stages": [{"id": i, "name": n} for i, n in fees_mod.FEE_STAGES],
+        "platforms": view.platform_options(model),
+        "rules": [fees_mod.rule_dict(r) for r in model.fee_rules],
+        "known": [
+            {
+                "key": f.key, "major": f.major, "platform": f.platform,
+                "origin": f.origin, "origin_name": f.origin_name,
+                "how": f.how, "field": f.field,
+                "excluded": f.excluded,
+            }
+            for f in known if f.origin != "fee-rules"
+        ],
+        "platform_aliases": fees_mod.platform_aliases(model),
+        "unmatched": fees_mod.unmatched_from(workspace()),
+        "log": workspace().config_history("fee-rules"),
+        "model_revision": model_revision(DEFAULT_MODEL),
+    }
+
+
+@app.post("/api/fees/suggest")
+def fees_suggest(body: FeeSuggestIn) -> dict:
+    """模型给一条未归类科目的建议。建议不是配置，人确认后才落库。"""
+    model = _model()
+    return assist.suggest_fee(
+        body.label, fees_mod.major_options(model), body.field,
+        root=workspace().root,
+    )
+
+
+@app.post("/api/fees/preview")
+def fees_preview(body: FeeRulesBody) -> dict:
+    """用提交的规则真算一家店，不写任何东西。"""
+    if not body.store_id:
+        raise HTTPException(400, "试算必须指定一家店。全公司重算只在确认落库时做。")
+    base = _model()
+    store = _store(base, body.store_id)
+    try:
+        patched = _model_with_fee_rules(base, body.rules)
+    except ModelError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    slices = service.simulate(workspace(), patched, store)
+    return {
+        "store_id": store.id,
+        "store": store.name,
+        "periods": [
+            {
+                "period": sl["period"],
+                "diff": fees_mod.payload_diff(sl["before"], sl["after"]),
+                "unclassified_before": len((sl["before"] or {}).get("unclassified") or []),
+                "unclassified_after": len((sl["after"] or {}).get("unclassified") or []),
+            }
+            for sl in slices
+        ],
+    }
+
+
+@app.post("/api/fees")
+def fees_apply(body: FeeRulesBody) -> dict:
+    """把规则写进 fee-rules.csv，然后把有表的店重算。"""
+    base = _model()
+    before = [fees_mod.rule_dict(r) for r in base.fee_rules]
+    stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+    for row in body.rules:
+        if not row.at:
+            row.at = stamp
+    try:
+        rules = [_fee_rule(r) for r in body.rules]
+        count = replace_fee_rules(DEFAULT_MODEL, rules)
+    except (ModelError, ValidationError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    after = [fees_mod.rule_dict(r) for r in _model().fee_rules]
+    workspace().log_config(
+        "fee-rules",
+        body.note.strip() or f"费项规则改为 {count} 条",
+        by=ANONYMOUS,
+        before=before,
+        after=after,
+    )
+    periods: list[dict] = []
+    failures: list[dict] = []
+    if body.recompute:
+        model = _model()
+        ws = workspace()
+        for store in model.stores:
+            if store.archived or not ws.active_files(store.id):
+                continue
+            done = service.recompute(ws, model, store)
+            periods.extend(done.periods)
+            if done.failure:
+                failures.append(done.failure)
+    return {"count": count, "periods": periods, "failures": failures}
+
+
+def _model_with_fee_rules(model: Model, rows: list[FeeRuleIn]) -> Model:
+    """内存里叠一份规则，用来试算。不落盘。"""
+    try:
+        return model.model_copy(update={"fee_rules": tuple(_fee_rule(r) for r in rows)})
+    except ValidationError as exc:
+        raise ModelError(str(exc)) from exc
+
+
+def _fee_rule(row: FeeRuleIn) -> FeeRule:
+    try:
+        return FeeRule(
+            platform=row.platform.strip() or "*",
+            field=row.field.strip() or "subject",
+            how=row.how.strip() or "exact",  # type: ignore[arg-type]
+            value=row.value,
+            major=row.major.strip(),
+            minor=row.minor.strip(),
+            exclude=row.exclude,
+            count_without_order=row.count_without_order,
+            stage=row.stage.strip() or "after",  # type: ignore[arg-type]
+            note=row.note.strip(),
+            by=row.by.strip(),
+            at=row.at.strip(),
+        )
+    except ValidationError as exc:
+        loc = "、".join(str(e["msg"]) for e in exc.errors())
+        raise ModelError(f"规则「{row.value}」有问题：{loc}") from exc
+
+
+# --------------------------------------------------------------------------- #
 # 接新表
 # --------------------------------------------------------------------------- #
 
@@ -1267,9 +1464,10 @@ def onboard_draft(sha: str, sheet: str = "", header_row: int | None = None, sour
         draft, table = onboard.draft_for(
             workspace(), model, sha, sheet=sheet, header_row=header_row, source_hint=source,
         )
+        payload = view.draft_dict(draft, table, model)
     except ModelError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {**view.draft_dict(draft, table, model), "model_revision": model_revision(DEFAULT_MODEL)}
+    return {**payload, "model_revision": model_revision(DEFAULT_MODEL)}
 
 
 @app.get("/api/onboard/{sha}/assist")
@@ -1291,11 +1489,12 @@ def onboard_assist(sha: str, sheet: str = "", header_row: int | None = None, sou
         draft, table = onboard.draft_for(
             workspace(), model, sha, sheet=sheet, header_row=header_row, source_hint=source,
         )
+        payload = view.draft_dict(draft, table, model)
     except ModelError as exc:
         raise HTTPException(400, str(exc)) from exc
     assisted = onboard.advise(draft, model)
     return {
-        **view.draft_dict(draft, table, model),
+        **payload,
         "assist": view.assist_dict(assisted),
         "model_revision": model_revision(DEFAULT_MODEL),
     }

@@ -18,11 +18,13 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from .engine.audit import BUCKET_EXPLAINED, BUCKET_WHY
+from .engine.audit import BUCKET_EXPLAINED, BUCKET_NEEDS_WORK, BUCKET_WHY, tag_unlinked
 from .engine.calculate import NodeValue
 from .engine.project import claims
 from .engine.runtime import Slice
 from .engine.types import RawTable
+from .fees import humanize_via, pretty_unmatched_label
+from .model.loader import ModelError
 from .model.propose import Draft, role_facts
 from .model.schema import Model, Store
 from .money import money_float
@@ -310,7 +312,12 @@ def _quality(sl: Slice, model: Model) -> list[dict[str, Any]]:
 def _unclassified(sl: Slice) -> list[dict[str, Any]]:
     """没认出来的原始科目。字典该补哪一条，看这张表。"""
     items = [
-        {"label": label, "count": count, "amount": amount}
+        {
+            "label": label,
+            "caption": pretty_unmatched_label(label),
+            "count": count,
+            "amount": amount,
+        }
         for label, (count, amount) in sl.classify_report.unmatched.items()
     ]
     # 按绝对金额排，先处理值钱的。笔数多但金额小的往往是运费尾差之类。
@@ -351,6 +358,66 @@ def node_metrics(model: Model, node_id: str) -> list[str]:
                 walk(ref)
 
     walk(node_id)
+    return out
+
+
+def metric_node(model: Model, metric_id: str) -> str:
+    """一个指标落在损益表的哪一行。取最深的那一行。
+
+    点「发货运费只盖到 94%」应该落到发货运费，不是履约成本合计——合计点开是一笔
+    糊涂账，人要看的是这一项自己。
+    """
+    best, level = "", -1
+    for node in model.statement:
+        if metric_id in node_metrics(model, node.id) and node.level >= level:
+            best, level = node.id, node.level
+    return best
+
+
+#: 不是损益表行的下钻。挂不上的钱、未归类科目、某个指标自己，走这些入口，
+#: 因为它们在报表树上没有对应的节点——硬塞进某一行会让那一行的合计对不上。
+UNLINKED_NODE = "__unlinked__"
+UNCLASSIFIED_NODE = "__unclassified__"
+METRIC_PREFIX = "__metric__:"
+
+
+def finding_action(finding: dict[str, Any], model: Model,
+                   payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    """给自检结论补上人能点的落点。
+
+    快照里的结论只有一段话。话是给「为什么」用的，查账要的是这 66 行在哪个文件
+    第几行。老快照没有 kind / detail 也要能点——用当前模型的检查定义对上号。
+    """
+    check = next((c for c in model.checks if c.id == finding.get("id")), None)
+    kind = finding.get("kind") or (check.kind if check else "")
+    drill, only, tab = "", "counted", ""
+    buckets: list[dict[str, Any]] = []
+    if kind == "unlinked_disclosed":
+        drill, only = UNLINKED_NODE, "all"
+        for b in (payload or {}).get("unlinked_buckets") or []:
+            label = b.get("label") or ""
+            buckets.append({
+                "label": label, "count": b.get("count"), "amount": b.get("amount"),
+                "why": b.get("why") or BUCKET_WHY.get(label, ""),
+                "drill": UNLINKED_NODE if label == BUCKET_NEEDS_WORK
+                else f"{UNLINKED_NODE}:{label}",
+                "only": "all",
+            })
+    elif kind == "no_unclassified":
+        drill, only = UNCLASSIFIED_NODE, "all"
+    elif kind == "completeness":
+        tab = "sources"
+    elif kind in ("link_rate", "spine_coverage"):
+        mid = (finding.get("detail") or {}).get("metric") or (check.metric if check else "")
+        if mid and kind == "spine_coverage":
+            drill = metric_node(model, mid) or f"{METRIC_PREFIX}{mid}"
+            only = "counted"
+        elif mid:
+            drill = f"{METRIC_PREFIX}{mid}"
+            only = "uncounted"
+    out = {**finding, "kind": kind, "drill": drill, "only": only, "tab": tab}
+    if buckets:
+        out["buckets"] = buckets
     return out
 
 
@@ -447,23 +514,38 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
     汇总区是导航入口：点科目就把它筛掉的话，剩一行、也回不去了。顶上两个数不变则是
     因为人下钻的目的就是拿它跟报表核对——核对基准在翻页过程中变来变去，这事就没法做了。
     """
-    metrics = node_metrics(model, node_id)
-    node = next((n for n in model.statement if n.id == node_id), None)
     only = only if only in ("counted", "uncounted", "all") else "counted"
+    special = _special_drill(facts, model, node_id)
+    if special is not None:
+        facts, name, bucket_value, kind = special
+        if value is None:
+            value = bucket_value
+        # 这些行本来就不在损益表上，默认「进了账」会筛成空白，人以为点了没反应。
+        if only == "counted":
+            only = "all"
+        metrics = []
+        skip_claim = True
+    else:
+        metrics = node_metrics(model, node_id)
+        node = next((n for n in model.statement if n.id == node_id), None)
+        name = node.name if node else node_id
+        kind = "statement"
+        skip_claim = False
     empty = {
-        "node": node_id, "name": node.name if node else node_id,
+        "node": node_id, "name": name,
         "metrics": [], "total": 0.0, "source_total": 0.0, "value": value,
         "rows": 0, "by_subject": [], "by_file": [], "sample": [],
         "selection": _selection(0, 0.0, offset, limit, subject, file, q),
         "only": only, "graded": True, "uncounted": _uncounted(0, 0.0),
-        "truncated": False,
+        "truncated": False, "kind": kind,
     }
-    if not metrics or facts.is_empty():
+    if facts.is_empty() or (not skip_claim and not metrics):
         return empty
 
-    facts = facts.filter(_claimed_by(model, metrics))
-    if facts.is_empty():
-        return empty
+    if not skip_claim:
+        facts = facts.filter(_claimed_by(model, metrics))
+        if facts.is_empty():
+            return empty
 
     # 老的留档没有进账标记（`counted` 是后加的）。这种情况下退回「全都算进账」，
     # 数字会对不上报表，但至少不会一行都不显示。界面照着 graded 提示重算一次。
@@ -519,8 +601,11 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
     by, descending = _ORDERS.get(order, _ORDERS["amount"])
     sample = (
         picked.select(
-            "metric_id", "link_key", "linked", "counted", "contribution",
-            "amount", "subject", "minor", "file_name", "sheet", "row_no",
+            *[c for c in (
+                "metric_id", "link_key", "linked", "counted", "contribution",
+                "amount", "subject", "minor", "classify_via",
+                "file_name", "sheet", "row_no",
+            ) if c in picked.columns]
         )
         .sort(by, descending=descending)
         .slice(max(offset, 0), limit)
@@ -533,7 +618,8 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
     picked_total = money_float(picked.select(money.sum()).item() or 0.0)
     return {
         "node": node_id,
-        "name": node.name if node else node_id,
+        "name": name,
+        "kind": kind,
         "metrics": [{"id": m, "name": metric_name(model, m)} for m in metrics],
         #: 当前这一档行的合计。默认这一档是「进了账的」，逐行加起来就是报表数字。
         "source_total": source_total,
@@ -560,7 +646,11 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
             for r in by_file.to_dicts()
         ],
         "sample": [
-            {**r, "metric": metric_name(model, r.pop("metric_id"))}
+            {
+                **r,
+                "metric": metric_name(model, r.pop("metric_id")),
+                "classify_via": humanize_via(r.get("classify_via") or "", model),
+            }
             for r in sample.to_dicts()
         ],
         #: 这一页是从哪些行里取的。筛选条件原样带回去，界面照着它渲染筛选状态，
@@ -570,6 +660,45 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
         # 老字段，留着不动界面。现在的含义是「还有下一页」。
         "truncated": max(offset, 0) + limit < int(picked.height),
     }
+
+
+def _special_drill(facts: pl.DataFrame, model: Model, node_id: str):
+    """不是损益表行的下钻。对不上就返回 None，走原来的节点路径。"""
+    if node_id == UNLINKED_NODE or node_id.startswith(UNLINKED_NODE + ":"):
+        bucket = node_id.split(":", 1)[1] if ":" in node_id else BUCKET_NEEDS_WORK
+        tagged = tag_unlinked(facts, model)
+        if tagged.is_empty() or "bucket" not in tagged.columns:
+            scoped = tagged
+        else:
+            scoped = tagged.filter(pl.col("bucket") == bucket).drop("bucket")
+        total = 0.0 if scoped.is_empty() else float(scoped.select(pl.col("amount").sum()).item() or 0)
+        return scoped, bucket, money_float(total), "unlinked"
+    if node_id == UNCLASSIFIED_NODE:
+        known = {e.raw for e in model.dictionary}
+        if facts.is_empty() or "subject" not in facts.columns:
+            scoped = facts
+        elif not known:
+            scoped = facts.filter(pl.col("subject").fill_null("") != "")
+        else:
+            scoped = facts.filter(
+                (pl.col("subject").fill_null("") != "")
+                & ~pl.col("subject").is_in(list(known))
+            )
+        keys = [c for c in ("file_sha", "sheet", "row_no") if c in scoped.columns]
+        if keys and not scoped.is_empty():
+            scoped = scoped.unique(subset=keys, keep="first", maintain_order=True)
+        total = 0.0 if scoped.is_empty() else float(scoped.select(pl.col("amount").sum()).item() or 0)
+        return scoped, "尚未归类的费项", money_float(total), "unclassified"
+    if node_id.startswith(METRIC_PREFIX):
+        mid = node_id[len(METRIC_PREFIX):]
+        scoped = facts.filter(pl.col("metric_id") == mid) if not facts.is_empty() else facts
+        if not scoped.is_empty():
+            by_id = {m.id: m for m in model.metrics}
+            if mid in by_id:
+                scoped = scoped.filter(claims(by_id[mid]))
+        total = 0.0 if scoped.is_empty() else float(scoped.select(pl.col("amount").sum()).item() or 0)
+        return scoped, metric_name(model, mid), money_float(total), "metric"
+    return None
 
 
 def _uncounted(rows: int, amount: float) -> dict[str, Any]:
@@ -631,8 +760,7 @@ def draft_dict(draft: Draft, table: RawTable, model: Model) -> dict[str, Any]:
         "time_slots": dict(draft.time_slots),
         "total_row_marker": draft.total_row_marker or "",
         "suggest_id": _suggest_template_id(draft, model),
-        "match_columns": list(draft.template("tmp_id", source=draft.source or "x").match_columns)
-        if draft.mapped else [],
+        "match_columns": _draft_match_columns(draft),
         "columns": [
             {
                 # 界面回传映射靠这个序号寻址，不靠列名：列名会重复。
@@ -660,6 +788,18 @@ def draft_dict(draft: Draft, table: RawTable, model: Model) -> dict[str, Any]:
         "vanished": list(draft.vanished),
         "warnings": [oneline(w) for w in (*draft.notices, *draft.warnings)],
     }
+
+
+def _draft_match_columns(draft: Draft) -> list[str]:
+    """向导预览用的识别签名。草案还没人改完时，两列可能暂时映到同一角色，
+    `template()` 会拒绝——向导必须先能打开，落库时仍会拦住。
+    """
+    if not draft.mapped:
+        return []
+    try:
+        return list(draft.template("tmp_id", source=draft.source or "x").match_columns)
+    except ModelError:
+        return list(draft._match_columns({c.index: c.role for c in draft.columns}))
 
 
 def assist_dict(assisted: "Assisted") -> dict[str, Any]:

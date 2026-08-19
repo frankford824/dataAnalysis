@@ -342,6 +342,47 @@ BUCKET_WHY = {
 BUCKET_EXPLAINED = (BUCKET_OTHER_STORES, BUCKET_EXCLUDED_FLOW, BUCKET_OTHER_PERIOD)
 
 
+def tag_unlinked(facts: pl.DataFrame, model: Model) -> pl.DataFrame:
+    """挂不上订单的事实行，带上属于哪一桶。一个物理行只出现一次。
+
+    下钻和分桶合计必须走同一套标记，否则界面上写着 66 行，点进去却是另一批。
+    """
+    if facts.is_empty() or "linked" not in facts.columns:
+        return facts
+    natural = {e.raw for e in model.dictionary if e.naturally_unlinked}
+    claimed_majors = {m.major for m in model.metrics if m.major}
+    natural_majors = {
+        e.major for e in model.dictionary
+        if e.naturally_unlinked and e.major and e.major not in claimed_majors
+    }
+    naturally_unlinked_metrics = {m.id for m in model.metrics if m.naturally_unlinked}
+    company_wide = {s.id for s in model.sources if s.company_wide}
+    unclaimed = pl.col("major").is_in(list(natural_majors)).fill_null(False)
+    unlinked = facts.filter(~pl.col("linked") | unclaimed)
+    if unlinked.is_empty():
+        return unlinked
+    if "source_id" not in unlinked.columns:
+        unlinked = unlinked.with_columns(pl.lit("").alias("source_id"))
+    unlinked = _one_row_once(unlinked, model)
+    has_key = pl.col("link_key").is_not_null() & (pl.col("link_key").cast(pl.Utf8) != "")
+    return unlinked.with_columns(
+        pl.when(pl.col("source_id").is_in(list(company_wide)))
+        .then(pl.lit(BUCKET_OTHER_STORES))
+        .when(pl.col("link_key").cast(pl.Utf8) == EXCLUDED_KEY)
+        .then(pl.lit(BUCKET_EXCLUDED_FLOW))
+        .when(pl.col("metric_id").is_in(list(naturally_unlinked_metrics)))
+        .then(pl.coalesce(pl.col("minor"), pl.col("subject"), pl.lit("其他")))
+        .when(pl.col("subject").is_in(list(natural)))
+        .then(pl.coalesce(pl.col("minor"), pl.col("subject")))
+        .when(pl.col("major").is_in(list(natural_majors)))
+        .then(pl.coalesce(pl.col("minor"), pl.col("subject"), pl.col("major")))
+        .when(has_key)
+        .then(pl.lit(BUCKET_OTHER_PERIOD))
+        .otherwise(pl.lit(BUCKET_NEEDS_WORK))
+        .alias("bucket")
+    )
+
+
 def _one_row_once(unlinked: pl.DataFrame, model: Model) -> pl.DataFrame:
     """让一个物理行只算一次。
 
@@ -386,70 +427,9 @@ def _bucket_unlinked(facts: pl.DataFrame, model: Model) -> tuple[list[tuple[str,
 
     字典里已标注"天然无订单号"的科目同样自动归入不用管的那边。
     """
-    if facts.is_empty():
+    tagged = tag_unlinked(facts, model)
+    if tagged.is_empty() or "bucket" not in tagged.columns:
         return [], 0.0
-    natural = {
-        e.raw for e in model.dictionary if e.naturally_unlinked
-    }
-    # 天然无订单号也可以由大类判定，不是只看科目名。
-    #
-    # 原先只认两件事：科目名在字典里标了，或者整个指标标了。可归类规则链同样能定大类——
-    # 微信账单里那四笔提现的业务描述整列是空的，字典无从查起，是模板规则按入账类型
-    # 判成提现的。于是 -195,711.65 元（其中 2026-06 占 -124,071.03）落进了
-    # 「取不出订单号，要查归属」，比这家店整月利润还大，而且它是拦着结账的那一桶。
-    # 提现本来就没有订单号，让人去查一笔银行搬运的归属是查不出结果的。
-    #
-    # 两个条件都要满足，不能只看字典标没标。字典的这个标记挂在具体科目上而不是大类上：
-    # 拼多多那四条「售后费用-延迟发货」之类标着天然无号，它们的大类是 trade_compensation,
-    # 只按大类反推就会把整个交易赔付大类都豁免掉——淘宝的「记账本转账」那 45 笔会跟着
-    # 一起被放行，而那些是真该查的（订单号在备注里，取号规则漏了）。
-    # 加上「没有任何指标认领这个大类」这一条之后，剩下的正好是提现、保证金、广告充值、
-    # 往来款：它们进得来但一处都不进损益，问它们挂不挂得上订单没有意义。
-    #
-    # 反过来「没有指标声明这个大类」单独也不够，不能省掉字典那个标记：代发成本的大类
-    # dropship_cost 同样没有任何指标声明——代发成本走的是自己那张表，指标不写 major，
-    # major 这个字段只在对账表里用（一张表供给多个指标，靠它区分）。只按「没人声明」
-    # 判的话，代发成本会被当成不进损益的钱豁免掉，而它是实实在在进利润的。
-    claimed_majors = {m.major for m in model.metrics if m.major}
-    natural_majors = {
-        e.major for e in model.dictionary
-        if e.naturally_unlinked and e.major and e.major not in claimed_majors
-    }
-    naturally_unlinked_metrics = {m.id for m in model.metrics if m.naturally_unlinked}
-    company_wide = {s.id for s in model.sources if s.company_wide}
-
-    # 收进来的不只是挂不上订单的行，还有「挂上了订单、但归到的口径项一处都不进损益」
-    # 的行。后者不进这份清单的话，它在界面上一处都不出现：损益表没有它（没人认领），
-    # 「没进利润的钱」也没有它（那份原先只收挂不上的行）。
-    #
-    # 实测出来的：保证金-天猫-出账缴存改判成充值之后，天猫皇莉诗 2026-06 有 159 行、
-    # -2,090.32 元就这样消失了——它们带着正常的订单号，挂得上，于是躲过了这份清单。
-    # 同一个科目挂不上的另外 58 行 -6,110.50 反而看得见。一笔钱在界面上出不出现，
-    # 取决于它有没有订单号，这件事没法跟人解释。
-    unclaimed = pl.col("major").is_in(list(natural_majors)).fill_null(False)
-    unlinked = facts.filter(~pl.col("linked") | unclaimed)
-    if unlinked.is_empty():
-        return [], 0.0
-    unlinked = _one_row_once(unlinked, model)
-
-    has_key = pl.col("link_key").is_not_null() & (pl.col("link_key").cast(pl.Utf8) != "")
-    tagged = unlinked.with_columns(
-        pl.when(pl.col("source_id").is_in(list(company_wide)))
-        .then(pl.lit(BUCKET_OTHER_STORES))
-        # 规则链的显式决定优先于其他判断：它已经认出这行是什么并且决定不算了。
-        .when(pl.col("link_key").cast(pl.Utf8) == EXCLUDED_KEY)
-        .then(pl.lit(BUCKET_EXCLUDED_FLOW))
-        .when(pl.col("metric_id").is_in(list(naturally_unlinked_metrics)))
-        .then(pl.coalesce(pl.col("minor"), pl.col("subject"), pl.lit("其他")))
-        .when(pl.col("subject").is_in(list(natural)))
-        .then(pl.coalesce(pl.col("minor"), pl.col("subject")))
-        .when(pl.col("major").is_in(list(natural_majors)))
-        .then(pl.coalesce(pl.col("minor"), pl.col("subject"), pl.col("major")))
-        .when(has_key)
-        .then(pl.lit(BUCKET_OTHER_PERIOD))
-        .otherwise(pl.lit(BUCKET_NEEDS_WORK))
-        .alias("bucket")
-    )
     # 要人查的那一桶排最前。其余按金额排——它们是给人扫一眼确认"哦这些不用管"的，
     # 而要查的那桶是唯一需要行动的，埋在中间就等于没报。
     grouped = {}

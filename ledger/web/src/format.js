@@ -99,3 +99,26 @@ export function tsToPeriod(ts) {
   const d = new Date(ts)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
+
+/** 未归类标签里的 `biz_type=` 翻成中文。已经算过的账期快照仍是引擎内部格式。 */
+export function prettyUnmatched(label) {
+  const text = (label || '').trim()
+  const prefix = '（业务描述为空）'
+  if (!text.startsWith(prefix)) return text
+  const rest = text.slice(prefix.length).trim()
+  if (!rest) return '业务描述为空'
+  const names = { subject: '业务描述', remark: '备注', biz_type: '业务类型' }
+  const parts = []
+  const leftover = []
+  for (const token of rest.split(/\s+/)) {
+    const at = token.indexOf('=')
+    if (at > 0) {
+      const key = token.slice(0, at)
+      parts.push(`${names[key] || key}：${token.slice(at + 1)}`)
+    } else if (token) {
+      leftover.push(token)
+    }
+  }
+  const shown = [...parts, ...leftover].join('；')
+  return shown ? `业务描述为空 · ${shown}` : '业务描述为空'
+}

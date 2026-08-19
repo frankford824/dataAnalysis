@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 import polars as pl
 
-from ..model.schema import Bridge, ClassifyRule, FieldMatch, KeyRule
+from ..model.schema import Bridge, ClassifyRule, FieldMatch, KeyRule, normalize_header
 
 #: 规则链求值结果里表示"显式排除"的哨兵。与"没命中"必须区分开。
 EXCLUDED = "\x00excluded"
@@ -67,13 +67,16 @@ _NOT_IN_RUST_REGEX = re.compile(r"\(\?[=!<]|\\\d")
 class Matcher:
     """把 FieldMatch 编译成一个可反复调用的判定函数。"""
 
-    __slots__ = ("field", "_extract", "_contains", "_equals", "_matches", "_notnull")
+    __slots__ = ("field", "_extract", "_contains", "_equals", "_matches", "_notnull",
+                 "_normalized")
 
     def __init__(self, spec: FieldMatch) -> None:
         self.field = spec.field
+        self._normalized = spec.normalized
+        fold = normalize_header if spec.normalized else (lambda v: str(v))
         self._extract = re.compile(spec.extract) if spec.extract else None
-        self._contains = tuple(spec.contains)
-        self._equals = {str(v) for v in spec.equals}
+        self._contains = tuple(fold(v) for v in spec.contains)
+        self._equals = {fold(v) for v in spec.equals}
         self._matches = re.compile(spec.matches) if spec.matches else None
         self._notnull = spec.notnull
 
@@ -91,8 +94,13 @@ class Matcher:
         和 `apply` 必须逐条对齐，包括一个容易看漏的地方：`apply` 最后返回的是
         `text or None`，也就是空串也算不适用——即使 `notnull` 是关的。所以这里
         无条件带上「非空」，而不是只在 `_notnull` 时才加。
+
+        归一那一档也必须两边对齐：非空判断用原值（归一之后全角空格会变成空串，
+        那是「这一格填了东西」而不是「这一格是空的」），比对用归一值。
         """
         cond = text.is_not_null() & (text != "")
+        if self._normalized:
+            text = normalize_expr(text)
         if self._equals:
             cond = cond & text.is_in(sorted(self._equals))
         if self._contains:
@@ -114,12 +122,19 @@ class Matcher:
         return text.str.extract(self._extract.pattern, group)
 
     def apply(self, value: object) -> str | None:
-        """返回提取到的值，或 None 表示这一环不适用。"""
+        """返回提取到的值，或 None 表示这一环不适用。
+
+        归一（`normalized`）作用在整个字段值上：之后的比对和正则提取都基于归一值。
+        整列版 `mask` 必须给出同一个结果，两边任何一处不归一，同一条规则在
+        「走得了整列」和「退回逐行」两种场合会有不同的命中集合。
+        """
         if value is None:
             return None
         text = str(value).strip()
         if self._notnull and not text:
             return None
+        if self._normalized:
+            text = normalize_header(text)
         if self._equals and text not in self._equals:
             return None
         if self._contains and not any(c in text for c in self._contains):
@@ -214,10 +229,11 @@ def resolve_class(
     rules: list[CompiledClassifyRule],
     lookup,
     stats: ChainStats | None = None,
-) -> tuple[str | None, str | None, bool, bool]:
-    """沿规则链归类。返回 (口径项, 业务小类, 是否排除, 没挂上订单也进账)。
+) -> tuple[str | None, str | None, bool, bool, str]:
+    """沿规则链归类。返回 (口径项, 业务小类, 是否排除, 没挂上订单也进账, 哪一环)。
 
     lookup 是科目字典查表函数：原始科目名 → (口径项, 小类, 是否天然无订单号) 或 None。
+    第五项是给人看的：下钻时要能指回字典、模板或界面上那条配置。没命中是空串。
     """
     for i, rule in enumerate(rules):
         if rule.dictionary:
@@ -229,34 +245,37 @@ def resolve_class(
                 continue
             if stats:
                 stats.record(i)
-            return found[0], found[1], False, False
+            return found[0], found[1], False, False, rule.label
         assert rule.matcher is not None
         if rule.matcher.apply(row.get(rule.matcher.field)) is None:
             continue
         if stats:
             stats.record(i, excluded=rule.exclude)
         if rule.exclude:
-            return None, None, True, False
+            return None, None, True, False, rule.label
         # 没写细项就留空。填大类等于把 `software_fee` 这种内部代号当科目名摆到
         # 界面上，而界面退回显示平台原始科目名才是人认得的东西。
-        return rule.major, rule.minor or None, False, bool(rule.count_without_order)
+        return rule.major, rule.minor or None, False, bool(rule.count_without_order), rule.label
     if stats:
         stats.record(None)
-    return None, None, False, False
+    return None, None, False, False, ""
 
 
 def _describe(spec: FieldMatch | None) -> str:
     if spec is None:
-        return "(无条件)"
-    bits = [spec.field]
+        return "（无条件）"
+    field = {"subject": "业务描述", "remark": "备注", "biz_type": "业务类型"}.get(
+        spec.field, spec.field
+    )
+    bits = [field]
     if spec.equals:
-        bits.append("等于 " + "/".join(list(spec.equals)[:2]))
+        bits.append("完全一致「" + " / ".join(list(spec.equals)[:2]) + "」")
     if spec.contains:
-        bits.append("含 " + "/".join(list(spec.contains)[:2]))
+        bits.append("包含「" + " / ".join(list(spec.contains)[:2]) + "」")
     if spec.matches:
         bits.append(f"匹配 {spec.matches}")
     if spec.extract:
-        bits.append("正则提取")
+        bits.append("按格式提取")
     return " ".join(bits)
 
 
@@ -282,6 +301,19 @@ def norm_expr(col: pl.Expr) -> pl.Expr:
     s = col.fill_null("").str.replace_all(r"[\s\u3000'\"]+", "")
     stem = s.str.strip_suffix(".0")
     return pl.when(stem.str.contains(r"^\d+$")).then(stem).otherwise(s)
+
+
+def normalize_expr(col: pl.Expr) -> pl.Expr:
+    """`normalize_header` 的整列版本。两边必须给出同一个结果。
+
+    `replace_many` 底下是 Aho-Corasick，九个全角字符一趟换完。写成九次
+    `replace_all` 也对，但那是九趟列扫描。
+    """
+    return (
+        col.fill_null("")
+        .str.replace_all(r"[\s\u3000\ufeff]+", "")
+        .str.replace_many(list("（）［］｛｝：，．／"), list("()[]{}:,./"))
+    )
 
 
 def text_expr(frame_dtype: pl.DataType, field: str) -> pl.Expr:

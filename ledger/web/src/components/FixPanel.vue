@@ -12,7 +12,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { count, money } from '../format'
+import { count, money, prettyUnmatched } from '../format'
 
 const props = defineProps({
   storeId: { type: String, default: '' },
@@ -31,6 +31,12 @@ const odd = computed(() => props.unclassified.slice(0, 8))
 function toStores() {
   show.value = false
   router.push({ name: 'deliver' })
+}
+
+function toFees() {
+  show.value = false
+  const first = props.unclassified[0]?.label
+  router.push({ name: 'fees', query: first ? { label: first } : {} })
 }
 
 function recompute() {
@@ -78,11 +84,10 @@ function recompute() {
     </section>
 
     <section v-if="odd.length" class="stack" style="margin-bottom: var(--s4)">
-      <h3>这个账期有 {{ count(unclassified.length) }} 个科目字典里没有</h3>
+      <h3>这个账期有 {{ count(unclassified.length) }} 个尚未归类的费项</h3>
       <p class="xs muted">
-        没认出来的科目不进任何一项，所以它们的钱既不在收入里也不在费用里。
-        补字典要改模型配置（<span class="num">dictionary.csv</span>），
-        目前得在服务器上改，改完回这儿点重算。
+        尚未归类的流水不进任何一项，所以它们的钱既不在收入里也不在费用里。
+        在「费项」页把业务描述或备注指定归属，试算看损益变了哪些行，确认后再保存重算。
       </p>
       <div class="scroll">
         <n-table size="small" :bordered="false">
@@ -95,12 +100,15 @@ function recompute() {
           </thead>
           <tbody>
             <tr v-for="(u, i) in odd" :key="i">
-              <td class="xs">{{ u.label }}</td>
+              <td class="xs">{{ u.caption || prettyUnmatched(u.label) }}</td>
               <td class="right xs num">{{ count(u.count) }}</td>
               <td class="right xs num" :class="{ neg: u.amount < 0 }">{{ money(u.amount) }}</td>
             </tr>
           </tbody>
         </n-table>
+      </div>
+      <div class="row" style="margin-top: var(--s2)">
+        <n-button size="small" type="primary" @click="toFees">去归类这些费项</n-button>
       </div>
     </section>
 

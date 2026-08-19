@@ -14,6 +14,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import polars as pl
+import pytest
 
 from ledger.engine.audit import (
     BUCKET_EXCLUDED_FLOW,
@@ -506,3 +507,36 @@ class TestTheDisclosureCheckCanActuallyFail:
             150.50,
         )
         assert f.message.splitlines()[1].lstrip().startswith(f"· {BUCKET_NEEDS_WORK}")
+
+
+class TestUnlinkedRowsCanBeOpened:
+    """报出来却点不进去，等于让人自己再对一遍账。"""
+
+    def test_drill_returns_the_rows_that_need_work(self):
+        from ledger.view import UNLINKED_NODE, drill
+
+        facts = _facts([
+            {"metric_id": "trade_receipt", "amount": 101.24, "row_no": 12,
+             "subject": "不明扣款", "file_name": "alipay.xlsx"},
+            {"metric_id": "trade_receipt", "amount": -477800.0, "row_no": 3,
+             "link_key": EXCLUDED_KEY},
+        ])
+        d = drill(facts, _model(), UNLINKED_NODE)
+        assert d["kind"] == "unlinked"
+        assert d["rows"] == 1
+        assert d["sample"][0]["row_no"] == 12
+        assert d["sample"][0]["file_name"] == "alipay.xlsx"
+        assert d["value"] == pytest.approx(101.24)
+
+    def test_another_bucket_opens_on_its_own(self):
+        from ledger.view import drill
+
+        facts = _facts([
+            {"metric_id": "trade_receipt", "amount": 101.24, "row_no": 12},
+            {"metric_id": "trade_receipt", "amount": -477800.0, "row_no": 3,
+             "link_key": EXCLUDED_KEY},
+        ])
+        d = drill(facts, _model(), f"__unlinked__:{BUCKET_EXCLUDED_FLOW}")
+        assert d["rows"] == 1
+        assert d["sample"][0]["row_no"] == 3
+

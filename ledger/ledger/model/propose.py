@@ -552,6 +552,7 @@ def propose(
     # 认不出的列给一份短候选：这个数据源用得到、草案又还没映上的角色。
     # 把全模型三十几个角色摊给人选，等于没提议。
     _offer_candidates(draft, model, globals_)
+    _dedupe_roles(draft)
     _fill_slots(draft, model, globals_)
 
     draft.vanished = tuple(c for c in base_roles.keys() - present) if base else ()
@@ -567,6 +568,29 @@ def refresh_warnings(draft: Draft, model: Model) -> None:
     """
     draft.warnings.clear()
     _add_warnings(draft, model, role_facts(model, draft.source))
+
+
+def _dedupe_roles(draft: Draft) -> None:
+    """同一角色只留一列。拼多多推广表同时有「总花费」和「成交花费」，
+    字面都会被提议成 spend；两列都映上的话，向导打开瞬间就会 500。
+    """
+    rank = {"exact": 0, "likely": 1, "guess": 2, "unknown": 3}
+    best: dict[str, ColumnGuess] = {}
+    for guess in draft.columns:
+        if not guess.role:
+            continue
+        prev = best.get(guess.role)
+        if prev is None or rank.get(guess.confidence, 9) < rank.get(prev.confidence, 9):
+            best[guess.role] = guess
+    for guess in draft.columns:
+        if guess.role and best.get(guess.role) is not guess:
+            kept = best[guess.role].column
+            guess.why = (
+                f"「{kept}」已经映成 {guess.role}，同一角色只能来自一列。"
+                f"默认留那一列。要改成用这一列，先把「{kept}」改成不映射。"
+            )
+            guess.role = ""
+            guess.confidence = "unknown"
 
 
 def _guess_column(

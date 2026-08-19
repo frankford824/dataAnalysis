@@ -37,20 +37,27 @@ const storeOptions = computed(() => [
 
 const periodOptions = computed(() => [
   { label: '全部账期', value: '' },
-  ...app.periods.map((p) => ({ label: p, value: p })),
+  ...app.periods.map((p) => ({
+    label: /^\d{4}-\d{2}$/.test(p) ? p : p || '未知账期',
+    value: p,
+  })),
 ])
 
 function onStore(id) {
   app.pick({ store: id })
-  // 选了店就直接去那家店的账期页——选完还要再点一次才有反应是多余的一步。
-  if (id) router.push({ name: 'period', params: { id }, query: { period: app.period } })
+  // 只有已经在某家店的账期页上，换店才该换页——那一页的内容就是这家店的。
+  // 提成、数据、总览把店当筛选用：人在配提成时换一家店，应该留在这一页看着
+  // 配置换成那一家，而不是被拽去损益表。上一版一律 push 到店页，提成页上
+  // 点店铺下拉就像没反应（其实人已经不在这一页了），配提成按钮也点不到。
+  if (id && route.name === 'period') {
+    router.push({ name: 'period', params: { id }, query: { period: app.period } })
+  }
 }
 
 function onPeriod(v) {
   app.pick({ period: v })
   // 店页上看的是地址栏里的账期（`?period=`），不是筛选条上的值。只改全局状态
   // 的话，下拉框已经是 7 月，底下那排按钮和损益表还停在 6 月——人会以为点了没反应。
-  // 选店已经会把人带去对应的页，选账期在店页上同样该换页，不要两套选中各走各的。
   if (route.name === 'period' && route.params.id && v) {
     router.replace({
       name: 'period',

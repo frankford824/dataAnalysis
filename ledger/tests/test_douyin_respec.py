@@ -24,6 +24,7 @@ import pytest
 from conftest import MODELS, write_xlsx
 
 from ledger.engine.classify import COL_MAJOR
+from ledger.engine.recognize import recognize
 from ledger.engine.runtime import ingest
 from ledger.model.loader import load_model
 
@@ -128,6 +129,21 @@ class TestQianchuanTopUpIsNotAdSpend:
         from ledger.engine.classify import COL_MINOR
 
         assert out.get_column(COL_MINOR).to_list() == ["货款直投千川"]
+
+
+class TestSettlementHeaderVariants:
+    def test_unified_zhang_character_still_matches(self, tmp_path, model):
+        """导出把「动帐流水号」写成「动账流水号」时仍应认成对账单。"""
+        headers = ["动账流水号" if h == "动帐流水号" else h for h in DY_SETTLE]
+        path = write_xlsx(tmp_path / "对账-抖音浅花涧节日装饰.xlsx", [
+            headers,
+            _dy_row("货款结算入账", "16.32", sub="123F00", order="123"),
+        ])
+        rec = recognize(path, model)
+        assert rec[0].template_id == "douyin_settlement_v1", rec[0].reason
+        result = ingest([path], model, [s.name for s in model.stores])
+        hit = next(i for i in result.items if i.recognition and i.recognition.template_id)
+        assert hit.recognition.template_id == "douyin_settlement_v1"
 
 
 class TestTheInsuranceTableIsAccepted:

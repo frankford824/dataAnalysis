@@ -78,6 +78,9 @@ defineExpose({ take })
       >
         提成
       </router-link>
+      <router-link class="navlink" :class="{ on: $route.name === 'fees' }" to="/fees">
+        费项
+      </router-link>
       <div class="grow" />
     </nav>
 

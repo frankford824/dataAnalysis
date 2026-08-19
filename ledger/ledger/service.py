@@ -224,6 +224,29 @@ def recompute(
     return out
 
 
+def simulate(ws: Workspace, model: Model, store: Store) -> list[dict[str, Any]]:
+    """用这份模型真算一遍，不写快照。
+
+    改费项规则之前要先看「损益表上哪些行会变多少」。写进工作区再比，等于还没确认
+    就把数字改了——已结的账期虽然不会被覆盖，未结的会。所以试算走这条不落盘的路。
+    """
+    files = ws.active_files(store.id)
+    if not files:
+        return []
+    ing = ingest(files, model, [store.name])
+    result = run(ing, store.platform)
+    out = []
+    for (_s, _period), sl in sorted(result.slices.items(), key=lambda kv: kv[0][1] or ""):
+        payload = slice_dict(sl, store, model)
+        state = ws.state(store.id, sl.period)
+        out.append({
+            "period": sl.period,
+            "after": payload,
+            "before": state.result if state else None,
+        })
+    return out
+
+
 def _keep_facts(ws: Workspace, run_id: int, sl: Slice) -> None:
     """把事实行落一份；失败会把本次快照降级为不可结账。"""
     if sl.facts.is_empty():
@@ -305,6 +328,7 @@ __all__ = [
     "facts_of",
     "intake",
     "recompute",
+    "simulate",
     "suggest_store",
     "unknown_tables",
 ]

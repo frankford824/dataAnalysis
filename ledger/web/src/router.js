@@ -22,6 +22,11 @@ export const router = createRouter({
       component: () => import('./views/CommissionView.vue'),
     },
     {
+      path: '/fees',
+      name: 'fees',
+      component: () => import('./views/FeesView.vue'),
+    },
+    {
       path: '/onboard/:sha',
       name: 'onboard',
       component: () => import('./views/OnboardView.vue'),

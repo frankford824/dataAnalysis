@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .fees import pretty_unmatched_label
 from .model.schema import Model
 
 #: 覆盖率低于这个数就报。和自检里的门槛（0.98）刻意留了距离：
@@ -43,7 +44,8 @@ SEVERITY_ORDER = {"blocking": 0, "warn": 1, "info": 2}
 def _gap(kind: str, severity: str, title: str, detail: str, **rest: Any) -> dict[str, Any]:
     return {"kind": kind, "severity": severity, "title": title, "detail": detail,
             "node": rest.get("node", ""), "metric": rest.get("metric", ""),
-            "source": rest.get("source", ""), "amount": rest.get("amount")}
+            "source": rest.get("source", ""), "amount": rest.get("amount"),
+            "only": rest.get("only", "counted")}
 
 
 def gaps(payload: dict[str, Any], model: Model,
@@ -54,13 +56,13 @@ def gaps(payload: dict[str, Any], model: Model,
     `before` 是同一家店上一个账期的快照，给「突然变成 0」那一条用；没有就跳过那条。
     """
     out: list[dict[str, Any]] = []
-    out.extend(_blocking(payload))
+    out.extend(_blocking(payload, model))
     out.extend(_missing(payload, model))
     out.extend(_empty_lines(payload))
     out.extend(_zero_with_rows(payload, model))
-    out.extend(_nothing_linked(payload))
+    out.extend(_nothing_linked(payload, model))
     out.extend(_dropped_to_zero(payload, before))
-    out.extend(_coverage(payload))
+    out.extend(_coverage(payload, model))
     out.extend(_unclassified(payload))
     out.extend(_unlinked(payload))
     out.sort(key=lambda g: (SEVERITY_ORDER.get(g["severity"], 9), -abs(g["amount"] or 0.0)))
@@ -89,13 +91,20 @@ def summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def _blocking(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _blocking(payload: dict[str, Any], model: Model) -> list[dict[str, Any]]:
     """自检拦下来的。这一类必须排最前——它是「这个月结不了账」的原因。"""
-    return [
-        _gap("blocking", "blocking", f["name"], f.get("message") or "")
-        for f in payload.get("findings") or []
-        if f.get("blocking") and not f.get("passed")
-    ]
+    from .view import finding_action
+    out = []
+    for f in payload.get("findings") or []:
+        if not (f.get("blocking") and not f.get("passed")):
+            continue
+        hit = finding_action(f, model, payload)
+        node = "__sources__" if hit.get("tab") == "sources" else (hit.get("drill") or "")
+        out.append(_gap(
+            "blocking", "blocking", f["name"], f.get("message") or "",
+            node=node, only=hit.get("only") or "counted",
+        ))
+    return out
 
 
 def _missing(payload: dict[str, Any], model: Model) -> list[dict[str, Any]]:
@@ -177,21 +186,25 @@ def _zero_with_rows(payload: dict[str, Any], model: Model) -> list[dict[str, Any
     return out
 
 
-def _nothing_linked(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _nothing_linked(payload: dict[str, Any], model: Model) -> list[dict[str, Any]]:
     """表有行，但一行都没挂到订单上。
 
     单独报是因为它和「覆盖率低」不是一个量级的事：覆盖率 90% 是漏了一角，
     命中率 0 是这张表整份白读，通常意味着订单号那一列取错了。
     """
+    from .view import METRIC_PREFIX, metric_node
     out = []
     for q in payload.get("quality") or []:
         hit, rows = q.get("hit_rate"), q.get("rows") or 0
         if hit is None or rows == 0 or hit > 0:
             continue
+        mid = q.get("metric") or ""
         out.append(_gap(
             "unmatched", "warn", f"{q.get('name')}一行都没挂上",
             f"读进来 {rows:,} 行，没有一行对上订单——多半是订单号那一列取错了",
-            metric=q.get("metric") or "",
+            metric=mid,
+            node=metric_node(model, mid) or (f"{METRIC_PREFIX}{mid}" if mid else ""),
+            only="uncounted",
         ))
     return out
 
@@ -234,13 +247,14 @@ def _dropped_to_zero(payload: dict[str, Any],
     return out
 
 
-def _coverage(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _coverage(payload: dict[str, Any], model: Model) -> list[dict[str, Any]]:
     """有多少订单没拿到这一项成本。
 
     只报模型认为「每个订单都该有」的那几项（覆盖率不为空的那些）。偶发科目不报，
     理由和 view._quality 一样：交易赔付一个月十几笔，拿覆盖率衡量它永远是红的，
     而一列常年通红等于没有这一列。
     """
+    from .view import metric_node
     out = []
     for q in payload.get("quality") or []:
         cov = q.get("coverage")
@@ -248,10 +262,11 @@ def _coverage(payload: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         missed = (q.get("expected") or 0) - (q.get("covered") or 0)
         label = q.get("expect_label") or "全部"
+        mid = q.get("metric") or ""
         out.append(_gap(
             "coverage", "warn", f"{q.get('name')}只盖到 {cov:.1%}",
             f"{label}的 {q.get('expected'):,} 笔订单里有 {missed:,} 笔没有这一项",
-            metric=q.get("metric") or "",
+            metric=mid, node=metric_node(model, mid),
         ))
     return out
 
@@ -262,11 +277,14 @@ def _unclassified(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for item in payload.get("unclassified") or []:
         if abs(item.get("amount") or 0.0) < MIN_AMOUNT:
             continue
+        caption = item.get("caption") or pretty_unmatched_label(item.get("label") or "")
         out.append(_gap(
-            "unclassified", "warn", f"认不出的费项：{item.get('label')}",
+            "unclassified", "warn", f"尚未归类：{caption}",
             f"{item.get('count'):,} 笔、合计 {item.get('amount'):,.2f}，"
-            f"字典里没有这一条，这笔钱没进损益表",
+            f"字典和规则都没有这一条，这笔钱没进损益表",
             amount=item.get("amount"),
+            node="__unclassified__",
+            only="all",
         ))
     return out
 
@@ -298,4 +316,6 @@ def _unlinked(payload: dict[str, Any]) -> list[dict[str, Any]]:
         (f"{count:,} 行取不出订单号。" if count else "")
         + "这部分没进店铺利润，也不该硬摊进去，要人查清归属",
         amount=total,
+        node="__unlinked__",
+        only="all",
     )]

@@ -15,7 +15,7 @@ import polars as pl
 
 from ..model.schema import Metric, Model, NodeExpr, Predicate, Template, ValueExpr
 from ..money import decimal_amount, money_float, sum_amounts
-from .classify import COL_COUNT_WITHOUT_ORDER, COL_MAJOR, COL_MINOR
+from .classify import COL_COUNT_WITHOUT_ORDER, COL_MAJOR, COL_MINOR, COL_VIA
 from .link import LINK_KEY, LINKED
 from .normalize import PARENT_FIRST, is_parent_only
 from .predicate import PredicateError, compile_where
@@ -28,7 +28,7 @@ AMOUNT = "__amount__"
 FACT_COLUMNS = (
     "metric_id", "source_id", "template_id", "store", "period", "grain",
     "link_key", "linked", "amount", "subject", "major", "minor",
-    "count_without_order",
+    "count_without_order", "classify_via",
     "file_sha", "file_name", "sheet", "row_no",
     # 投影之后才知道，见 runtime._mark_counted：这一行有没有算进损益表、算进去多少。
     "counted", "contribution",
@@ -153,6 +153,7 @@ def evaluate_metric(
             if COL_COUNT_WITHOUT_ORDER in frame.columns
             else pl.lit(False)
         ).alias("count_without_order"),
+        (pl.col(COL_VIA) if COL_VIA in frame.columns else pl.lit("", dtype=pl.Utf8)).alias("classify_via"),
         pl.col(ANCHOR_SHA).alias("file_sha"),
         pl.col(ANCHOR_FILE).alias("file_name"),
         pl.col(ANCHOR_SHEET).alias("sheet"),
@@ -206,7 +207,7 @@ def _empty_facts() -> pl.DataFrame:
         "store": pl.Utf8, "period": pl.Utf8, "grain": pl.Utf8,
         "link_key": pl.Utf8, "linked": pl.Boolean, "amount": pl.Float64,
         "subject": pl.Utf8, "major": pl.Utf8, "minor": pl.Utf8,
-        "count_without_order": pl.Boolean,
+        "count_without_order": pl.Boolean, "classify_via": pl.Utf8,
         "file_sha": pl.Utf8, "file_name": pl.Utf8, "sheet": pl.Utf8, "row_no": pl.Int64,
         "counted": pl.Boolean, "contribution": pl.Float64,
     }

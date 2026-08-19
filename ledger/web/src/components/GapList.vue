@@ -67,7 +67,9 @@ function can(g) {
           </span>
         </div>
         <div class="detail">{{ item.detail }}</div>
-        <div v-if="can(item)" class="go">点开看这一项是怎么来的 →</div>
+        <div v-if="can(item)" class="go">
+          {{ item.node === '__sources__' ? '去看该交的表 →' : '点开看这些行 →' }}
+        </div>
       </div>
     </section>
   </div>

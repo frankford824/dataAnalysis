@@ -133,6 +133,7 @@ class TestWhatCountsAsWorthShowing:
         ), model)
         assert _kinds(rows) == ["unlinked"]
         assert "5 行" in rows[0]["detail"]
+        assert rows[0]["node"] == "__unlinked__"
 
     def test_a_negative_unlinked_total_reads_as_an_amount_not_as_minus(self, model):
         """未归属总额是净额，可能是负的。「有 -357.06 挂不上订单」要在脑子里绕一圈。"""
@@ -249,3 +250,4 @@ class TestEveryIssueHasSomewhereToGo:
         by = {r["kind"]: r for r in rows}
         assert by["empty"]["node"] == "n_ad"
         assert by["coverage"]["metric"] == "goods_cost"
+        assert by["coverage"]["node"] == "n_goods"

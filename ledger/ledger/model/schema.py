@@ -119,6 +119,14 @@ class FieldMatch(Base):
     matches: str | None = None
     #: 字段非空才适用。
     notnull: bool = True
+    #: 比之前先把字段值按 `normalize_header` 归一（去空白、全角括号折半角）。
+    #:
+    #: 科目字典查表一直是归一之后比的，而规则链的 equals 是原样比。两套写法并存
+    #: 到今天没出事，是因为规则链里的值都是从实测表里抄出来的。界面上配规则不一样：
+    #: 人是从费项分类对照表里复制一条过来，那张表的括号是全角、词与词之间常带一个
+    #: 全角空格。原样比的结果是配了一条永远不命中的规则，而不命中不报错——
+    #: 界面上它安静地待在那儿，钱照旧落未归类。
+    normalized: bool = False
 
     @field_validator("extract", "matches")
     @classmethod
@@ -713,6 +721,108 @@ class DictionaryEntry(Base):
     naturally_unlinked: bool = False
 
 
+class FeeRule(Base):
+    """从界面配的一条归类规则。
+
+    为什么它不能直接写进科目字典
+    --------------------------
+    字典的形状是「一列、精确匹配、无序」。这个形状接得住「业务描述叫某个名字」，
+    接不住实测里量最大的那一类：支付宝账务明细有 28,615 行业务描述整列为空，
+    归类只能看备注，而备注是长句——「品牌新享-首单拉新计划(KY_ITEM)(订单号)扣款」，
+    里面嵌着订单号，只能按包含或正则匹配。同一笔费用的扣和退在备注里只差最后两个字，
+    光看包含哪个费用名分不开。
+
+    所以这张表比字典多两样东西：**匹配方式**和**次序**。次序不是排版，是语义——
+    规则链的规矩是「第一条命中的生效」，所以同一条规则放在模板规则前面还是后面，
+    结果完全不同。这里只给两档，不给任意插队：
+
+        after （默认）  排在模板规则链之后，只接住谁都没接住的行。
+                        新费项走这一档：它本来就落在未归类里，前面没人跟它抢。
+        before          排在整条链最前面，压过模板里写着的判断。
+                        用来纠正「归错了」，而不是「没归上」。
+
+    默认是 after，因为它是安全的那一档：加一条 after 规则，唯一可能的影响是
+    把原本未归类的钱归进来。before 会改已经算对的行，所以界面上要单独确认。
+
+    为什么允许 exclude 和 count_without_order 从界面配
+    ----------------------------------------------
+    因为不允许的话，遇到这两类费项就还是得等发版，而它们恰好是最常来的两类：
+    保证金充值这种要清空费项（对账表公式说明的条件 8 明写着），跨月结算这种要
+    绕过本期订单进损益。但这两个开关都能静默改利润——前者让钱消失，后者让钱
+    不经订单直接进账——所以落库前必须试算，界面上也要单独标出来。
+    """
+
+    #: 哪个平台。`*` 表示所有平台通用。
+    platform: str = "*"
+    #: 看哪个字段角色。subject 是业务描述，remark 是备注，biz_type 是业务类型。
+    field: str = "subject"
+    #: 怎么匹配。exact 是归一之后精确相等（去空白、全角括号折半角），
+    #: 从对照表里复制一条过来就该用它；equals 是原样相等。
+    how: Literal["exact", "equals", "contains", "regex"] = "exact"
+    value: str
+    #: 归到哪个口径项。留空且 exclude 为真表示「命中就不进账」。
+    major: str = ""
+    #: 细项。界面上和对账表上显示的就是它，留空则退回显示平台原始科目名。
+    minor: str = ""
+    exclude: bool = False
+    count_without_order: bool = False
+    stage: Literal["before", "after"] = "after"
+    note: str = ""
+    #: 谁配的、什么时候。CSV 没有注释语法，落款只能占两列。
+    by: str = ""
+    at: str = ""
+
+    @model_validator(mode="after")
+    def _check(self) -> FeeRule:
+        if not self.value.strip():
+            raise ValueError("匹配值是空的，这条规则会命中所有行或者一行都不命中")
+        if self.exclude and self.major:
+            raise ValueError("排除规则不能同时指定口径项：命中之后这笔钱就不进账了")
+        if self.exclude and self.count_without_order:
+            raise ValueError("排除规则不能同时 count_without_order")
+        if not self.exclude and not self.major:
+            raise ValueError("要么给口径项，要么标成排除。两个都不给等于这条规则什么也不做")
+        if self.how == "regex":
+            try:
+                re.compile(self.value)
+            except re.error as exc:
+                raise ValueError(f"正则写错了：{exc}") from exc
+        return self
+
+    @property
+    def label(self) -> str:
+        """给界面和规则链统计用的一句话。"""
+        field = {"subject": "业务描述", "remark": "备注", "biz_type": "业务类型"}.get(
+            self.field, self.field
+        )
+        how = {
+            "exact": "等于",
+            "equals": "完全一致",
+            "contains": "包含",
+            "regex": "匹配",
+        }[self.how]
+        where = "排除，不计入损益" if self.exclude else (self.minor or self.major)
+        return f"费项规则 · {field}{how}「{self.value}」→ {where}"
+
+    def to_rule(self) -> ClassifyRule:
+        """编译成引擎认识的一条归类规则。"""
+        when = FieldMatch(
+            field=self.field,
+            equals=(self.value,) if self.how in ("exact", "equals") else (),
+            contains=(self.value,) if self.how == "contains" else (),
+            matches=self.value if self.how == "regex" else None,
+            normalized=self.how == "exact",
+        )
+        return ClassifyRule(
+            when=when,
+            major=self.major or None,
+            minor=self.minor or None,
+            exclude=self.exclude,
+            count_without_order=self.count_without_order,
+            note=self.label,
+        )
+
+
 # --------------------------------------------------------------------------- #
 # 6. 校验规则
 # --------------------------------------------------------------------------- #
@@ -942,6 +1052,8 @@ class Model(Base):
     metrics: tuple[Metric, ...] = ()
     statement: tuple[StatementNode, ...] = ()
     dictionary: tuple[DictionaryEntry, ...] = ()
+    #: 界面上配的归类规则。叠在模板规则链之外，见 FeeRule。
+    fee_rules: tuple[FeeRule, ...] = ()
     checks: tuple[Check, ...] = ()
     commission: tuple[CommissionRule, ...] = ()
     overheads: tuple[Overhead, ...] = ()
@@ -1130,6 +1242,25 @@ class Model(Base):
             r.major for t in self.templates for r in t.classify_rules if r.major
         }
         majors |= {r.major for t in self.templates for r in t.reclassify}
+
+        # 界面配的规则只许指向已经存在的口径项。打错一个字母的后果不是报错，
+        # 是这笔钱被「归类」到一个没有任何指标会去取的项上——它从未归类清单里
+        # 消失了，却也没进损益表，两头都不报。
+        #
+        # 认「指标声明要取的口径项」而不只认「已经有科目会归到它的」：一个口径项
+        # 完全可能眼下没有任何科目命中，而配这条规则正是要让它第一次有数。
+        # 不能把 fee_rules 自己的 major 算进 known——那样拼错一个字母会自己证明自己。
+        known = {m for m in majors if m} | {m.major for m in self.metrics if m.major}
+        platform_ids = {p.id for p in self.platforms}
+        for r in self.fee_rules:
+            if r.platform != "*" and r.platform not in platform_ids:
+                errors.append(f"费项规则「{r.value}」挂在不存在的平台 {r.platform} 上")
+            if r.major and r.major not in known:
+                errors.append(
+                    f"费项规则「{r.value}」要归到 {r.major}，但这个口径项不存在。"
+                    f"现有的：{'、'.join(sorted(known))}"
+                )
+
         for m in self.metrics:
             if m.source not in source_ids:
                 errors.append(f"指标 {m.id} 指向不存在的数据源 {m.source}")

@@ -100,6 +100,16 @@ create table if not exists period (
   at_version integer not null default 0,
   primary key (store_id, period)
 );
+
+create table if not exists config_log (
+  id integer primary key,
+  at text not null,
+  by text not null default '',
+  kind text not null,
+  summary text not null,
+  before_json text not null default '',
+  after_json text not null default ''
+);
 """
 
 #: 后加的列。老工作区打开时补上，不用导数据。
@@ -544,6 +554,41 @@ class Workspace:
             (store_id, period),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def log_config(
+        self,
+        kind: str,
+        summary: str,
+        *,
+        by: str = "",
+        before: Any = None,
+        after: Any = None,
+    ) -> None:
+        """记一条配置改动。失败不能让这次改配置本身失败。"""
+        try:
+            with self.conn as conn:
+                conn.execute(
+                    "insert into config_log (at, by, kind, summary, before_json, after_json) "
+                    "values (?,?,?,?,?,?)",
+                    (
+                        _now(), by, kind, summary,
+                        json.dumps(before, ensure_ascii=False) if before is not None else "",
+                        json.dumps(after, ensure_ascii=False) if after is not None else "",
+                    ),
+                )
+        except sqlite3.Error:
+            return
+
+    def config_history(self, kind: str = "", limit: int = 50) -> list[dict[str, Any]]:
+        """最近的配置改动。界面上「改动记录」读这个。"""
+        sql = "select id, at, by, kind, summary from config_log"
+        args: list[Any] = []
+        if kind:
+            sql += " where kind=?"
+            args.append(kind)
+        sql += " order by id desc limit ?"
+        args.append(limit)
+        return [dict(r) for r in self.conn.execute(sql, args).fetchall()]
 
 
 def _spool(src: IO[bytes] | Path, target: Path) -> str:

@@ -11,6 +11,7 @@
     statement.yaml   公式树
     checks.yaml      校验规则
     dictionary.csv   科目字典
+    fee-rules.csv    界面上配的归类规则（备注/业务类型/业务描述 → 口径项）
     commission.csv   提成配置（商品-人-比例，按生效日期）
     overheads.csv    公摊费用（账期 → 全公司总额，摊到各店）
 
@@ -30,6 +31,7 @@ from .schema import (
     Check,
     CommissionRule,
     DictionaryEntry,
+    FeeRule,
     Metric,
     Model,
     Overhead,
@@ -49,6 +51,15 @@ _FILES = {
     "statement": ("statement.yaml", StatementNode),
     "checks": ("checks.yaml", Check),
 }
+
+
+#: 界面配的归类规则存这儿。列顺序就是写回时的列顺序。
+FEE_RULES = "fee-rules.csv"
+
+FEE_RULE_COLUMNS = (
+    "stage", "platform", "field", "how", "value", "major", "minor",
+    "exclude", "count_without_order", "note", "by", "at",
+)
 
 
 class ModelError(Exception):
@@ -91,6 +102,7 @@ def load_model(directory: str | Path) -> Model:
         payload[field] = tuple(items)
 
     payload["dictionary"] = _read_dictionary(root / "dictionary.csv")
+    payload["fee_rules"] = _read_fee_rules(root / FEE_RULES)
     payload["commission"] = _read_commission(root / "commission.csv")
     payload["overheads"] = _read_overheads(root / "overheads.csv")
 
@@ -134,6 +146,42 @@ def _read_dictionary(path: Path) -> tuple[DictionaryEntry, ...]:
             except ValidationError as exc:
                 raise ModelError(f"{path} 第 {lineno} 行有问题：\n{_explain(exc)}") from exc
     return tuple(entries)
+
+
+def _read_fee_rules(path: Path) -> tuple[FeeRule, ...]:
+    """界面上配的归类规则。
+
+    次序就是文件里的行序，这一点和别的 CSV 不同：规则链「第一条命中的生效」，
+    所以调整行序是在改语义。写回这份文件必须整份写，不能按某一列排序。
+    """
+    if not path.exists():
+        return ()
+    rules: list[FeeRule] = []
+    with path.open(encoding="utf-8-sig", newline="") as fh:
+        for lineno, row in enumerate(csv.DictReader(fh), start=2):
+            value = (row.get("value") or "").strip()
+            if not value:
+                continue
+            try:
+                rules.append(
+                    FeeRule(
+                        platform=(row.get("platform") or "*").strip() or "*",
+                        field=(row.get("field") or "subject").strip() or "subject",
+                        how=(row.get("how") or "exact").strip() or "exact",  # type: ignore[arg-type]
+                        value=value,
+                        major=(row.get("major") or "").strip(),
+                        minor=(row.get("minor") or "").strip(),
+                        exclude=_truthy(row.get("exclude")),
+                        count_without_order=_truthy(row.get("count_without_order")),
+                        stage=(row.get("stage") or "after").strip() or "after",  # type: ignore[arg-type]
+                        note=(row.get("note") or "").strip(),
+                        by=(row.get("by") or "").strip(),
+                        at=(row.get("at") or "").strip(),
+                    )
+                )
+            except ValidationError as exc:
+                raise ModelError(f"{path} 第 {lineno} 行有问题：\n{_explain(exc)}") from exc
+    return tuple(rules)
 
 
 def _read_commission(path: Path) -> tuple[CommissionRule, ...]:

@@ -146,4 +146,24 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(commit),
     }),
+
+  fees: () => call('/api/fees'),
+  feesPreview: (body) =>
+    call('/api/fees/preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  feesApply: (body) =>
+    call('/api/fees', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  feesSuggest: (body) =>
+    call('/api/fees/suggest', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 }

@@ -182,6 +182,7 @@ td { padding: var(--s2) var(--s3) var(--s2) 0; font-size: var(--t-md); }
 td:last-child, th:last-child { padding-right: 0; }
 tbody tr + tr td { border-top: 1px solid var(--n2); }
 tr.quiet td { color: var(--n6); }
+.wrap-cell { white-space: normal; word-break: break-word; line-height: 1.5; }
 
 /* --------------------------------------------------------------------------
  * 按钮

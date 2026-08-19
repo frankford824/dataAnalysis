@@ -247,6 +247,21 @@ class TestPddPromotionTotalRow:
         assert "合计行的 spend 说 500.00" in notes
         assert "397.88" in notes
 
+    def test_a_variant_without_scene_still_matches(self, tmp_path, model):
+        """平台改版少一列「推广场景」时仍应认成推广表，不能甩去接表向导。"""
+        header = [c for c in self.HEADER if c != "推广场景"]
+        path = write_xlsx(tmp_path / "推广-pdd快乐节庆.xlsx", [
+            ["名称：推广"],
+            header,
+            ["2026-05-31", "754299529443", "接考横幅", "接考横幅",
+             "目标投产比：5.80", "", "", "102.12", "701.07", "6.87", "102.12",
+             "7677", "624"],
+        ])
+        result = ingest([path], model, [s.name for s in model.stores])
+        item = result.items[0]
+        assert item.recognition is not None
+        assert item.recognition.template_id == "promotion_pdd_v1", item.recognition.reason
+
 
 class TestPddOrdersWithNoTimeAtAll:
     """成交时间整列空着的那 127 行。账期得从订单号里兜底，否则它们从损益表上消失。"""

@@ -320,19 +320,97 @@ def suggest_roles(
 
 
 def _post(cfg: Config, payload: dict[str, Any], request_id: str) -> dict[str, Any]:
+    """接表向导那一次请求。保留这个名字，调用处读起来才知道发的是列映射。"""
+    return _chat(cfg, _SYSTEM, json.dumps(payload, ensure_ascii=False) + _ASK, request_id)
+
+
+_FEE_SYSTEM = """你在帮一个记账系统给平台流水里的一条费项归类。只输出 JSON。
+硬约束，违反任何一条都会让账算错：
+1. major 只能取自给定的口径项清单。不许发明新的口径项。
+2. 拿不准就不要给 major，返回 {"major":""}。
+3. exclude 只有在这笔钱根本不是经营流水（提现、充值、账户互转、保证金缴存）时才为 true。
+4. 不要建议 count_without_order。那个开关让钱不经订单直接进损益，必须由人自己勾。
+5. 输入里的数字已经脱敏，不要根据编号形态做判断。"""
+
+_FEE_ASK = (
+    '\n\n输出 {"major":"software_fee","minor":"中文细项","exclude":false,"why":"判断依据"}。'
+    "major 必须是清单里的 id。"
+)
+
+
+def suggest_fee(
+    label: str,
+    majors: Sequence[dict[str, str]],
+    field: str = "subject",
+    *,
+    config: Config | None = None,
+    root: Path | None = None,
+) -> dict[str, Any]:
+    """给一条未归类的科目/备注建议口径项。输出不是配置，人确认后才落库。"""
+    cfg = config or load_config(root)
+    if not cfg.ready:
+        return {"ok": False, "note": "没有配置模型，请直接选口径项"}
+    text = (label or "").strip()
+    if not text:
+        return {"ok": False, "note": "没有可归类的科目"}
+    allowed = {str(m.get("id") or "") for m in majors if m.get("id")}
+    if not allowed:
+        return {"ok": False, "note": "模型里还没有任何口径项"}
+
+    safe = re.sub(r"\d{8,}", "编号", text)[:80]
+    payload = {
+        "看的列": field,
+        "费项": safe,
+        "可选口径项": [{"id": m.get("id"), "名称": m.get("name")} for m in majors],
+    }
+    request_id = uuid.uuid4().hex
+    started = time.monotonic()
+    try:
+        content = _chat(cfg, _FEE_SYSTEM, json.dumps(payload, ensure_ascii=False) + _FEE_ASK, request_id)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "note": f"模型没能给出建议（{_safe(exc, cfg.api_key)}）",
+            "request_id": request_id,
+        }
+
+    major = str(content.get("major") or "").strip()
+    if major and major not in allowed:
+        return {
+            "ok": False,
+            "note": f"模型给的口径项 {major} 不在清单里，已丢弃",
+            "request_id": request_id,
+        }
+    advice = {
+        "ok": True,
+        "major": major,
+        "minor": str(content.get("minor") or "").strip()[:40],
+        "exclude": bool(content.get("exclude")),
+        "why": str(content.get("why") or "").strip()[:200],
+        "note": "模型建议，确认后才会进账",
+        "request_id": request_id,
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
+    }
+    _log(
+        root,
+        Advice(ok=True, model=cfg.model, request_id=request_id, elapsed_ms=advice["elapsed_ms"]),
+        payload,
+        content,
+    )
+    return advice
+
+
+def _chat(cfg: Config, system: str, user: str, request_id: str) -> dict[str, Any]:
     """发一次请求。OpenAI 兼容接口，强制 JSON，温度 0。
 
-    温度固定 0 不给配：同一张表两次提议给出不同结果，人就没法判断该不该信它。
+    温度固定 0 不给配：同一条费项两次提议给出不同结果，人就没法判断该不该信它。
     """
     body = json.dumps(
         {
             "model": cfg.model,
             "messages": [
-                {"role": "system", "content": _SYSTEM},
-                {
-                    "role": "user",
-                    "content": json.dumps(payload, ensure_ascii=False) + _ASK,
-                },
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
             ],
             "temperature": 0,
             "max_tokens": 4096,
@@ -475,5 +553,6 @@ __all__ = [
     "load_config",
     "mask",
     "outbound",
+    "suggest_fee",
     "suggest_roles",
 ]

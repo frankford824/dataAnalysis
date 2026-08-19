@@ -48,6 +48,8 @@ export const useApp = defineStore('app', () => {
   //: 上一次交表的结果。被拒的文件、没认出来的表都在这里，跳页之后还要能看见。
   const intake = ref(null)
 
+  const YM = /^\d{4}-\d{2}$/
+
   const stores = computed(() => overview.value?.stores || boot.value?.stores || [])
 
   const platforms = computed(() => {
@@ -78,7 +80,12 @@ export const useApp = defineStore('app', () => {
       ])
       boot.value = b
       overview.value = o
-      if (!period.value && o.periods?.length) period.value = o.periods[o.periods.length - 1]
+      // 默认账期必须是「多数店都有数的那个月」。空、以及认不出月份的「(未知账期)」，
+      // 都不能拿来当默认值：后者排序在列表末尾，取最后一个就会让总览只剩一家店。
+      const allowed = new Set(o.periods || [])
+      if (!YM.test(period.value) || (allowed.size && !allowed.has(period.value))) {
+        period.value = o.default_period || ''
+      }
       return o
     } catch (e) {
       error.value = e.message

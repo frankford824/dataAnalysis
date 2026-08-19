@@ -111,9 +111,12 @@ async function reopen() {
   }
 }
 
-function openDrill(row) {
+function openDrill(row, only = 'counted') {
   if (!row.drillable || !snap.value?.run_id) return
-  drill.value = { runId: snap.value.run_id, node: row.id, name: row.name, value: row.value }
+  drill.value = {
+    runId: snap.value.run_id, node: row.id, name: row.name,
+    value: row.value, only,
+  }
 }
 
 const bad = computed(() => (snap.value?.findings || []).filter((f) => !f.passed))
@@ -147,10 +150,40 @@ const unlinkedNeedsWork = computed(() => ({
     .reduce((a, b) => a + (b.count || 0), 0),
 }))
 
-/** 点一条缺口，直接落到损益表上那一行的下钻。 */
+/** 点一条缺口，落到它的来源行。没有损益表节点的（挂不上订单、认不出的费项）走专用入口。 */
 function openGap(gap) {
+  if (gap.node === '__sources__') {
+    rail.value = 'sources'
+    return
+  }
+  if (!snap.value?.run_id) return
+  if (gap.node && gap.node.startsWith('__')) {
+    drill.value = {
+      runId: snap.value.run_id,
+      node: gap.node,
+      name: gap.title,
+      value: gap.amount,
+      only: gap.only || 'all',
+    }
+    return
+  }
   const row = (snap.value?.statement || []).find((r) => r.id === gap.node)
-  if (row) openDrill(row)
+  if (row) openDrill(row, gap.only || 'counted')
+}
+
+function openFinding(f) {
+  if (f.tab) {
+    rail.value = f.tab
+    return
+  }
+  if (!f.drill || !snap.value?.run_id) return
+  drill.value = {
+    runId: snap.value.run_id,
+    node: f.drill,
+    name: f.name || f.label,
+    value: f.amount,
+    only: f.only || 'counted',
+  }
 }
 
 // 右栏默认停在最需要人处理的那一块：有缺口就停在缺口，有没交的表就停在该交的表，
@@ -278,7 +311,8 @@ watch(
                   />
                 </template>
                 <p class="xs muted" style="margin-bottom: var(--s3)">
-                  拦路的那条不解决就结不了账，提示的那条不拦结账，但数字会有偏差。
+                  拦路的那条不解决就结不了账。每条都能点进去看是哪些行——只给一段话不给行号，
+                  等于让人自己再对一遍账。
                 </p>
                 <n-alert
                   v-for="f in bad"
@@ -288,14 +322,40 @@ watch(
                   :bordered="false"
                   style="margin-bottom: var(--s2)"
                 >
-                  {{ f.lines?.length ? f.head : f.message }}
-                  <ul v-if="f.lines?.length" class="bullets">
+                  {{ f.head || f.message }}
+                  <ul v-if="f.buckets?.length" class="bullets">
+                    <li v-for="(b, i) in f.buckets" :key="i">
+                      {{ b.label }} · {{ count(b.count) }} 笔 · {{ money(b.amount) }}
+                      <button class="link" @click="openFinding(b)">看这些行 →</button>
+                    </li>
+                  </ul>
+                  <ul v-else-if="f.lines?.length" class="bullets">
                     <li v-for="(line, i) in f.lines" :key="i">{{ line }}</li>
                   </ul>
+                  <div v-if="f.drill || f.tab" class="row" style="margin-top: var(--s2)">
+                    <n-button size="tiny" type="primary" @click="openFinding(f)">
+                      {{ f.tab === 'sources' ? '去看该交的表' : '看这些行' }}
+                    </n-button>
+                  </div>
                 </n-alert>
                 <n-alert v-if="!bad.length" type="success" :bordered="false">
                   {{ (snap.findings || []).length }} 项检查都过了
                 </n-alert>
+                <div
+                  v-if="snap.unclassified?.length"
+                  class="row"
+                  style="margin-top: var(--s3)"
+                >
+                  <n-button
+                    size="small"
+                    @click="router.push({
+                      name: 'fees',
+                      query: { label: snap.unclassified[0].label },
+                    })"
+                  >
+                    去归类这 {{ snap.unclassified.length }} 个未归类费项
+                  </n-button>
+                </div>
               </n-tab-pane>
 
               <n-tab-pane name="sources">
@@ -373,7 +433,7 @@ watch(
               <n-tab-pane v-if="snap.unlinked_buckets?.length" name="unlinked" tab="没进利润的钱">
                 <p class="xs muted" style="margin-bottom: var(--s3)">
                   挂不上任何订单的钱，按「为什么挂不上」分开摆——处置完全不同。
-                  排第一行的那类要人去查，灰掉的几类各有各的解释，摆出来是让人扫一眼确认「这些不用管」。
+                  点一行就能看到这些钱在哪个文件第几行。排第一行的那类要人去查，灰掉的几类各有各的解释。
                 </p>
                 <div class="scroll">
                   <n-table size="small" :bordered="false">
@@ -388,11 +448,20 @@ watch(
                       <tr
                         v-for="(b, i) in unlinkedRows"
                         :key="i"
+                        class="tap"
+                        style="cursor: pointer"
                         :class="{ quiet: unlinkedGraded && !b.counted }"
+                        @click="openGap({
+                          node: `__unlinked__:${b.label}`,
+                          title: b.label,
+                          amount: b.amount,
+                          only: 'all',
+                        })"
                       >
                         <td class="small">
                           {{ b.label }}
                           <div v-if="b.why" class="xs muted">{{ b.why }}</div>
+                          <button class="link" type="button">看这些行 →</button>
                         </td>
                         <td class="right num xs">{{ count(b.count) }}</td>
                         <td class="right num">{{ money(b.amount) }}</td>
@@ -454,6 +523,7 @@ watch(
       :run-id="drill.runId"
       :node="drill.node"
       :title="drill.name"
+      :only="drill.only || 'counted'"
       @close="drill = null"
     />
   </n-spin>

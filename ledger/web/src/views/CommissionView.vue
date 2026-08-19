@@ -60,23 +60,37 @@ const bulk = ref(null)
 const storeId = computed(() => app.storeId)
 const period = computed(() => app.period || pay.value?.period || '')
 
+let loadSeq = 0
+
 async function load() {
+  const seq = ++loadSeq
   loading.value = true
   failed.value = ''
   preview.value = null
   try {
-    pay.value = await api.commission(period.value)
-    plan.value = await api.commissionProducts({
-      period: period.value,
-      store_id: app.storeId,
-    }).catch(() => null)
-    config.value = await api.commissionConfig(app.storeId).catch(() => null)
+    const [nextPay, nextPlan, nextConfig] = await Promise.all([
+      api.commission(period.value),
+      api.commissionProducts({
+        period: period.value,
+        store_id: app.storeId,
+      }).catch(() => null),
+      api.commissionConfig(app.storeId).catch(() => null),
+    ])
+    if (seq !== loadSeq) return
+    pay.value = nextPay
+    plan.value = nextPlan
+    config.value = nextConfig
     seed()
   } catch (e) {
+    if (seq !== loadSeq) return
     failed.value = e.message
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
+}
+
+function goTab(name) {
+  tab.value = name
 }
 
 /** 用现行配置和归属建议把费率框填上，人只需要改。
@@ -385,28 +399,36 @@ function open(id) {
 </script>
 
 <template>
-  <n-spin :show="loading">
-    <n-alert v-if="failed" type="error" :bordered="false">{{ failed }}</n-alert>
+  <n-alert v-if="failed" type="error" :bordered="false" style="margin-bottom: var(--s4)">
+    {{ failed }}
+  </n-alert>
 
-    <template v-else>
-      <div class="spread" style="margin-bottom: var(--s4)">
-        <div>
-          <h1>提成</h1>
-          <div class="small muted">
-            {{ period }} · 按{{ pay?.base_name || '利润' }}算
-            <template v-if="pay?.base_mixed"> · 各店口径不一样</template>
-          </div>
-        </div>
-        <div class="row">
-          <span class="small muted num">合计 {{ money(payTotal) }}</span>
-          <n-button size="small" type="primary" @click="tab = 'config'">配提成</n-button>
-        </div>
+  <div class="spread" style="margin-bottom: var(--s4)">
+    <div>
+      <h1>提成</h1>
+      <div class="small muted">
+        {{ period }} · 按{{ pay?.base_name || '利润' }}算
+        <template v-if="pay?.base_mixed"> · 各店口径不一样</template>
       </div>
+    </div>
+    <div class="row">
+      <span class="small muted num">合计 {{ money(payTotal) }}</span>
+      <n-button
+        v-if="tab !== 'config'"
+        size="small"
+        type="primary"
+        @click="goTab('config')"
+      >
+        配提成
+      </n-button>
+    </div>
+  </div>
 
-      <div class="card">
-        <n-tabs v-model:value="tab" type="line" size="small">
-          <!-- 1. 这个月要发多少 -->
-          <n-tab-pane name="payout" tab="本月发放">
+  <div class="card">
+    <n-tabs :value="tab" type="line" size="small" @update:value="goTab">
+      <!-- 1. 这个月要发多少 -->
+      <n-tab-pane name="payout" tab="本月发放">
+        <n-spin :show="loading">
             <div class="cols even">
               <div>
                 <div class="spread" style="margin-bottom: var(--s3)">
@@ -435,7 +457,7 @@ function open(id) {
                 </div>
                 <n-empty v-else description="这个月没有人拿到提成" size="small">
                   <template #extra>
-                    <n-button size="small" @click="tab = 'config'">去配</n-button>
+                    <n-button size="small" @click="goTab('config')">去配</n-button>
                   </template>
                 </n-empty>
               </div>
@@ -493,10 +515,12 @@ function open(id) {
                 </div>
               </div>
             </div>
+        </n-spin>
           </n-tab-pane>
 
           <!-- 2. 配 -->
           <n-tab-pane name="config" tab="配提成">
+            <n-spin :show="loading">
             <n-alert v-if="!storeId" type="default" :bordered="false">
               上面的筛选条里先选一家店。提成是按店配的——同一个人在不同店的点数可以不一样，
               所以这一步必须说清楚是哪家。
@@ -706,10 +730,12 @@ function open(id) {
                 </section>
               </div>
             </template>
+            </n-spin>
           </n-tab-pane>
 
           <!-- 3. 现在配的是什么 -->
           <n-tab-pane name="rules" :tab="`现行规则（${rules.length}）`">
+            <n-spin :show="loading">
             <div class="spread" style="margin-bottom: var(--s3)">
               <p class="xs muted">
                 真正参与计算的就是这张表。上面那一步做的事，就是往这里写行。
@@ -756,9 +782,10 @@ function open(id) {
             </div>
             <n-empty v-else description="这家店还没有提成规则" size="small">
               <template #extra>
-                <n-button size="small" @click="tab = 'config'">去配</n-button>
+                <n-button size="small" @click="goTab('config')">去配</n-button>
               </template>
             </n-empty>
+            </n-spin>
           </n-tab-pane>
         </n-tabs>
       </div>
@@ -804,6 +831,4 @@ function open(id) {
           </div>
         </template>
       </n-modal>
-    </template>
-  </n-spin>
 </template>

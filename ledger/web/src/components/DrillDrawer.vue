@@ -18,6 +18,7 @@ const props = defineProps({
   runId: { type: Number, required: true },
   node: { type: String, required: true },
   title: { type: String, default: '' },
+  only: { type: String, default: 'counted' },
 })
 const emit = defineEmits(['close'])
 
@@ -28,7 +29,7 @@ const failed = ref('')
 
 const page = ref(0)
 const size = 100
-const only = ref('counted')
+const only = ref(props.only)
 const subject = ref('')
 const file = ref('')
 const term = ref('')
@@ -60,6 +61,13 @@ async function load() {
   }
 }
 
+watch([() => props.node, () => props.only], () => {
+  only.value = props.only
+  page.value = 0
+  subject.value = ''
+  file.value = ''
+})
+
 watch([() => props.node, only, subject, file, order, page], load, { immediate: true })
 
 // 换筛选就回第一页。留在第 7 页上看一个只有 3 页的结果，界面会显示空白。
@@ -86,11 +94,13 @@ function close() {
         <template v-else-if="data">
           <div class="board-kpis" style="grid-template-columns: repeat(2, 1fr)">
             <div class="kpi">
-              <div class="label">报表上这个数</div>
+              <div class="label">
+                {{ data.kind === 'statement' ? '报表上这个数' : '这些行的合计' }}
+              </div>
               <div class="value" :class="{ neg: data.value < 0 }">{{ money(data.value) }}</div>
             </div>
             <div class="kpi">
-              <div class="label">这些行加起来</div>
+              <div class="label">加起来</div>
               <div class="value" :class="{ neg: data.source_total < 0 }">
                 {{ money(data.source_total) }}
               </div>
@@ -113,7 +123,7 @@ function close() {
           </n-alert>
 
           <div class="row wrap" style="margin: var(--s4) 0; gap: var(--s2)">
-            <n-radio-group v-model:value="only" size="small">
+            <n-radio-group v-if="data.kind === 'statement' || data.kind === 'metric'" v-model:value="only" size="small">
               <n-radio-button value="counted">进了账</n-radio-button>
               <n-radio-button value="uncounted">
                 没进账
@@ -144,7 +154,7 @@ function close() {
           </div>
 
           <n-alert
-            v-if="only === 'counted' && data.uncounted?.rows"
+            v-if="only === 'counted' && data.uncounted?.rows && data.kind === 'statement'"
             type="default"
             :bordered="false"
             style="margin-bottom: var(--s4)"
@@ -223,7 +233,10 @@ function close() {
             <tbody>
               <tr v-for="(r, i) in data.sample || []" :key="i">
                 <td class="xs num">{{ r.link_key || '—' }}</td>
-                <td class="xs">{{ r.minor || r.subject || r.metric }}</td>
+                <td class="xs">
+                  {{ r.minor || r.subject || r.metric }}
+                  <div v-if="r.classify_via" class="xs muted">{{ r.classify_via }}</div>
+                </td>
                 <td class="right num" :class="{ neg: r.amount < 0 }">{{ money(r.amount) }}</td>
                 <td class="right num" :class="{ neg: r.contribution < 0 }">
                   {{ r.counted ? money(r.contribution) : '—' }}
