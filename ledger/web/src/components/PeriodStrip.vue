@@ -1,15 +1,11 @@
 <script setup>
 /* 一家店的账期切换。
  *
- * 曾经是一排自动换行的按钮：四十多个月、每个都写着「· 结不了」，占掉半屏，
- * 真正要看的损益表被挤到下面。顶栏已经有一个全局账期下拉，这里再铺一遍历史
- * 等于同一件事做了两次，而且两次的选中还容易对不上。
- *
- * 所以改成单行横滑：左右键切相邻月，轨道上滚轮/拖动看更早的账期，当前月
- * 自动滚到中间。不另引 Swiper 这类库——账期就几十个，原生 overflow 够用，
- * 多一个依赖只为这一个条，更新和包体都不值。
+ * 不要做成四十个蓝按钮：那是工具栏，不是账本。月份是这页的「现在看哪一本」，
+ * 应当像翻书——当前月写大，其余按年收成一条细轨道。状态只标在眼前这一本上，
+ * 每个月都点一颗红点，人就看不见哪颗是真的在拦结账。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({
   periods: { type: Array, default: () => [] },
@@ -18,160 +14,241 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue'])
 
-const scroller = ref(null)
-
 const list = computed(() =>
   [...(props.periods || [])].sort((a, b) => String(b.period).localeCompare(String(a.period))),
 )
 
 const index = computed(() => list.value.findIndex((p) => p.period === props.modelValue))
 
-const chips = computed(() => {
-  const out = []
-  let year = null
+const current = computed(() => list.value[index.value] || null)
+
+function yearOf(period) {
+  return /^\d{4}/.test(period || '') ? period.slice(0, 4) : '其他'
+}
+
+function pretty(period) {
+  const m = /^(\d{4})-(\d{2})$/.exec(period || '')
+  if (!m) return period || ''
+  return `${m[1]}年${Number(m[2])}月`
+}
+
+function monthOf(period) {
+  const m = /^(\d{4})-(\d{2})$/.exec(period || '')
+  if (!m) return period || ''
+  return `${Number(m[2])}月`
+}
+
+const years = computed(() => {
+  const map = new Map()
   for (const p of list.value) {
-    const y = /^\d{4}/.test(p.period) ? p.period.slice(0, 4) : ''
-    if (y && y !== year) {
-      year = y
-      out.push({ kind: 'year', key: `y-${y}`, year: y })
-    }
-    out.push({ kind: 'period', key: p.period, ...p })
+    const y = yearOf(p.period)
+    if (!map.has(y)) map.set(y, [])
+    map.get(y).push(p)
   }
-  return out
+  return [...map.entries()].map(([year, months]) => ({ year, months }))
 })
+
+const shownYear = ref('')
+
+watch(
+  () => [props.modelValue, years.value],
+  () => {
+    const y = yearOf(props.modelValue)
+    if (years.value.some((row) => row.year === y)) shownYear.value = y
+    else if (!shownYear.value && years.value.length) shownYear.value = years.value[0].year
+  },
+  { immediate: true },
+)
+
+const months = computed(
+  () => years.value.find((row) => row.year === shownYear.value)?.months || [],
+)
 
 function go(p) {
   if (p && p !== props.modelValue) emit('update:modelValue', p)
 }
 
 function step(dir) {
-  const i = index.value
-  if (i < 0) return
-  const next = list.value[i + dir]
+  const next = list.value[index.value + dir]
   if (next) go(next.period)
 }
 
+function pickYear(year) {
+  shownYear.value = year
+  const row = years.value.find((r) => r.year === year)
+  if (!row?.months.some((p) => p.period === props.modelValue)) {
+    go(row.months[0]?.period)
+  }
+}
+
 function statusOf(p) {
+  if (!p) return { mark: '', text: '' }
   if (p.state === 'closed') return { mark: 'ok', text: '已结' }
   if (p.can_close === false) return { mark: 'bad', text: '结不了' }
   return { mark: '', text: '未结' }
 }
 
-function scrollCurrent() {
-  nextTick(() => {
-    const root = scroller.value
-    const el = root?.querySelector('[data-current="1"]')
-    if (!root || !el) return
-    const er = el.getBoundingClientRect()
-    const rr = root.getBoundingClientRect()
-    root.scrollBy({ left: er.left - rr.left - (rr.width - er.width) / 2, behavior: 'smooth' })
-  })
-}
-
-function onWheel(e) {
-  const el = scroller.value
-  if (!el || el.scrollWidth <= el.clientWidth) return
-  if (e.deltaY === 0) return
-  el.scrollLeft += e.deltaY
-  e.preventDefault()
-}
-
-watch(() => props.modelValue, scrollCurrent)
-onMounted(() => {
-  scrollCurrent()
-  const el = scroller.value
-  if (!el) return
-  el.addEventListener('wheel', onWheel, { passive: false })
-  onUnmounted(() => el.removeEventListener('wheel', onWheel))
-})
+const status = computed(() => statusOf(current.value))
 </script>
 
 <template>
-  <div class="strip">
-    <n-button
-      size="small"
-      quaternary
-      :disabled="index <= 0"
-      title="较新的一个月"
-      @click="step(-1)"
-    >
-      ‹
-    </n-button>
-    <div ref="scroller" class="track">
-      <template v-for="c in chips" :key="c.key">
-        <span v-if="c.kind === 'year'" class="year">{{ c.year }}</span>
-        <n-button
-          v-else
-          size="small"
-          :type="c.period === modelValue ? 'primary' : 'default'"
-          :data-current="c.period === modelValue ? '1' : '0'"
-          :title="`${c.period} · ${statusOf(c).text}`"
-          @click="go(c.period)"
-        >
-          <span class="num">{{ c.period }}</span>
-          <span v-if="c.period === modelValue" class="flag">{{ statusOf(c).text }}</span>
-          <span
-            v-else-if="statusOf(c).mark"
-            class="dot"
-            :class="statusOf(c).mark"
-          />
-        </n-button>
-      </template>
+  <div v-if="list.length" class="book">
+    <div class="hero">
+      <button
+        class="nav"
+        type="button"
+        :disabled="index <= 0"
+        title="较新的一个月"
+        @click="step(-1)"
+      >
+        ‹
+      </button>
+      <div class="now">
+        <div class="when">{{ pretty(modelValue) }}</div>
+        <div v-if="status.text" class="tag" :class="status.mark">{{ status.text }}</div>
+      </div>
+      <button
+        class="nav"
+        type="button"
+        :disabled="index < 0 || index >= list.length - 1"
+        title="更早的一个月"
+        @click="step(1)"
+      >
+        ›
+      </button>
     </div>
-    <n-button
-      size="small"
-      quaternary
-      :disabled="index < 0 || index >= list.length - 1"
-      title="更早的一个月"
-      @click="step(1)"
-    >
-      ›
-    </n-button>
+
+    <div class="rail">
+      <div class="years" role="tablist" aria-label="年份">
+        <button
+          v-for="row in years"
+          :key="row.year"
+          type="button"
+          class="year"
+          :class="{ on: row.year === shownYear }"
+          @click="pickYear(row.year)"
+        >
+          {{ row.year }}
+        </button>
+      </div>
+      <div class="months" role="tablist" aria-label="月份">
+        <button
+          v-for="p in months"
+          :key="p.period"
+          type="button"
+          class="month"
+          :class="{ on: p.period === modelValue }"
+          :title="`${pretty(p.period)} · ${statusOf(p).text}`"
+          @click="go(p.period)"
+        >
+          {{ monthOf(p.period) }}
+        </button>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.strip {
+.book {
+  margin: 0 0 var(--s5);
+  padding-bottom: var(--s4);
+  border-bottom: 1px solid var(--n2);
+}
+.hero {
   display: flex;
   align-items: center;
-  gap: var(--s2);
+  justify-content: center;
+  gap: var(--s4);
   margin-bottom: var(--s4);
-  min-width: 0;
 }
-.track {
-  flex: 1;
-  min-width: 0;
+.now {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  min-width: 168px;
+  justify-content: center;
+}
+.when {
+  font-family: var(--num);
+  font-size: var(--t-2xl);
+  font-weight: 620;
+  letter-spacing: -.03em;
+  line-height: 1.1;
+}
+.tag {
+  font-size: var(--t-xs);
+  color: var(--n6);
+  padding: 1px 8px;
+  border-radius: 99px;
+  background: var(--n2);
+}
+.tag.ok { color: var(--ok); background: var(--ok-bg); }
+.tag.bad { color: var(--bad); background: var(--bad-bg); }
+
+.nav {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--n3);
+  border-radius: 50%;
+  background: var(--n0);
+  color: var(--n7);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.nav:hover:not(:disabled) {
+  border-color: var(--n7);
+  color: var(--n9);
+}
+.nav:disabled {
+  opacity: .28;
+  cursor: default;
+}
+
+.rail {
   display: flex;
   align-items: center;
-  gap: var(--s2);
-  overflow-x: auto;
-  scrollbar-width: thin;
-  padding: 2px 0;
-  scroll-snap-type: x proximity;
+  justify-content: center;
+  gap: var(--s5);
+  flex-wrap: wrap;
 }
-.track > :deep(.n-button) {
-  flex: 0 0 auto;
-  scroll-snap-align: center;
+.years,
+.months {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.year,
+.month {
+  border: 0;
+  background: transparent;
+  color: var(--n6);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  padding: 6px 10px;
+  border-radius: 99px;
 }
 .year {
-  flex: 0 0 auto;
   font-size: var(--t-xs);
-  color: var(--n5);
-  padding: 0 2px 0 6px;
+  font-family: var(--num);
+  letter-spacing: .04em;
 }
-.num { font-family: var(--num); }
-.flag {
-  margin-left: 6px;
-  font-size: var(--t-xs);
+.month {
+  font-size: var(--t-sm);
+  min-width: 44px;
 }
-.dot {
-  width: 6px;
-  height: 6px;
-  margin-left: 6px;
-  border-radius: 50%;
-  display: inline-block;
-  vertical-align: middle;
+.year:hover,
+.month:hover { color: var(--n9); background: var(--n1); }
+.year.on {
+  color: var(--n9);
+  background: var(--n2);
+  font-weight: 560;
 }
-.dot.ok { background: var(--ok); }
-.dot.bad { background: var(--bad); }
+.month.on {
+  color: var(--accent);
+  background: var(--accent-bg);
+  font-weight: 600;
+}
 </style>
