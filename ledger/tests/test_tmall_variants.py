@@ -204,6 +204,41 @@ class TestOrderIdsHiddenBehindEnglishWords:
         assert excluding < tradeid
 
 
+class TestAllianceCommissionGoesIntoMarketing:
+    """支付宝「淘宝联盟佣金代扣」必须进账单营销费用。
+
+    业务描述空着，备注是「代扣款（扣款用途：淘宝联盟佣金代扣 tradeid:***）」。
+    字典把这个名字收成细项「淘宝客佣金」，但字典查的是业务描述，碰不到。
+    不写细项的话界面显示指标名「平台营销费用」；不标 count_without_order 的话，
+    订单不在本期明细的那一截进账栏空着。
+    """
+
+    def _rule(self, model):
+        return next(
+            r for r in model.template("taobao_settlement_alipay_v1").classify_rules
+            if r.when and "淘宝联盟佣金代扣" in (r.when.contains or [])
+        )
+
+    def test_it_is_marketing_named_taobaoke(self, model) -> None:
+        rule = self._rule(model)
+        assert rule.major == "marketing_fee"
+        assert rule.minor == "淘宝客佣金"
+
+    def test_it_counts_even_when_the_order_is_not_in_this_month(self, model) -> None:
+        assert self._rule(model).count_without_order
+
+    def test_the_refund_leg_is_a_separate_rule(self, model) -> None:
+        """返还不要搭在代扣这条上。代扣要没挂上订单也进账，返还没有这个承诺。"""
+        rules = model.template("taobao_settlement_alipay_v1").classify_rules
+        refund = next(
+            r for r in rules
+            if r.when and "淘宝联盟推广佣金返还" in (r.when.contains or [])
+        )
+        assert refund.major == "marketing_fee"
+        assert not refund.count_without_order
+        assert "淘宝联盟佣金代扣" not in (refund.when.contains or [])
+
+
 class TestTheOrderIdColumnThatHoldsSomethingElse:
     """「业务基础订单号」这一列偶尔放的不是订单号。
 

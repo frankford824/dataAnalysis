@@ -123,15 +123,30 @@ def project(
         joined.filter(pl.col("amount").is_not_null()).get_column("link_key").unique().to_list()
     )
     all_keys = set(by_key.get_column("link_key").to_list())
-    orphan_keys = all_keys - matched_keys
+    missing = all_keys - matched_keys
+    # 声明了「没挂上订单也进账」的键不是孤儿：人工对账表按费项 SUMIFS，
+    # 并不要求对应订单出现在本期明细里。淘宝联盟佣金代扣就是这种。
+    #
+    # 只落进脊柱上已经有的店期。结算日在下个月、而下个月还没有订单明细时，
+    # 不能凭空开出一个只有这几笔扣费、别的全缺的账期——那个残缺月会拦着结账，
+    # 比这几毛钱没进账更糟。等那个账期的明细到了，这些键会再进来。
+    orderless_keys, stranded = _orderless_on_spine(
+        source_facts, metric, missing, spine,
+    )
+    orphan_keys = (missing - orderless_keys) | stranded
     orphan_amount = float(sum_amounts(
         by_key.filter(pl.col("link_key").is_in(list(orphan_keys)))
         .get_column("amount")
         .to_list()
     )) if orphan_keys else 0.0
 
+    out = facts.filter(pl.col("amount") != 0.0)
+    extra = _orderless_spine_facts(source_facts, metric, orderless_keys, by_key)
+    if not extra.is_empty():
+        out = pl.concat([out, extra], how="diagonal_relaxed")
+
     proj = Projection(
-        facts=facts.filter(pl.col("amount") != 0.0),
+        facts=out,
         notes=ratio_health(keyed, metric) + _ratio_fallback_notes(keyed, metric),
         orphan_amount=money_float(orphan_amount),
         orphan_keys=len(orphan_keys),
@@ -143,6 +158,89 @@ def project(
             f"在脊柱上找不到对应订单，这部分没进利润"
         )
     return proj
+
+
+def _orderless_keys(source_facts: pl.DataFrame, metric: Metric) -> set[str]:
+    """归类规则标了 count_without_order、因而没挂上订单也要进账的那些键。"""
+    if source_facts.is_empty() or "count_without_order" not in source_facts.columns:
+        return set()
+    frame = source_facts.filter(claims(metric) & pl.col("count_without_order").fill_null(False))
+    if frame.is_empty() or "link_key" not in frame.columns:
+        return set()
+    return {k for k in frame.get_column("link_key").to_list() if k}
+
+
+def _orderless_on_spine(
+    source_facts: pl.DataFrame,
+    metric: Metric,
+    missing: set[str],
+    spine: Spine,
+) -> tuple[set[str], set[str]]:
+    """把要进账的键分成「这个店期脊柱上有」和「会凭空开出新账期」两堆。"""
+    flagged = missing & _orderless_keys(source_facts, metric)
+    if not flagged:
+        return set(), set()
+    known = _periods_on_spine(spine)
+    if not known or "store" not in source_facts.columns or "period" not in source_facts.columns:
+        return set(), flagged
+    frame = source_facts.filter(claims(metric) & pl.col("link_key").is_in(list(flagged)))
+    keep: set[str] = set()
+    for key, store, period in frame.select("link_key", "store", "period").iter_rows():
+        if key and (str(store or ""), str(period or "")) in known:
+            keep.add(key)
+    return keep, flagged - keep
+
+
+def _periods_on_spine(spine: Spine) -> set[tuple[str, str]]:
+    frame = spine.frame
+    if frame.is_empty() or SPINE_STORE not in frame.columns or SPINE_PERIOD not in frame.columns:
+        return set()
+    return {
+        (str(store or ""), str(period or ""))
+        for store, period in frame.select(SPINE_STORE, SPINE_PERIOD).unique().iter_rows()
+    }
+
+
+def _orderless_spine_facts(
+    source_facts: pl.DataFrame,
+    metric: Metric,
+    keys: set[str],
+    by_key: pl.DataFrame,
+) -> pl.DataFrame:
+    """把没挂上订单、但仍要进账的金额做成脊柱事实。不分摊，factor=1。
+
+    spine_row 留空：这些钱不属于任何一个子订单，提成那边会收到「（无订单）」那一行，
+    不能随便挂到脊柱第 0 行，否则会污染某个真实子订单的毛利。
+    """
+    if not keys:
+        return _empty()
+    amounts = by_key.filter(pl.col("link_key").is_in(list(keys)))
+    if amounts.is_empty():
+        return _empty()
+    ctx_cols = [c for c in ("store", "period") if c in source_facts.columns]
+    if ctx_cols:
+        ctx = (
+            source_facts.filter(claims(metric) & pl.col("link_key").is_in(list(keys)))
+            .group_by("link_key")
+            .agg(*[pl.col(c).drop_nulls().first() for c in ctx_cols])
+        )
+        amounts = amounts.join(ctx, on="link_key", how="left")
+    return amounts.select(
+        pl.lit(metric.id).alias("metric_id"),
+        pl.lit(metric.source).alias("source_id"),
+        (
+            pl.col("store") if "store" in amounts.columns
+            else pl.lit(None, dtype=pl.Utf8)
+        ).alias("store"),
+        (
+            pl.col("period") if "period" in amounts.columns
+            else pl.lit(None, dtype=pl.Utf8)
+        ).alias("period"),
+        pl.col("link_key"),
+        pl.col("amount"),
+        pl.lit(1.0).alias("factor"),
+        pl.lit(None, dtype=pl.UInt32).alias("spine_row"),
+    )
 
 
 def _even() -> pl.Expr:

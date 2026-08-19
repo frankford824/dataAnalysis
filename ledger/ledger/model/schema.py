@@ -164,17 +164,23 @@ class ClassifyRule(Base):
     minor: str | None = None
     #: 命中即排除。保证金解冻、天猫保证金充值这类要清空费项。
     exclude: bool = False
+    #: 挂不上本期订单也要进损益。人工对账表按费项 SUMIFS，并不要求这笔扣费
+    #: 对应的订单出现在本期明细里；引擎默认只把投影到脊柱上的钱算进利润，
+    #: 不标这个的话，订单在别的月、扣费在这个月的行会从账单上消失。
+    count_without_order: bool = False
     note: str = ""
 
     @model_validator(mode="after")
     def _check(self) -> ClassifyRule:
         if self.dictionary:
-            if self.when or self.major or self.exclude:
-                raise ValueError("dictionary 规则不能同时带 when / major / exclude")
+            if self.when or self.major or self.exclude or self.count_without_order:
+                raise ValueError("dictionary 规则不能同时带 when / major / exclude / count_without_order")
         elif not self.when:
             raise ValueError("非字典规则必须给 when")
         elif not (self.major or self.exclude):
             raise ValueError("非字典规则必须给 major 或 exclude")
+        elif self.exclude and self.count_without_order:
+            raise ValueError("排除规则不能同时 count_without_order")
         return self
 
 

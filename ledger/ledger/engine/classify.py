@@ -31,6 +31,8 @@ COL_CLASSIFIED = "__classified__"
 COL_NATURAL_UNLINKED = "__natural_unlinked__"
 #: 被归类规则链显式排除的行。保证金解冻这类要清空费项，不参与核算也不算异常。
 COL_EXCLUDED = "__excluded_row__"
+#: 挂不上本期订单也要进损益。见 ClassifyRule.count_without_order。
+COL_COUNT_WITHOUT_ORDER = "__count_without_order__"
 
 
 def classify(
@@ -94,6 +96,7 @@ def classify(
         pl.Series(COL_CLASSIFIED, hits, dtype=pl.Boolean),
         pl.Series(COL_EXCLUDED, [False] * frame.height, dtype=pl.Boolean),
         pl.Series(COL_NATURAL_UNLINKED, naturals, dtype=pl.Boolean),
+        pl.Series(COL_COUNT_WITHOUT_ORDER, [False] * frame.height, dtype=pl.Boolean),
     )
     return (_reclassify(out, template) if template else out), report
 
@@ -150,6 +153,7 @@ def _classify_by_chain(
         minors = decided.get_column(COL_MINOR)
         hits = decided.get_column(COL_CLASSIFIED)
         excluded = decided.get_column(COL_EXCLUDED)
+        without_order = decided.get_column(COL_COUNT_WITHOUT_ORDER)
         _note_unmatched(frame, decided, amount_column, fields, report)
     else:
         amounts = (
@@ -164,11 +168,13 @@ def _classify_by_chain(
         mnr: list[str | None] = []
         hit: list[bool] = []
         drp: list[bool] = []
+        orderless: list[bool] = []
         for i, (row, amount) in enumerate(zip(rows, amounts)):
-            major, minor, drop = resolve_class(row, compiled, lookup, stats)
+            major, minor, drop, without_order = resolve_class(row, compiled, lookup, stats)
             maj.append(major)
             mnr.append(minor)
             drp.append(drop)
+            orderless.append(without_order)
             hit.append(bool(major) or drop)
             if major:
                 report.classified_rows += 1
@@ -179,6 +185,7 @@ def _classify_by_chain(
         minors = pl.Series(COL_MINOR, mnr, dtype=pl.Utf8)
         hits = pl.Series(COL_CLASSIFIED, hit, dtype=pl.Boolean)
         excluded = pl.Series(COL_EXCLUDED, drp, dtype=pl.Boolean)
+        without_order = pl.Series(COL_COUNT_WITHOUT_ORDER, orderless, dtype=pl.Boolean)
 
     report.chain = stats
     report.excluded_rows = int(excluded.sum())
@@ -191,6 +198,7 @@ def _classify_by_chain(
             hits.alias(COL_CLASSIFIED),
             excluded.alias(COL_EXCLUDED),
             majors.is_in(unlinked_majors).fill_null(False).alias(COL_NATURAL_UNLINKED),
+            without_order.alias(COL_COUNT_WITHOUT_ORDER),
         ),
         report,
     )
@@ -285,6 +293,7 @@ def _decide(
     by_rule: dict[int, str | None] = {_NO_RULE: None}
     minor_by_rule: dict[int, str | None] = {_NO_RULE: None}
     drop_by_rule: dict[int, bool] = {_NO_RULE: False}
+    orderless_by_rule: dict[int, bool] = {_NO_RULE: False}
     dict_rule: int | None = None
     for i, rule in enumerate(compiled):
         if rule.dictionary:
@@ -293,6 +302,7 @@ def _decide(
             by_rule[i] = None
             minor_by_rule[i] = None
             drop_by_rule[i] = False
+            orderless_by_rule[i] = False
         else:
             by_rule[i] = None if rule.exclude else rule.major
             # 规则没写细项就留空，界面退回显示平台自己那个科目名。填大类的话，
@@ -300,6 +310,7 @@ def _decide(
             # 科目栏上，人看到的是一个自己表里根本不存在的词。
             minor_by_rule[i] = None if rule.exclude else rule.minor
             drop_by_rule[i] = rule.exclude
+            orderless_by_rule[i] = False if rule.exclude else bool(rule.count_without_order)
 
     work = pl.DataFrame({"i": winner})
     major = pl.col("i").replace_strict(by_rule, default=None, return_dtype=pl.Utf8)
@@ -330,6 +341,8 @@ def _decide(
         minor.alias(COL_MINOR),
         pl.col("i").replace_strict(drop_by_rule, default=False, return_dtype=pl.Boolean)
         .alias(COL_EXCLUDED),
+        pl.col("i").replace_strict(orderless_by_rule, default=False, return_dtype=pl.Boolean)
+        .alias(COL_COUNT_WITHOUT_ORDER),
     )
     # 「归类到了」的判定跟着逐行版走：口径项非空，或者被显式排除。字典里存在
     # 口径项为空的条目，那种行查得到但等于没归类，要留给未分类清单去报。
@@ -405,6 +418,7 @@ def _passthrough(frame: pl.DataFrame) -> pl.DataFrame:
         pl.lit(True).alias(COL_CLASSIFIED),
         pl.lit(False).alias(COL_EXCLUDED),
         pl.lit(False).alias(COL_NATURAL_UNLINKED),
+        pl.lit(False).alias(COL_COUNT_WITHOUT_ORDER),
     )
 
 

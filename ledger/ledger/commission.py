@@ -269,11 +269,47 @@ def _order_base(
             pl.col("base").fill_null(0.0)
         )
 
+    leftover = _orderless_base(facts, metrics, stores, period)
+    if leftover != 0.0:
+        extra = pl.DataFrame({
+            "spine_row": pl.Series([None], dtype=pl.UInt32),
+            SPINE_PRODUCT: ["（无订单）"],
+            ORDER_TIME: pl.Series([None], dtype=base.schema[ORDER_TIME]),
+            "base": [leftover],
+        })
+        if "sub_order_id" in base.columns:
+            extra = extra.with_columns(pl.lit(None, dtype=pl.Utf8).alias("sub_order_id"))
+        base = pl.concat([base, extra], how="diagonal_relaxed")
+
     # SPINE_PRODUCT 本来就叫 product_id，就地转型，不要 alias 到同名再 drop。
     return base.with_columns(
         pl.col(SPINE_PRODUCT).cast(pl.Utf8).fill_null(""),
         _as_datetime(base.schema[ORDER_TIME]).alias("order_at"),
     )
+
+
+def _orderless_base(
+    facts: pl.DataFrame, metrics: tuple[str, ...], stores: list[str], period: str
+) -> float:
+    """挂不上订单但仍进了损益的钱，也要进提成基数。
+
+    投影把这类行的 spine_row 留空，按子订单加总会漏掉它们，提成基数就和损益表
+    对不上。淘宝联盟佣金代扣就是这种：扣费在本期账单上，订单不在本期明细里。
+    """
+    if facts.is_empty() or "spine_row" not in facts.columns:
+        return 0.0
+    miss = facts.filter(
+        pl.col("metric_id").is_in(list(metrics)) & pl.col("spine_row").is_null()
+    )
+    if miss.is_empty():
+        return 0.0
+    if SPINE_STORE in miss.columns:
+        miss = miss.filter(pl.col(SPINE_STORE).cast(pl.Utf8).is_in(stores))
+    if SPINE_PERIOD in miss.columns:
+        miss = miss.filter(pl.col(SPINE_PERIOD) == period)
+    if miss.is_empty():
+        return 0.0
+    return money_float(float(miss.get_column("amount").sum()))
 
 
 def _as_datetime(dtype: pl.DataType) -> pl.Expr:

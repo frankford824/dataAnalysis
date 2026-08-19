@@ -165,3 +165,62 @@ class TestOrphans:
         ])
         proj = project(_facts([("A", 10.0)]), _metric(None), spine)
         assert proj.uncovered_rows == 1
+
+
+class TestOrderlessStillEntersProfit:
+    """挂不上订单、但归类规则声明了要进账的钱，必须进投影。
+
+    淘宝联盟佣金代扣就是这种：人工对账表按费项2 SUMIFS，不要求订单在本期明细里。
+    不进投影的话损益表上没有它，进账栏空着，而同一科目挂得上的那些行又在账上——
+    一笔钱进不进利润，取决于它的订单号凑巧在不在这份明细里。
+    """
+
+    def test_a_flagged_missing_key_is_not_an_orphan(self):
+        spine = _spine([{"order_id": "IN", "store": "s", "period": "p"}])
+        facts = pl.DataFrame({
+            "metric_id": ["freight_cost", "freight_cost"],
+            "source_id": ["freight", "freight"],
+            "store": ["s", "s"],
+            "period": ["p", "p"],
+            "link_key": ["IN", "OUT"],
+            "amount": [10.0, -0.49],
+            "count_without_order": [False, True],
+        })
+        proj = project(facts, _metric(None), spine)
+        assert set(proj.facts.get_column("link_key").to_list()) == {"IN", "OUT"}
+        assert proj.orphan_keys == 0
+        out = proj.facts.filter(pl.col("link_key") == "OUT")
+        assert out.get_column("amount").to_list() == [-0.49]
+        assert out.get_column("factor").to_list() == [1.0]
+        assert out.get_column("spine_row").to_list() == [None]
+
+    def test_an_unflagged_missing_key_is_still_an_orphan(self):
+        """没有这面旗的，行为不能变。否则所有挂不上的营销费用都会灌进利润。"""
+        spine = _spine([{"order_id": "IN", "store": "s", "period": "p"}])
+        facts = pl.DataFrame({
+            "metric_id": ["freight_cost", "freight_cost"],
+            "link_key": ["IN", "OUT"],
+            "amount": [10.0, -0.49],
+            "count_without_order": [False, False],
+        })
+        proj = project(facts, _metric(None), spine)
+        assert proj.orphan_keys == 1
+        assert proj.orphan_amount == -0.49
+        assert "OUT" not in proj.facts.get_column("link_key").to_list()
+
+    def test_it_does_not_open_a_period_the_spine_does_not_have(self):
+        """结算日在下个月、下个月还没订单明细，不能凭空开出一个残缺账期。"""
+        spine = _spine([{"order_id": "IN", "store": "s", "period": "p"}])
+        facts = pl.DataFrame({
+            "metric_id": ["freight_cost", "freight_cost"],
+            "source_id": ["freight", "freight"],
+            "store": ["s", "s"],
+            "period": ["p", "other"],
+            "link_key": ["IN", "JULY"],
+            "amount": [10.0, -0.49],
+            "count_without_order": [False, True],
+        })
+        proj = project(facts, _metric(None), spine)
+        assert "JULY" not in proj.facts.get_column("link_key").to_list()
+        assert proj.orphan_keys == 1
+        assert proj.orphan_amount == -0.49

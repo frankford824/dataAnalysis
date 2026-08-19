@@ -1,5 +1,5 @@
 {
- "engine_version": "1b75bdf",
+ "engine_version": "9d73e5d-dirty",
  "note": "",
  "stores": {
   "alibaba1688_xingze": {
@@ -1933,15 +1933,15 @@
     "can_close": false,
     "commission": {
      "base_node": "net_profit",
-     "base_total": 322632.32,
+     "base_total": 322473.26,
      "fallback_base": 0.0,
-     "negative_base": -37073.59,
-     "negative_orders": 9040,
+     "negative_base": -37232.65,
+     "negative_orders": 9041,
      "on_loss": "deduct",
      "people": [],
      "skipped_loss_base": 0.0,
      "total": 0.0,
-     "unassigned_base": 322632.32
+     "unassigned_base": 322473.26
     },
     "entity": "",
     "findings": [
@@ -2262,7 +2262,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "平台费用",
-      "value": -99327.53
+      "value": -99486.59
      },
      {
       "available": true,
@@ -2295,7 +2295,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "平台营销费用",
-      "value": -31345.49
+      "value": -31504.55
      },
      {
       "available": true,
@@ -2427,7 +2427,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润",
-      "value": 322632.33
+      "value": 322473.27
      },
      {
       "available": true,
@@ -2438,7 +2438,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润率",
-      "value": 0.3670203636871039
+      "value": 0.36683942007538317
      }
     ],
     "store": "天猫皇莉诗旗舰店",

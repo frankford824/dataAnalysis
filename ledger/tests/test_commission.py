@@ -454,6 +454,31 @@ class TestUnassignedProductsFallToTheStore:
         assert c.notes and "还没有提成配置" in c.notes[0]
 
 
+class TestOrderlessMoneyStaysOnTheBase:
+    """挂不上订单但仍进了损益的钱，提成基数里也要有。
+
+    投影把这类行的 spine_row 留空。按子订单加总会漏掉它们，损益表和提成页
+    就会给出两个都叫「利润」的数。
+    """
+
+    def test_a_null_spine_row_is_folded_into_the_base(self):
+        run = _run([("a", "p1", "2026-05-02", 100.0)])
+        extra = pl.DataFrame({
+            "metric_id": ["receipt"],
+            "source_id": ["order"],
+            "store": ["测试店"],
+            "period": ["2026-05"],
+            "link_key": ["3302710287203084298"],
+            "amount": [-0.49],
+            "factor": [1.0],
+            "spine_row": pl.Series([None], dtype=pl.UInt32),
+        })
+        run.spine_facts = pl.concat([run.spine_facts, extra], how="diagonal_relaxed")
+        c = commission.compute(run, _model(), "s1", "2026-05")
+        assert c.base_total == pytest.approx(99.51)
+        assert c.unassigned_base == pytest.approx(99.51)
+
+
 class TestNothingLeaksAcrossStoresOrPeriods:
     def test_another_period_is_not_counted(self):
         run = _run([("a", "p1", "2026-05-02", 1000.0)])

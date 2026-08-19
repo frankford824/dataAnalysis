@@ -127,7 +127,7 @@ class TestClassifyChain:
         def lookup(raw):
             return ("trade_refund", "退款", False)
 
-        major, _minor, excluded = resolve_class({"subject": "订单售后退款"}, rules, lookup)
+        major, _minor, excluded, _ = resolve_class({"subject": "订单售后退款"}, rules, lookup)
         assert major == "trade_receipt_1688"
         assert not excluded
 
@@ -142,7 +142,7 @@ class TestClassifyChain:
         def lookup(raw):
             return ("software_fee", "软件服务费", False) if raw == "软件服务费" else None
 
-        major, minor, _ = resolve_class({"subject": "软件服务费"}, rules, lookup)
+        major, minor, _, _ = resolve_class({"subject": "软件服务费"}, rules, lookup)
         assert (major, minor) == ("software_fee", "软件服务费")
 
     def test_unclassified_stays_unclassified(self):
@@ -152,7 +152,7 @@ class TestClassifyChain:
         归错了会安安静静进损益表。
         """
         rules = compile_classify_rules((ClassifyRule(dictionary=True),))
-        major, minor, excluded = resolve_class({"subject": "没见过的科目"}, rules, self._no_dict)
+        major, minor, excluded, _ = resolve_class({"subject": "没见过的科目"}, rules, self._no_dict)
         assert major is None and minor is None and not excluded
 
     def test_explicit_exclusion(self):
@@ -161,5 +161,5 @@ class TestClassifyChain:
             ClassifyRule(when=FieldMatch(field="subject", contains=["账户互转"]), exclude=True),
             ClassifyRule(dictionary=True),
         ))
-        _major, _minor, excluded = resolve_class({"subject": "账户互转"}, rules, self._no_dict)
+        _major, _minor, excluded, _ = resolve_class({"subject": "账户互转"}, rules, self._no_dict)
         assert excluded

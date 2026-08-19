@@ -189,6 +189,7 @@ class CompiledClassifyRule:
     major: str | None
     minor: str | None
     exclude: bool
+    count_without_order: bool
     label: str
 
 
@@ -202,7 +203,7 @@ def compile_classify_rules(rules: tuple[ClassifyRule, ...]) -> list[CompiledClas
         out.append(
             CompiledClassifyRule(
                 r.dictionary, Matcher(r.when) if r.when else None,
-                r.major, r.minor, r.exclude, label,
+                r.major, r.minor, r.exclude, r.count_without_order, label,
             )
         )
     return out
@@ -213,8 +214,8 @@ def resolve_class(
     rules: list[CompiledClassifyRule],
     lookup,
     stats: ChainStats | None = None,
-) -> tuple[str | None, str | None, bool]:
-    """沿规则链归类。返回 (口径项, 业务小类, 是否排除)。
+) -> tuple[str | None, str | None, bool, bool]:
+    """沿规则链归类。返回 (口径项, 业务小类, 是否排除, 没挂上订单也进账)。
 
     lookup 是科目字典查表函数：原始科目名 → (口径项, 小类, 是否天然无订单号) 或 None。
     """
@@ -228,20 +229,20 @@ def resolve_class(
                 continue
             if stats:
                 stats.record(i)
-            return found[0], found[1], False
+            return found[0], found[1], False, False
         assert rule.matcher is not None
         if rule.matcher.apply(row.get(rule.matcher.field)) is None:
             continue
         if stats:
             stats.record(i, excluded=rule.exclude)
         if rule.exclude:
-            return None, None, True
+            return None, None, True, False
         # 没写细项就留空。填大类等于把 `software_fee` 这种内部代号当科目名摆到
         # 界面上，而界面退回显示平台原始科目名才是人认得的东西。
-        return rule.major, rule.minor or None, False
+        return rule.major, rule.minor or None, False, bool(rule.count_without_order)
     if stats:
         stats.record(None)
-    return None, None, False
+    return None, None, False, False
 
 
 def _describe(spec: FieldMatch | None) -> str:

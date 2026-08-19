@@ -232,7 +232,7 @@ class TestClassifyChainAgrees:
         table = C._dictionary_for(model, platform)
         out = []
         for row in self._frame().to_dicts():
-            out.append(resolve_class(row, compiled, lambda r: table.get(_norm_header(r))))
+            out.append(resolve_class(row, compiled, lambda r: table.get(_norm_header(r)))[:3])
         return out
 
     def test_same_major_minor_and_exclusion_for_every_row(self):
