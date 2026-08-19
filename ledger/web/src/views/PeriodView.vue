@@ -17,6 +17,7 @@ import DrillDrawer from '../components/DrillDrawer.vue'
 import DropZone from '../components/DropZone.vue'
 import FixPanel from '../components/FixPanel.vue'
 import GapList from '../components/GapList.vue'
+import PeriodStrip from '../components/PeriodStrip.vue'
 import { count, money, percent, stamp } from '../format'
 import { useApp } from '../store'
 
@@ -187,19 +188,11 @@ watch(
         </n-space>
       </div>
 
-      <n-space style="margin-bottom: var(--s4)">
-        <n-button
-          v-for="p in info.periods || []"
-          :key="p.period"
-          size="small"
-          :type="p.period === period ? 'primary' : 'default'"
-          @click="go(p.period)"
-        >
-          {{ p.period }}
-          <span v-if="p.state === 'closed'" class="xs">· 已结</span>
-          <span v-else-if="p.can_close === false" class="xs">· 结不了</span>
-        </n-button>
-      </n-space>
+      <PeriodStrip
+        :periods="info.periods || []"
+        :model-value="period"
+        @update:model-value="go"
+      />
 
       <template v-if="snap">
         <n-alert
