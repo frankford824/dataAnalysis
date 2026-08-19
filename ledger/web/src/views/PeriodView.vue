@@ -66,6 +66,7 @@ async function load() {
 watch(() => [props.id, period.value], load, { immediate: true })
 
 function go(p) {
+  app.pick({ period: p })
   router.replace({ name: 'period', params: { id: props.id }, query: { period: p } })
 }
 

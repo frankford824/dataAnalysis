@@ -46,6 +46,20 @@ function onStore(id) {
   if (id) router.push({ name: 'period', params: { id }, query: { period: app.period } })
 }
 
+function onPeriod(v) {
+  app.pick({ period: v })
+  // 店页上看的是地址栏里的账期（`?period=`），不是筛选条上的值。只改全局状态
+  // 的话，下拉框已经是 7 月，底下那排按钮和损益表还停在 6 月——人会以为点了没反应。
+  // 选店已经会把人带去对应的页，选账期在店页上同样该换页，不要两套选中各走各的。
+  if (route.name === 'period' && route.params.id && v) {
+    router.replace({
+      name: 'period',
+      params: { id: route.params.id },
+      query: { period: v },
+    })
+  }
+}
+
 function submit() {
   if (term.value.trim()) searching.value = true
 }
@@ -86,7 +100,7 @@ function submit() {
       size="small"
       style="width: 132px"
       title="有数据的月份才会出现在这儿。账期不用预先建：表一交上来，它落在哪个月，哪个月就自己出现了。"
-      @update:value="(v) => app.pick({ period: v })"
+      @update:value="onPeriod"
     />
 
     <div class="grow" />
