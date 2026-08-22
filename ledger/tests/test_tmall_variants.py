@@ -390,3 +390,361 @@ class TestStoreNamesThatContainEachOther:
             s.id for s in model.stores if s.owns("对账支付宝-天猫皇莉诗旗舰店.xlsx")
         ]
         assert sorted(both) == ["jd_huanglishi", "taobao_msy387nx"]
+
+
+class TestEmptySubjectRefundsCanClose:
+    """业务描述为空、备注是退款短词，必须归上，否则天猫结不了账。"""
+
+    def _classify(self, model, remark: str):
+        from ledger.engine.classify import classify, COL_MAJOR
+        import polars as pl
+
+        tpl = model.template("taobao_settlement_alipay_v1")
+        frame = pl.DataFrame({
+            "subject": [""],
+            "remark": [remark],
+            "income": [0.0],
+            "outgo": [-10.0],
+            "biz_type": [""],
+            "merchant_order_id": [""],
+        })
+        out, report = classify(frame, model, "taobao", "outgo", tpl)
+        return out.get_column(COL_MAJOR).to_list()[0], report
+
+    def test_plain_refund_is_sales_refund(self, model) -> None:
+        major, report = self._classify(model, "退款")
+        assert major == "trade_refund"
+        assert report.unmatched == {}
+
+    def test_price_difference_is_sales_refund(self, model) -> None:
+        major, report = self._classify(model, "退差价")
+        assert major == "trade_refund"
+        assert report.unmatched == {}
+
+    def test_plain_price_diff_is_sales_refund(self, model) -> None:
+        major, report = self._classify(model, "差价")
+        assert major == "trade_refund"
+        assert report.unmatched == {}
+
+    def test_cashback_is_compensation(self, model) -> None:
+        major, report = self._classify(model, "好评返现")
+        assert major == "trade_compensation"
+        assert report.unmatched == {}
+
+    def test_alliance_commission_is_taobaoke_and_stays_order_bound(self, model) -> None:
+        """联盟代扣按对照表进小类「淘宝客佣金」，且不能勾「没挂上订单也进账」。
+
+        模板里这条标着 count_without_order——那是给没挂上订单的代扣留的。
+        实测天猫皇莉诗 2026-06 有 408 行联盟代扣，只有 209 行挂上了本期订单
+        （-100.34），剩下 199 行挂不上（约 -105）。一放开，营销费用就从人工
+        筛出来的 -31,193.34 涨出去，账重新对不上。所以 fee-rules 里留了一条
+        同名规则压住模板，这个测试盯的就是那条别被人顺手删掉。
+        """
+        from ledger.engine.classify import (
+            COL_COUNT_WITHOUT_ORDER, COL_MAJOR, COL_MINOR, classify,
+        )
+        import polars as pl
+
+        tpl = model.template("taobao_settlement_alipay_v1")
+        remark = ("代扣款（扣款用途：淘宝联盟佣金代扣 tradeid:3302710287203084298 "
+                  "memberid:3792292908 fee:0.49）")
+        frame = pl.DataFrame({
+            "subject": [""],
+            "remark": [remark],
+            "income": [0.0],
+            "outgo": [-0.49],
+            "biz_type": [""],
+            "merchant_order_id": [""],
+        })
+        out, report = classify(frame, model, "taobao", "outgo", tpl)
+        assert out.get_column(COL_MAJOR).to_list() == ["marketing_fee"]
+        assert out.get_column(COL_MINOR).to_list() == ["淘宝客佣金"]
+        assert out.get_column(COL_COUNT_WITHOUT_ORDER).to_list() == [False]
+        assert report.unmatched == {}
+
+    def test_brand_xinxiang_hosting_is_marketing(self, model) -> None:
+        major, report = self._classify(
+            model, "代扣款（扣款用途：品牌新享-天猫营销托管软件服务费）")
+        assert major == "marketing_fee"
+        assert report.unmatched == {}
+
+    def test_mybk_return_is_not_swallowed_by_refund(self, model) -> None:
+        """网商银行「退回」不能被退款规则抢走。"""
+        from ledger.engine.classify import classify, COL_MAJOR, COL_EXCLUDED
+        import polars as pl
+
+        tpl = model.template("taobao_settlement_alipay_v1")
+        frame = pl.DataFrame({
+            "subject": [""],
+            "remark": ["退回"],
+            "income": [49246.16],
+            "outgo": [0.0],
+            "biz_type": [""],
+            "merchant_order_id": ["MYBK123"],
+        })
+        out, report = classify(frame, model, "taobao", "income", tpl)
+        assert out.get_column(COL_EXCLUDED).to_list() == [True]
+        assert out.get_column(COL_MAJOR).to_list() == [None]
+        assert report.unmatched == {}
+
+
+class TestJushuitanExcelAtPrefixOnTrackingNo:
+    """货值赔付备注只有运单号，要去聚水潭按快递单号回查原始线上订单号。
+
+    聚水潭那份导出里，部分快递单号被 Excel 当成文本，格子里写成 `@435233529604913`。
+    支付宝备注抠出来的是不带 @ 的纯号。回查索引原先用原字符串做键，这一笔对不上，
+    界面上就是「同样的备注项，漏了一个订单号」——天猫皇莉诗 2026-06 支付宝第
+    174633 行、24.40 元，对应订单 3309283884522138175。
+    """
+
+    TRACKING = "435233529604913"
+    ORDER = "3309283884522138175"
+    REMARK = (
+        "代扣款（扣款用途：商家集运物流责任货值赔付，赔付单号：CH202606260001，"
+        "运单号：435233529604913，付款方：淘天物流科技有限公司"
+        "(ttwlkj@service.aliyun.com)）"
+    )
+
+    def test_at_prefix_is_the_same_key(self) -> None:
+        from ledger.engine.link import normalize_key
+        from ledger.engine.rules import _norm, norm_expr
+        import polars as pl
+
+        raw = f"@{self.TRACKING}"
+        assert _norm(raw) == self.TRACKING
+        assert normalize_key(raw) == self.TRACKING
+        assert _norm(self.TRACKING) == self.TRACKING
+        got = pl.DataFrame({"k": [raw, self.TRACKING]}).select(norm_expr(pl.col("k"))).to_series()
+        assert got.to_list() == [self.TRACKING, self.TRACKING]
+
+    def test_bridge_index_strips_the_at(self, model) -> None:
+        import polars as pl
+        from ledger.engine.runtime import Ingested, Ingestion, _build_bridges
+        from ledger.engine.types import Recognition
+
+        ref = FileRef(sha256="x" * 64, filename="jst.xlsx", sheet=None)
+        item = Ingested(
+            ref=ref,
+            recognition=Recognition(
+                ref=ref,
+                signature="jst",
+                header_count=2,
+                template_id="jushuitan_cost_v1",
+                source_id="order_cost",
+                reason="ok",
+            ),
+            rows=1,
+            frame=pl.DataFrame({
+                "tracking_no": [f"@{self.TRACKING}"],
+                "original_order_id": [self.ORDER],
+            }),
+        )
+        bridges = _build_bridges(Ingestion(model=model, items=[item]), [])
+        assert bridges["order_cost"][self.TRACKING] == self.ORDER
+        assert f"@{self.TRACKING}" not in bridges["order_cost"]
+
+    def test_huozhi_peifu_remark_finds_the_order(self, model) -> None:
+        from ledger.engine.rules import compile_key_rules, resolve_key
+
+        tpl = model.template("taobao_settlement_alipay_v1")
+        rules = compile_key_rules(tpl.key_rules)
+        row = {
+            "remark": self.REMARK,
+            "base_order_id": "",
+            "merchant_order_id": "",
+        }
+        bridges = {"order_cost": {self.TRACKING: self.ORDER}}
+        assert resolve_key(row, rules, bridges) == self.ORDER
+        assert resolve_key(row, rules, {"order_cost": {f"@{self.TRACKING}": self.ORDER}}) is None
+
+
+class TestMarketingMinorFollowsTheOfficialSubclass:
+    """营销费用的细项一律按财务《费项分类对照表》的「业务小类」写。
+
+    原先这几类被捆成一条 before 规则、细项统称「佣金」。「佣金」是系统自己造的
+    词，对照表里没有，人工表里也没有——账对不上时没法指着同一个名字说话：
+    天猫皇莉诗 2026-06 系统二级佣金 -30,184.73、人工手算 -30,150.61，差 34.12，
+    而营销费用总额两边都是 -31,193.34，一分不差。差的不是钱，是这 34.12 被
+    人工划进了淘宝客佣金、系统划进了佣金。改用对照表的小类名之后这种争议
+    不会再有。
+
+    「限时红包代商家垫付扣回」和「品牌新享-限时加速服务费」对照表里没有——
+    18 张 sheet 全搜过一次都没出现——问过业务，确认各自单开一个小类。
+    消费券字典原归软件服务费，人改判到营销费用，喜必顺 2026-05 是独立的 -7,944。
+
+    对照表指 exports/财务口径原件/费项分类对照表-淘宝天猫.csv，76 条
+    「业务描述 → 业务小类 → 业务大类」的映射，不是店铺发来的营销费用明细表。
+    """
+
+    def _classify_subject(self, model, subject: str):
+        from ledger.engine.classify import COL_MAJOR, COL_MINOR, classify
+        import polars as pl
+
+        tpl = model.template("taobao_settlement_alipay_v1")
+        frame = pl.DataFrame({
+            "subject": [subject],
+            "remark": [""],
+            "income": [0.0],
+            "outgo": [-2.0],
+            "biz_type": [""],
+            "merchant_order_id": [""],
+        })
+        out, report = classify(frame, model, "taobao", "outgo", tpl)
+        return (
+            out.get_column(COL_MAJOR).to_list()[0],
+            out.get_column(COL_MINOR).to_list()[0],
+            report,
+        )
+
+    def test_hongbao_keeps_its_own_minor(self, model) -> None:
+        major, minor, report = self._classify_subject(
+            model, "0530294T|技术&服务费-限时红包代商家垫付扣回")
+        assert major == "marketing_fee"
+        assert minor == "限时红包代商家垫付扣回"
+        assert report.unmatched == {}
+
+    def test_hongbao_typo_fuwu_still_matches(self, model) -> None:
+        """喜必顺支付宝把「服务费」写成「服财务费」，contains 必须仍能打中。"""
+        major, minor, report = self._classify_subject(
+            model, "0530294T|技术&服财务费-限时红包代商家垫付扣回")
+        assert major == "marketing_fee"
+        assert minor == "限时红包代商家垫付扣回"
+        assert report.unmatched == {}
+
+    def test_taobaoke_stays_its_own_minor(self, model) -> None:
+        major, minor, report = self._classify_subject(
+            model, "0060011|营销支出-淘宝客佣金")
+        assert major == "marketing_fee"
+        assert minor == "淘宝客佣金"
+        assert report.unmatched == {}
+
+    def _classify_remark(self, model, remark: str, template: str):
+        """业务描述为空、只有备注的行。品牌新享这一族全是这样。"""
+        from ledger.engine.classify import COL_MAJOR, COL_MINOR, classify
+        import polars as pl
+
+        tpl = model.template(template)
+        frame = pl.DataFrame({
+            "subject": [""],
+            "remark": [remark],
+            "income": [0.0],
+            "outgo": [-2.0],
+            "biz_type": [""],
+            "merchant_order_id": [""],
+        })
+        out, report = classify(frame, model, "taobao", "outgo", tpl)
+        return (
+            out.get_column(COL_MAJOR).to_list()[0],
+            out.get_column(COL_MINOR).to_list()[0],
+            report,
+        )
+
+    #: 备注写法照实测抄，(KY_ITEM) 和订单号都在里面，别改成干净的短词——
+    #: 规则要认的是平台真发出来的那种字符串。
+    XINXIANG = [
+        ("品牌新享-首单拉新计划(KY_ITEM)(5120387031775045818)扣款", "新享首单拉新"),
+        ("品牌新享新品孵化软件服务费(KY_ITEM)(3309492075736044982)扣款", "新享新品孵化"),
+        ("品牌新享天猫超级老客加速软件服务费(5121635871904014202)扣款", "新享天猫超级老客"),
+        ("品牌新享-超级流量加速软件服务费(5121635871904014202)扣款", "新享超级流量"),
+        ("品牌新享淘宝老客礼金软件服务费(5121635871904014202)扣款", "新享淘宝老客"),
+        ("品牌新享淘宝限时礼金软件服务费(5121635871904014202)扣款", "新享淘宝限时"),
+        ("品牌新享天猫新客营销托管(5121635871904014202)扣款", "新享天猫新客"),
+        ("品牌新享天猫新品营销托管(5121635871904014202)扣款", "新享天猫新品"),
+        ("品牌新享淘宝新客营销托管(5121635871904014202)扣款", "淘宝新客托管"),
+        ("品牌新享-淘宝营销托管软件服务费(5121635871904014202)扣款", "淘宝新客托管"),
+        ("品牌新享-天猫营销托管软件服务费(5121635871904014202)扣款", "天猫营销托管"),
+        ("品牌新享-限时加速服务费(5120117391700029932)扣款", "品牌新享-限时加速服务费"),
+    ]
+
+    @pytest.mark.parametrize("remark,minor", XINXIANG)
+    def test_each_xinxiang_flavour_lands_on_its_own_subclass(
+        self, model, remark: str, minor: str
+    ) -> None:
+        """品牌新享每种叫法各进自己的小类，不再统称「佣金」。
+
+        天猫皇莉诗 2026-06 光首单拉新就 10,517 行 -23,911.94，新品孵化 1,397 行
+        -4,350.40，超级老客 793 行 -1,741.67。捆成一个细项，界面下钻是一个
+        一万五千行、三万块钱的黑盒，对不了账。
+        """
+        got_major, got_minor, report = self._classify_remark(
+            model, remark, "taobao_settlement_alipay_v1")
+        assert got_major == "marketing_fee"
+        assert got_minor == minor
+        assert report.unmatched == {}
+
+    def test_hosting_does_not_steal_the_xinke_flavours(self, model) -> None:
+        """「品牌新享-天猫营销托管软件服务费」不能把天猫新客/新品那两种抢走。
+
+        它含「天猫营销托管」，而那两种是「天猫新客营销托管」「天猫新品营销托管」,
+        字符串上互不包含，所以顺序其实安全——这个测试把这件事钉住，
+        以后有人把规则改成 contains「营销托管」就会在这里响。
+        """
+        for remark, minor in (
+            ("品牌新享天猫新客营销托管(5121635871904014202)扣款", "新享天猫新客"),
+            ("品牌新享天猫新品营销托管(5121635871904014202)扣款", "新享天猫新品"),
+        ):
+            _, got, _ = self._classify_remark(
+                model, remark, "taobao_settlement_alipay_v1")
+            assert got == minor
+
+    #: 淘宝三张结算模板。支付宝一张，微信两张（v1 是喜必顺那份 14 列表，
+    #: v2 是天猫八列版），同一个千牛入口能导出两种表头，两份都还在用。
+    SETTLEMENT_TEMPLATES = (
+        "taobao_settlement_alipay_v1",
+        "taobao_settlement_wechat_v1",
+        "taobao_settlement_wechat_v2",
+    )
+
+    @pytest.mark.parametrize("template", SETTLEMENT_TEMPLATES)
+    @pytest.mark.parametrize("remark,minor", XINXIANG)
+    def test_all_three_templates_agree_on_the_subclass(
+        self, model, template: str, remark: str, minor: str
+    ) -> None:
+        """三张淘宝结算模板对同一种备注必须给同一个小类。
+
+        这条是这次改动的守门人。原先「品牌新享」在三张模板里各有一条笼统规则，
+        细项统一靠界面上一条 platform 级规则压成「佣金」——一条规则盖三张表，
+        改一处就够。拆成按小类之后细项写在模板里，就变成同一件事要在三个地方
+        各写一遍，漏一个不会报错，只会让那张表的钱悄悄换个名字进账。
+
+        实际就漏过一次：wechat_v1 忘了改，淘宝喜必顺 2 行 6.00 元掉进未归类。
+        """
+        got_major, got_minor, report = self._classify_remark(model, remark, template)
+        assert got_major == "marketing_fee"
+        assert got_minor == minor
+        assert report.unmatched == {}
+
+    @pytest.mark.parametrize("template", SETTLEMENT_TEMPLATES)
+    def test_all_three_templates_take_the_alliance_rebate(
+        self, model, template: str
+    ) -> None:
+        """联盟推广佣金返还三张表都要认。
+
+        这是代扣的冲回，金额是正的。wechat_v1 原先没有这一条。
+        """
+        remark = ("淘宝联盟推广佣金返还 memberid:3792292908 fee:0.46 "
+                  "batchno:H_UGP_3792292908_MRAD20260608_0_")
+        got_major, _, report = self._classify_remark(model, remark, template)
+        assert got_major == "marketing_fee"
+        assert report.unmatched == {}
+
+    def test_an_unlisted_xinxiang_flavour_still_counts_as_marketing(self, model) -> None:
+        """列举没盖住的新变体走前缀兜底：大类对，细项空着。
+
+        细项空着会在自检的「细项为空」里报出来，人能看见并补规则；
+        落进未归类才是真丢钱。对照表是 2026-08 那一版，平台还在加新玩法。
+        """
+        got_major, got_minor, report = self._classify_remark(
+            model, "品牌新享-某种还没见过的新玩法服务费(5121635871904014202)扣款",
+            "taobao_settlement_alipay_v1")
+        assert got_major == "marketing_fee"
+        assert not got_minor
+        assert report.unmatched == {}
+
+    def test_coupon_stays_marketing_not_software(self, model) -> None:
+        """字典把消费券归软件服务费。人改到营销费用，不能让字典接回去。"""
+        major, minor, report = self._classify_subject(
+            model, "0060092T|营销支出-消费券代付资金扣回")
+        assert major == "marketing_fee"
+        assert minor == "消费券"
+        assert report.unmatched == {}

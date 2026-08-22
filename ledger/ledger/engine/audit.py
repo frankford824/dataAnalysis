@@ -173,6 +173,73 @@ def _check_unclassified(check, model, facts, links, classify, completeness, node
     )
 
 
+def _check_major_covered(check, model, facts, links, classify, completeness, nodes, result) -> Finding:
+    """归到的科目在这个平台有没有指标接着。没有的话钱掉出损益表，一处不报错。
+
+    改判是界面上最常用的一栏，而每个平台的指标是各自一套。人把某个费项改判到
+    另一个科目，那个科目在这个平台没有指标，投影时就没人认领这批行——损益表上
+    少一笔钱，自检全绿，界面上什么都看不出来。
+
+    踩过两次：
+      · 2026-08-19 拼多多多多多进宝配成营销费用，拼多多没有营销费用指标，4.79 元
+        进不了「平台营销费用」，人工对了很久才发现少这一项。
+      · 2026-08-20 1688 大分销抽佣等配成平台服务费、仅退款补贴配成交易赔付，
+        1688 两个指标都没有，1,720 行 349.57 元直接从损益表消失——销售支出
+        从 -375.43 收到 -25.86，利润反而多出同样的数。费用科目之间搬家却动了
+        利润，那就是钱掉了。
+
+    两次都是人工对账时逐项比出来的。这条检查把它变成配完就能看见。
+    """
+    if facts.is_empty() or "major" not in facts.columns:
+        return Finding(check.id, check.name, True, False, "没有归到科目的钱")
+    store = str(facts.get_column("store")[0] or "")
+    platform = next((s.platform for s in model.stores if s.name == store), "*")
+    # 判据是「别家平台认这个科目、偏偏这个平台没指标」，不是「没指标」。
+    # 有些科目本来就不进损益：广告预充值、保证金、提现、往来款——它们是资产之间
+    # 划转，一个平台都没给指标，那是对的。只按有没有指标报的话，喜必顺光广告
+    # 预充值就要报 30 笔 9 万元，第一次跑就把人教成忽略这条。
+    known = {m.major for m in model.metrics if m.major}
+    covered = {
+        m.major for m in model.metrics
+        if m.major and m.for_platform(platform) is not None
+    }
+    # 同一物理行会被多个指标各投影一遍，按行去重才不会把一笔钱数成几笔。
+    keys = [c for c in ("file_sha", "sheet", "row_no") if c in facts.columns]
+    rows = facts.filter(pl.col("major").is_not_null() & (pl.col("major") != ""))
+    if keys:
+        rows = rows.unique(subset=keys)
+    orphan = rows.filter(pl.col("major").is_in(sorted(known - covered)))
+    if orphan.is_empty():
+        return Finding(check.id, check.name, True, False, "归到的科目都有指标接着")
+    per = (
+        orphan.group_by("major")
+        .agg(pl.len().alias("rows"), pl.col("amount").sum().alias("amount"))
+        .sort("rows", descending=True)
+    )
+    total = float(sum_amounts(abs(decimal_amount(a)) for a in per.get_column("amount")))
+    if total <= (check.threshold or 0.0):
+        return Finding(check.id, check.name, True, False, "归到的科目都有指标接着")
+    lines = [
+        f"  · {r['major']}：{r['rows']:,} 笔，{r['amount']:,.2f} 元"
+        for r in per.iter_rows(named=True)
+    ]
+    message = (
+        f"有 {per.height} 个科目在{store}这个平台没有指标接着，"
+        f"共 {orphan.height:,} 笔、{total:,.2f} 元：\n"
+        + "\n".join(lines)
+        + "\n这些钱归到了科目上，但投影时没人认领，损益表上看不见它。"
+        "要么把改判改回去，要么给这个平台加一条对应的指标。"
+    )
+    return Finding(
+        check.id, check.name, passed=False, blocking=check.blocking,
+        message=check.message or message,
+        detail={"majors": [
+            {"major": r["major"], "rows": r["rows"], "amount": r["amount"]}
+            for r in per.iter_rows(named=True)
+        ]},
+    )
+
+
 def _check_completeness(check, model, facts, links, classify, completeness, nodes, result) -> Finding:
     if completeness.ok:
         return Finding(
@@ -285,6 +352,7 @@ _HANDLERS = {
     "link_rate": _check_link_rate,
     "spine_coverage": _check_coverage,
     "no_unclassified": _check_unclassified,
+    "major_has_metric": _check_major_covered,
     "completeness": _check_completeness,
     "tie_out": _check_tie_out,
     "unlinked_disclosed": _check_unlinked_disclosed,

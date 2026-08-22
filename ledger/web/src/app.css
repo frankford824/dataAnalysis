@@ -91,6 +91,7 @@
   align-items: start;
   grid-template-columns: minmax(0, 1fr);
 }
+.cols > * { min-width: 0; }
 @media (min-width: 1180px) {
   .cols { grid-template-columns: minmax(0, 1.5fr) minmax(330px, 1fr); }
   .cols.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -105,8 +106,26 @@
 .scroll {
   overflow: auto;
   max-height: 420px;
+  min-width: 0;
   margin-right: calc(var(--s3) * -1);
   padding-right: var(--s3);
+}
+
+/* 该交的表：没交的原因可能是一整句话（表认出来了但缺一列之类），
+   不能塞进不换行的标签。标签一撑开，左边店名就被挤成一字一竖排，底下一根横滚条。 */
+.src-table { table-layout: fixed; width: 100%; }
+.src-table td:first-child { width: 38%; }
+.src-miss {
+  display: inline-block;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: var(--r-md);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: var(--t-xs);
+  line-height: 1.55;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .scroll.tall { max-height: 560px; }
 .scroll thead th {

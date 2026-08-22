@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .engine.audit import BUCKET_NEEDS_WORK
 from .fees import pretty_unmatched_label
 from .model.schema import Model
 
@@ -292,21 +293,25 @@ def _unclassified(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def _unlinked(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """挂不上任何订单、又没有别的解释的钱。
 
-    只取审计口径的那个总额，不把四个桶都摊出来。另外三个桶（别家店的、规则排除的、
-    别的账期的）都已经有解释，摆进「要处理的事」里等于让人白查一场。
+    只取「要查归属」那一桶。另外几桶（别家店的、规则排除的、别的账期的、
+    提现/广告充值这类天然没订单号的）都已经有解释，摆进「要处理的事」里
+    等于让人白查一场——点进去也对不上「要查」那一桶，界面是空的。
     """
-    label = "取不出订单号，要查归属"
-    bucket = next(
-        (b for b in payload.get("unlinked_buckets") or [] if b.get("label") == label), None
-    )
-    # 金额和笔数都取「要查」那一桶，取不到才退回总额。
+    buckets = payload.get("unlinked_buckets") or []
+    bucket = next((b for b in buckets if b.get("label") == BUCKET_NEEDS_WORK), None)
+    # 金额和笔数都取「要查」那一桶。未归属总额里还含着提现、保证金、广告充值：
+    # 抖音浅花涧 2026-05 的总额是 -357.06，全部是 664 笔货款直投千川，
+    # 「要查」那一桶是空的。卡片上写「有 357.06 挂不上订单」再点进去一行都没有，
+    # 就是退回总额惹的。
     #
-    # 未归属总额里还含着提现、保证金这类天然没有订单号的钱：天猫皇莉诗 2026-06 的
-    # 总额是 -127,193.12，其中 -124,071.03 是两笔提现，真要查的只有 -3,122.09。
-    # 卡片上写「有 127,193.12 挂不上订单，396 行取不出订单号」，两个数不是同一批钱，
-    # 而人是照着金额决定这件事值不值得查的。
-    total = bucket.get("amount") if bucket else payload.get("unlinked_total")
-    count = bucket.get("count") if bucket else None
+    # 老快照没有分桶，只能看总额。有分桶却没有「要查」那一桶，说明总额里剩的
+    # 都是已有解释的钱，人去「没进利润的钱」那一栏点对应行就能看到。
+    if bucket is not None:
+        total, count = bucket.get("amount"), bucket.get("count")
+    elif not buckets:
+        total, count = payload.get("unlinked_total"), None
+    else:
+        return []
     if total is None or abs(total) < MIN_AMOUNT:
         return []
     # 标题里写绝对值。这个总额是净额，可能是负的，而「有 -357.06 挂不上订单」

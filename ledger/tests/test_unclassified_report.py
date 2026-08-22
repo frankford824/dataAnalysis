@@ -103,3 +103,42 @@ class TestOneRowCountedOnce:
             for label, rows in r.unmatched_rows.items():
                 merged.unmatched_rows.setdefault(label, {}).update(rows)
         assert merged.unmatched["不认识的费项"] == (2, -3.0)
+
+
+class TestOnlyThisStorePeriodsOwnRows:
+    """一个店期只报自己用到的那些行。
+
+    归类是按表跑的，账是按（店，账期）结的。全公司共用的表——小额打款、运费、
+    聚水潭成本——里一行归不上，不过滤就同时拦住每一家店每一个账期结账，
+    而且每家店看到的是同一句话，谁都不知道那行是不是自己的。
+
+    实测小额打款表第 1671、1672 行网店名称、下单日期、摘要三列全空，只有收款人
+    和 3 元金额。它们算不出账期、没进任何一家店的账，却让八家店全部结不出账，
+    报出来的说法还是「业务描述为空」——那张表根本没有业务描述这一列。
+    """
+
+    def _report(self) -> ClassifyReport:
+        frame = pl.DataFrame({
+            "subject": ["不认识的费项"] * 3,
+            "__row_amount__": [-10.0, -20.0, -30.0],
+            ANCHOR_SHA: ["sha"] * 3,
+            ANCHOR_SHEET: ["Sheet1"] * 3,
+            ANCHOR_ROW: ["7", "8", "9"],
+        })
+        _, report = classify(frame, _model(), "taobao", "__row_amount__")
+        return report
+
+    def test_keeps_the_rows_this_slice_used(self):
+        own = self._report().for_rows({("sha", "Sheet1", "7"), ("sha", "Sheet1", "8")})
+        assert own.unmatched["不认识的费项"] == (2, -30.0)
+
+    def test_drops_the_subject_when_no_row_is_this_slice(self):
+        own = self._report().for_rows({("sha", "Sheet1", "999")})
+        assert own.unmatched == {}, "别人的坏行不该拦这个店期结账"
+
+    def test_hit_rate_stays_whole(self):
+        """命中率是「这批表认识多少科目」的统计，不按店期分，不跟着过滤。"""
+        whole = self._report()
+        own = whole.for_rows(set())
+        assert own.total_rows == whole.total_rows
+        assert own.hit_rate == whole.hit_rate

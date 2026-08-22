@@ -540,3 +540,24 @@ class TestUnlinkedRowsCanBeOpened:
         assert d["rows"] == 1
         assert d["sample"][0]["row_no"] == 3
 
+    def test_parked_topup_opens_on_its_named_bucket_not_needs_work(self):
+        """广告充值点「要查归属」是空的，点它自己的桶才有行。
+
+        抖音浅花涧那 -357.06 全是货款直投千川。缺口卡片走 `__unlinked__`
+        （要查那一桶），所以点开一行都没有。
+        """
+        from ledger.view import UNLINKED_NODE, drill
+
+        facts = _facts([{
+            "metric_id": "trade_receipt", "major": "ad_topup",
+            "minor": "货款直投千川", "subject": "货款直投千川",
+            "amount": -357.06, "row_no": 20, "file_name": "对账.xlsx",
+        }])
+        model = _model(dictionary=NATURAL)
+        empty = drill(facts, model, UNLINKED_NODE)
+        assert empty["rows"] == 0
+        named = drill(facts, model, "__unlinked__:货款直投千川")
+        assert named["rows"] == 1
+        assert named["value"] == pytest.approx(-357.06)
+        assert named["sample"][0]["row_no"] == 20
+

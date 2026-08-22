@@ -140,7 +140,25 @@ def project(
         .to_list()
     )) if orphan_keys else 0.0
 
+    # 金额为 0 的脊柱行不进账本，但「整笔钱正负相抵到 0」的那些要留下。
+    #
+    # 两件事长得一样，含义相反。一个订单收了 77.40 又全额退了 77.40，这一单是处理
+    # 过的，净额确实是 0；而一个脊柱行分到 0，是它没分到钱。都丢掉的话，前者在脊柱
+    # 上就不存在了，`runtime._mark_counted` 按「脊柱上有没有这个键」标进账，标出来
+    # 是「没进账」——和真正挂不上订单的钱并排列在同一张清单上。
+    #
+    # 报表数字两种做法一样（加 0 不改变合计），差别全在能不能说清楚。实测 1688 朗歆
+    # 2026-06 有 8 单是这样，每单一行订单收入、一行订单售后退款，金额分毫不差。
+    # 财务逐单核对时把它们当成少算了的收入报过来——单号对、科目对、金额对，
+    # 界面却说没进账，只能一单一单去查，查完发现是相抵的。
+    zeroed = by_key.filter(pl.col("amount") == 0.0).get_column("link_key").to_list()
     out = facts.filter(pl.col("amount") != 0.0)
+    if zeroed:
+        out = pl.concat(
+            [out, facts.filter((pl.col("amount") == 0.0)
+                               & pl.col("link_key").is_in(zeroed))],
+            how="vertical_relaxed",
+        )
     extra = _orderless_spine_facts(source_facts, metric, orderless_keys, by_key)
     if not extra.is_empty():
         out = pl.concat([out, extra], how="diagonal_relaxed")
@@ -219,9 +237,20 @@ def _orderless_spine_facts(
         return _empty()
     ctx_cols = [c for c in ("store", "period") if c in source_facts.columns]
     if ctx_cols:
+        # 先按物理行排序再取第一条。同一个订单号在源表里常有多行，账期还可能不一样
+        # （跨期结算、导出时日期选宽了都会），取哪一行决定这笔钱落哪个月。
+        #
+        # polars 的 group_by 默认不保证组内顺序，多线程下 first() 取到的是哪一行
+        # 不定，于是同一份输入两次跑出两个数：实测京东皇莉诗 2026-05 的负基数合计
+        # 在 -5,777.56 和 -5,779.26 之间跳，差的正是一笔 1.70 元有时进本期、
+        # 有时落到别的月。账本必须可复现——同一份表跑两遍给出两个利润，
+        # 那两个数就都不可信。
+        order = [c for c in ("file_sha", "sheet", "row_no") if c in source_facts.columns]
+        rows = source_facts.filter(claims(metric) & pl.col("link_key").is_in(list(keys)))
+        if order:
+            rows = rows.sort(order)
         ctx = (
-            source_facts.filter(claims(metric) & pl.col("link_key").is_in(list(keys)))
-            .group_by("link_key")
+            rows.group_by("link_key", maintain_order=True)
             .agg(*[pl.col(c).drop_nulls().first() for c in ctx_cols])
         )
         amounts = amounts.join(ctx, on="link_key", how="left")
@@ -258,15 +287,23 @@ def _factor(keyed: pl.DataFrame, metric: Metric) -> pl.Expr:
             return pl.col(alloc.by).cast(pl.Float64, strict=False).fill_null(0.0)
         # 天猫千牛导出经常没有「收入分配率」这一列。绝不能按 1 填——
         # 一个主订单有几个子订单，钱就会被记几遍，利润凭空翻倍。
-        # 有买家实付就按金额占比推；没有就退回笔数均摊。合计都守恒。
+        #
+        # 自己推的时候照财务表的定义推。淘宝喜必顺那份订单明细是人工工作表原件，
+        # 第一行逐列写着公式：子订单收入 = 买家实付金额 - 退款金额（报错取买家实付、
+        # 负数计 0），主订单收入 = 按主订单编号汇总子订单收入，收入分配率 = 两者相除。
+        # 退款金额那一格常填「无退款申请」，转数值后是空，正好落回买家实付。
+        # 全退的子订单权重为 0，费用不该摊到它头上。
         if "buyer_paid" in keyed.columns:
             paid = pl.col("buyer_paid").cast(pl.Float64, strict=False).fill_null(0.0)
-            total = paid.sum().over("link_key")
-            return (
-                pl.when(total == 0)
-                .then(_even())
-                .otherwise(paid / total)
-            )
+            if "refund_amount" in keyed.columns:
+                refund = pl.col("refund_amount").cast(pl.Float64, strict=False).fill_null(0.0)
+                net = pl.max_horizontal(paid - refund, pl.lit(0.0))
+            else:
+                net = paid
+            total = net.sum().over("link_key")
+            # 一单全退到分母为 0 时没有可比的收入了，退回笔数均摊。人工表这里
+            # 分配率算成 0、费用整块丢掉，但钱是真花出去的，账上得留着。
+            return pl.when(total == 0).then(_even()).otherwise(net / total)
         return _even()
     return _even()
 
@@ -276,7 +313,8 @@ def _ratio_fallback_notes(keyed: pl.DataFrame, metric: Metric) -> list[str]:
     if alloc is None or alloc.mode != "ratio" or alloc.by in keyed.columns:
         return []
     if "buyer_paid" in keyed.columns:
-        return [f"{metric.name}：订单明细没有收入分配率，已按买家实付金额占比分摊"]
+        basis = "买家实付金额扣退款后" if "refund_amount" in keyed.columns else "买家实付金额"
+        return [f"{metric.name}：订单明细没有收入分配率，已按{basis}占比分摊"]
     return [f"{metric.name}：订单明细没有收入分配率，已按子订单笔数均摊"]
 
 

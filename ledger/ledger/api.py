@@ -1322,7 +1322,9 @@ def fees_catalog() -> dict:
     known = fees_mod.known_fees(model)
     return {
         "majors": fees_mod.major_options(model),
-        "fields": [{"id": i, "name": n} for i, n in fees_mod.FEE_FIELDS],
+        "fields": [
+            {"id": i, "name": n, "platform": p} for i, n, p in fees_mod.FEE_FIELDS
+        ],
         "hows": [{"id": i, "name": n} for i, n in fees_mod.FEE_HOWS],
         "stages": [{"id": i, "name": n} for i, n in fees_mod.FEE_STAGES],
         "platforms": view.platform_options(model),

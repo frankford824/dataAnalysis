@@ -19,6 +19,7 @@ from .rules import (
     compile_classify_rules,
     normalize_expr,
     resolve_class,
+    resolve_classify_field,
     text_expr,
 )
 from .types import ANCHOR_ROW, ANCHOR_SHA, ANCHOR_SHEET, ClassifyReport
@@ -92,7 +93,7 @@ def classify(
 
     rules = effective_classify_rules(model, platform, template)
     visible = ROLE_SUBJECT in frame.columns or any(
-        r.when and r.when.field in frame.columns for r in rules
+        r.when and resolve_classify_field(r.when.field, frame.columns) for r in rules
     )
     if not visible:
         # 这张表既没有科目列，也没有任何一条规则看得见的列。归类对它无从下手，
@@ -144,7 +145,13 @@ def _classify_by_chain(
         return table.get(normalize_header(raw))
 
     fields = sorted(
-        {r.matcher.field for r in compiled if r.matcher and r.matcher.field in frame.columns}
+        {
+            col
+            for r in compiled
+            if r.matcher
+            for col in [resolve_classify_field(r.matcher.field, frame.columns)]
+            if col
+        }
         | ({ROLE_SUBJECT} if ROLE_SUBJECT in frame.columns else set())
     )
     stats = ChainStats()
@@ -251,7 +258,8 @@ def _chain_winner(
             assert m is not None
             if not m.vectorizable:
                 return None
-            if m.field not in frame.columns:
+            col = resolve_classify_field(m.field, frame.columns)
+            if col is None:
                 # 这张表没有这一列，这一环对谁都不适用。和逐行版一个结果——那边
                 # `row.get(field)` 拿到 None，`apply` 直接返回不适用。
                 #
@@ -260,7 +268,7 @@ def _chain_winner(
                 # 看备注的规则，会让所有不带备注列的表——订单明细、成本表、运费表
                 # ——全部退回逐行，139 万行 13 环就是上千万次 Python 调用。
                 continue
-            hit = m.mask(text_expr(frame.schema[m.field], m.field))
+            hit = m.mask(text_expr(frame.schema[col], col))
         exprs.append(pl.when(hit).then(pl.lit(i, dtype=pl.Int32)))
     if not exprs:
         return None

@@ -145,7 +145,7 @@ function close() {
             <n-input
               v-model:value="term"
               size="small"
-              placeholder="订单号或科目"
+              :placeholder="(data?.key_label || '订单号') + '或科目'"
               style="width: 200px"
               clearable
               @keyup.enter="page = 0; load()"
@@ -223,7 +223,7 @@ function close() {
           <n-table size="small" :bordered="false">
             <thead>
               <tr>
-                <th>订单号</th>
+                <th>{{ data.key_label || '订单号' }}</th>
                 <th>科目</th>
                 <th class="right">金额</th>
                 <th class="right">进账</th>

@@ -138,3 +138,10 @@
   note: >
     2026-08-19 从 finance 上同步回来的。有人在界面上登了这家店，仓库里没有，
     不写进来下一次部署会把它盖掉。
+
+- id: alibaba1688_mt2r23jf
+  name: 姜惠卉-1688南京朗歆信息科技有限公司
+  platform: alibaba1688
+  commission_on_loss: deduct
+  note: >
+    2026-08-21 从 finance 上同步回来的，同上：界面上登的店，仓库里没有。

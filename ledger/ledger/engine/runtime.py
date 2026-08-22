@@ -23,7 +23,15 @@ from .project import Projection, claims, project
 from .derivative import Derivative, detect as detect_derivative
 from .controls import ControlResult, summarize as summarize_controls, verify as verify_controls
 from .classify import classify, merge_reports
-from .link import SPINE_PERIOD, SPINE_PRODUCT, SPINE_STORE, Spine, link, target_role
+from .link import (
+    SPINE_PERIOD,
+    SPINE_PRODUCT,
+    SPINE_STORE,
+    Spine,
+    link,
+    normalize_key,
+    target_role,
+)
 from .normalize import NormalizeError, normalize
 from .parse import ParseError, digest, parse
 from .recognize import infer_period, infer_store, match_headers
@@ -127,6 +135,10 @@ class RunResult:
     #: 暴露出来是为了下钻：损益表上的任何一个数，要能一路追到具体哪几个订单、
     #: 每单摊了多少。只报总数不给明细的话，对不上账时没人查得动。
     spine: pl.DataFrame = field(default_factory=pl.DataFrame)
+    #: 数据源 id → 求值时报的错。一条指标停下来，这个源就少一批事实，
+    #: 而少了多少在事实表里看不出来——完整度那边要用它区分「表里没这个月的数据」
+    #: 和「表在这儿但算不出来」。这两句话把人指向完全不同的地方。
+    eval_errors: dict[str, list[str]] = field(default_factory=dict)
 
     def slice(self, store: str, period: str) -> Slice | None:
         return self.slices.get((store, period))
@@ -421,6 +433,8 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
     fact_parts: list[pl.DataFrame] = []
     link_reports: dict[str, LinkReport] = {}
     classify_reports: list[ClassifyReport] = []
+    #: 数据源 id → 求值报错。用途见下面 except 分支里的说明。
+    eval_errors: dict[str, list[str]] = {}
 
     # 平台限定的指标只在对应平台生效。三家店的利润口径互不相同，
     # 全部一起算会让 1688 的收支口径混进淘宝的账。下面两个循环都要按这份名单走。
@@ -467,6 +481,13 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
                 )
             except calc.CalculateError as exc:
                 notes.append(f"{item.ref.label()} 算 {metric.name} 出错：{exc}")
+                # 记到数据源名下。这条错以前只留在 notes 里，而 notes 界面上不显示；
+                # 一个源的指标全算不出来时，事实里一行都没有，完整度那边照「事实里
+                # 找不到这个源」的老路报成「传了，但里面没有这个月的数据」——
+                # 说法和实情正好相反，表里数据齐全，是算的时候停在了缺一列上。
+                eval_errors.setdefault(metric.source, []).append(
+                    f"{item.ref.label()} 算 {metric.name}：{exc}"
+                )
                 continue
             notes.extend(fnotes)
             if not facts.is_empty():
@@ -503,13 +524,14 @@ def run(ingestion: Ingestion, platform: str = "*") -> RunResult:
     result = RunResult(
         model=model, ingestion=ingestion, facts=facts, notes=notes, spine_rows=spine.size,
         spine_facts=spine_facts, projections=projections, spine=spine.frame,
+        eval_errors=eval_errors,
     )
     classify_report = merge_reports(classify_reports)
 
     for store, period in _slice_keys(spine_facts if not spine_facts.is_empty() else facts):
         result.slices[(store, period)] = _build_slice(
             model, ingestion, facts, spine_facts, spine.frame, store, period,
-            link_reports, classify_report, platform,
+            link_reports, classify_report, platform, eval_errors,
         )
     return result
 
@@ -577,6 +599,9 @@ def _build_bridges(ingestion: Ingestion, notes: list[str]) -> dict[str, dict[str
 
     运费表只有运单号，要先去订单明细按物流单号回查主订单编号，查不到再去聚水潭
     按快递单号回查原始线上订单号。索引在这里一次建好，逐行回查时直接查字典。
+
+    键走 `normalize_key`：Excel 把长数字标成文本时会留下 `@` 前缀，备注里抠出的
+    运单号没有这个前缀，不折掉就对不上。
     """
     wanted: dict[str, tuple[str, str]] = {}
     for t in ingestion.model.templates:
@@ -591,17 +616,24 @@ def _build_bridges(ingestion: Ingestion, notes: list[str]) -> dict[str, dict[str
             frame = item.frame
             if frame is None or match_role not in frame.columns or take_role not in frame.columns:
                 continue
+            # keep="first" 得配 maintain_order=True 才算数。一个运单号对上多个
+            # 订单号是常事（一单多包、同号复用），去重挑哪一行就决定这笔运费算到
+            # 谁头上。polars 默认按分区并行去重，「第一行」是哪一行不定，于是同一
+            # 份表跑两遍，运费摊到不同订单上——实测京东皇莉诗 2026-05 的负基数
+            # 合计在 -5,777.56 / -5,779.26 / -5,789.04 三个数之间跳。
+            # 下面那个 `nk not in index` 也是取第一个，两处的「第一个」要是同一个。
             pairs = (
                 frame.select(
                     pl.col(match_role).cast(pl.Utf8).alias("k"),
                     pl.col(take_role).cast(pl.Utf8).alias("v"),
                 )
                 .drop_nulls()
-                .unique(subset=["k"], keep="first")
+                .unique(subset=["k"], keep="first", maintain_order=True)
             )
             for k, v in pairs.iter_rows():
-                if k and v and k not in index:
-                    index[k] = v
+                nk, nv = normalize_key(k), normalize_key(v)
+                if nk and nv and nk not in index:
+                    index[nk] = nv
         out[source_id] = index
         notes.append(f"回查索引 {source_id}：{match_role} → {take_role}，{len(index):,} 条")
     return out
@@ -630,6 +662,7 @@ def _build_slice(
     link_reports: dict[str, LinkReport],
     classify_report: ClassifyReport,
     platform: str,
+    eval_errors: dict[str, list[str]] | None = None,
 ) -> Slice:
     scoped = facts.filter((pl.col("store") == store) & (pl.col("period") == period))
     # 损益从脊柱事实出数；源事实留作证据链与挂钩率统计。
@@ -644,7 +677,8 @@ def _build_slice(
         else 0
     )
     completeness = _completeness(
-        model, ingestion, facts, scoped, scoped_spine, store, period, spine_rows
+        model, ingestion, facts, scoped, scoped_spine, store, period, spine_rows,
+        eval_errors or {},
     )
 
     unavailable = {
@@ -655,12 +689,24 @@ def _build_slice(
     )
     inapplicable = {m.id for m in model.metrics if m.for_platform(platform) is None}
     nodes = calc.evaluate_statement(model, totals, unavailable, inapplicable)
-    result = audit(model, scoped, link_reports, classify_report, completeness, nodes)
+    own = classify_report.for_rows(_anchors_of(scoped))
+    result = audit(model, scoped, link_reports, own, completeness, nodes)
     return Slice(
         store=store, period=period, nodes=nodes, facts=scoped,
         completeness=completeness, audit=result,
-        link_reports=link_reports, classify_report=classify_report,
+        link_reports=link_reports, classify_report=own,
     )
+
+
+def _anchors_of(scoped: pl.DataFrame) -> set[tuple[str, str, str]]:
+    """这个店期用到了哪些物理行。锚点写法要和归类那边逐字一致。"""
+    cols = ("file_sha", "sheet", "row_no")
+    if scoped.is_empty() or not all(c in scoped.columns for c in cols):
+        return set()
+    return {
+        (str(a or ""), str(b or ""), str(c or ""))
+        for a, b, c in scoped.select(cols).unique().iter_rows()
+    }
 
 
 def _completeness(
@@ -672,6 +718,7 @@ def _completeness(
     store: str,
     period: str,
     spine_rows: int,
+    eval_errors: dict[str, list[str]] | None = None,
 ) -> Completeness:
     """完整度。责任人信息来自数据源契约，不需要额外维护。
 
@@ -705,6 +752,20 @@ def _completeness(
         out.missing.append(source.id)
         if source.id not in uploaded:
             out.reasons[source.id] = "还没传"
+        elif (eval_errors or {}).get(source.id):
+            # 算的时候停下来了，别说成表里没这个月的数据——那是让人回去翻文件。
+            #
+            # 实测京东换了对账表的导出口，新版少了「结算状态」一列，而那三条指标都
+            # 筛「只算已结算」。六条指标全部停在这一列上，事实里一行都没有，界面照
+            # 老路报「传了，但里面没有 2026-06 的数据」。表里 24,578 行、13,045 行
+            # 就在 2026-06。人照着这句话找了一下午：前后传了六次、手改了三轮列名，
+            # 而列名和这件事毫无关系。
+            why = (eval_errors or {})[source.id]
+            out.reasons[source.id] = (
+                "表认出来了，但这个月的数算不出来："
+                + why[0].split("：", 1)[-1]
+                + (f"（另有 {len(why) - 1} 条指标同样停在这里）" if len(why) > 1 else "")
+            )
         elif _source_has_period(all_facts, source.id, period):
             out.reasons[source.id] = "传了，但里面没有这个店的数据"
         else:

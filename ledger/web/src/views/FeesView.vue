@@ -80,7 +80,12 @@ watch(
   },
 )
 
-const fieldOptions = computed(() => (data.value?.fields || []).map((f) => ({ label: f.name, value: f.id })))
+const fieldOptions = computed(() => {
+  const plat = editing.value?.platform || '*'
+  return (data.value?.fields || [])
+    .filter((f) => (f.platform || '*') === '*' || f.platform === plat)
+    .map((f) => ({ label: f.name, value: f.id }))
+})
 const howOptions = computed(() => (data.value?.hows || []).map((f) => ({ label: f.name, value: f.id })))
 const stageOptions = computed(() => (data.value?.stages || []).map((f) => ({ label: f.name, value: f.id })))
 const majorOptions = computed(() => (data.value?.majors || []).map((m) => ({ label: m.name, value: m.id })))
@@ -92,11 +97,17 @@ const platformOptions = computed(() => [
 function majorName(id) {
   return (data.value?.majors || []).find((m) => m.id === id)?.name || id || '—'
 }
-function fieldName(id) {
-  return (data.value?.fields || []).find((f) => f.id === id)?.name || id
+function fieldName(id, platform) {
+  const fields = data.value?.fields || []
+  const hit = fields.find((f) => f.id === id && f.platform === platform)
+    || fields.find((f) => f.id === id)
+  return hit?.name || id
 }
 function howName(id) {
   return (data.value?.hows || []).find((f) => f.id === id)?.name || id
+}
+function stageName(id) {
+  return (data.value?.stages || []).find((f) => f.id === id)?.name || id
 }
 function platformName(id) {
   if (!id || id === '*') return '全部平台'
@@ -178,6 +189,18 @@ async function load() {
     loading.value = false
   }
 }
+
+watch(
+  () => editing.value?.platform,
+  () => {
+    if (!editing.value) return
+    const ids = new Set(fieldOptions.value.map((o) => o.value))
+    if (!ids.has(editing.value.field)) {
+      const prefer = fieldOptions.value.find((o) => !['remark', 'biz_type', 'subject'].includes(o.value))
+      editing.value.field = prefer?.value || fieldOptions.value[0]?.value || 'subject'
+    }
+  },
+)
 
 watch(() => route.query.label, load, { immediate: true })
 
@@ -387,8 +410,9 @@ async function apply() {
 
         <n-tab-pane name="rules" :tab="`已配规则（${draft.length}）`">
           <p class="xs muted" style="margin-bottom: var(--s3)">
-            同一档内，排在上面的规则优先。新增规则默认只处理尚未归类的流水；
-            选「优先于现有规则」会改写模板里已有的归类，损益金额可能变化，请先试算。
+            这些规则已经保存。默认只改还没挂上费项的流水，不会动模板里已经归好的项；
+            选「覆盖模板里已有的归类」才会改写，损益金额可能变化，请先试算。
+            同一组里，排在上面的优先。
           </p>
           <div class="row" style="margin-bottom: var(--s3)">
             <n-button size="small" @click="editing = blank(); editIndex = -1">
@@ -401,7 +425,7 @@ async function apply() {
             <n-table size="small" :bordered="false" :single-line="false">
               <thead>
                 <tr>
-                  <th>档</th>
+                  <th>作用</th>
                   <th>平台</th>
                   <th>匹配</th>
                   <th>归到</th>
@@ -410,10 +434,10 @@ async function apply() {
               </thead>
               <tbody>
                 <tr v-for="(r, i) in draft" :key="i">
-                  <td class="xs">{{ r.stage === 'before' ? '优先执行' : '尚未归类' }}</td>
+                  <td class="xs wrap-cell">{{ stageName(r.stage) }}</td>
                   <td class="xs">{{ platformName(r.platform) }}</td>
                   <td class="small">
-                    {{ fieldName(r.field) }} {{ howName(r.how) }}
+                    {{ fieldName(r.field, r.platform) }} {{ howName(r.how) }}
                     <b>{{ r.value }}</b>
                     <div v-if="r.exclude" class="xs muted">命中后排除，不计入损益</div>
                     <div v-else-if="r.count_without_order" class="xs muted">未关联订单也计入损益</div>
@@ -494,7 +518,7 @@ async function apply() {
                   <tbody>
                     <tr v-for="(f, i) in g.rows" :key="i">
                       <td class="small">
-                        {{ fieldName(f.field) }} {{ howName(f.how) }}
+                        {{ fieldName(f.field, f.platform) }} {{ howName(f.how) }}
                         <b>{{ f.key }}</b>
                       </td>
                       <td class="small">{{ f.excluded ? '排除' : majorName(f.major) }}</td>
@@ -546,7 +570,7 @@ async function apply() {
           :consistent-menu-width="false"
         />
       </div>
-      <n-input v-model:value="editing.value" size="small" placeholder="业务描述或备注里的词" />
+      <n-input v-model:value="editing.value" size="small" placeholder="对账表这一列里出现的词" />
       <n-select
         v-model:value="editing.major"
         :options="majorOptions"
@@ -562,6 +586,7 @@ async function apply() {
         :options="stageOptions"
         size="small"
         :consistent-menu-width="false"
+        placeholder="这条规则何时生效"
       />
       <n-checkbox v-model:checked="editing.exclude">命中后排除，不计入损益</n-checkbox>
       <n-checkbox v-model:checked="editing.count_without_order" :disabled="editing.exclude">

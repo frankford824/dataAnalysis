@@ -1,0 +1,26 @@
+stage,platform,field,how,value,major,minor,exclude,count_without_order,note,by,at
+before,douyin,douyin_scene,contains,评价有礼/评价有礼活动资金回退/评价有礼保障金扣款,marketing_fee,营销费用,,,,,2026-08-19T18:01:42+08:00
+before,douyin,douyin_scene,contains,货款结算入账,trade_receipt,货款结算入账,,,,,2026-08-20T09:14:39+08:00
+before,douyin,douyin_scene,contains,上门取件运费/偏远地区物流服务/拦截费/上门取件-支付快递费,logistics_fee,,,,,,2026-08-20T11:22:12+08:00
+before,alibaba1688,scene_detail,contains,1688大分销业务/1688跨境供应链服务/服务费/技术服务费缴纳/1688微信小程序,software_fee,,,,,,2026-08-20T10:31:56+08:00
+before,alibaba1688,scene_detail,equals,仅退款补贴,trade_compensation,,,,,,2026-08-20T11:25:11+08:00
+before,jd,jd_fee_name,contains,返利框架费/综合违约金/交易服务费/佣金/运费保险服务费/商品保险服务费/京豆,software_fee,,,,,,2026-08-20T11:29:34+08:00
+before,jd,jd_fee_name,equals,代收配送费,logistics_fee,,,,,,2026-08-20T11:31:17+08:00
+before,jd,jd_fee_name,equals,售后卖家赔付费,trade_compensation,,,,,,2026-08-20T11:32:29+08:00
+before,pdd,subject,contains,售后费用-售后补偿消费者/其他收入-申诉补回/售后费用-延迟发货/售后费用-虚假发货/售后费用-缺货/售后费用-运费补偿/售后费用-发票服务承诺未兑现,trade_compensation,,,,,,2026-08-20T11:36:17+08:00
+before,pdd,subject,contains,技术服务费,software_fee,,,,,,2026-08-20T11:37:32+08:00
+before,pdd,subject,contains,多多进宝,marketing_fee,多多进宝,,,规则已经能归上，但拼多多损益表没有营销费用指标，钱进不了「平台营销费用」。细项不要留空，留空下钻只剩编码。,,2026-08-20T11:39:56+08:00
+before,taobao,subject,contains,天猫返点积分/类目软件服务费（原天猫佣金）/基础软件服务费/天猫返点积分（退款）/消费者体验提升计划服务费/天猫佣金,software_fee,,,,,,2026-08-20T11:56:23+08:00
+before,taobao,subject,contains,限时红包代商家垫付扣回,marketing_fee,限时红包代商家垫付扣回,,,细项改成按《费项分类对照表》的业务小类写。这一条对照表里没有，问过业务，确认单开一个小类就这么记。contains 能盖住「服财务费」错字。,,2026-08-21T15:30:00+08:00
+before,taobao,subject,contains,淘宝客佣金,marketing_fee,淘宝客佣金,,,不要并进「佣金」。细项留空会盖掉字典，下钻只剩编码。,,2026-08-20T16:32:58+08:00
+before,taobao,remark,contains,淘宝联盟佣金代扣,marketing_fee,淘宝客佣金,,,对照表把「淘宝联盟佣金代扣」收在业务小类「淘宝客佣金」下，和上一条同一个小类。这里必须留一条压住模板：模板那条带「没挂上订单也进账」，一放开挂不上的那 199 行代扣（约 -105 元）就跟着进来，营销费用就不再等于人工筛出来的 -31193.34。,,2026-08-20T23:40:00+08:00
+before,taobao,subject,contains,消费券代付资金扣回,marketing_fee,消费券,,,字典把消费券归软件服务费。人改到营销费用。喜必顺这一项是独立一大块，不要并进佣金。,,2026-08-20T16:32:58+08:00
+before,taobao,subject,contains,大服饰跨境服务增值费/天猫淘宝商家跨境服务基础费,cross_border_fee,,,,,,2026-08-20T12:00:36+08:00
+before,taobao,subject,contains,记账本转账/物流赔付,trade_compensation,,,,,,2026-08-20T12:02:25+08:00
+before,*,subject,contains,保证金-天猫-出账缴存/保证金-天猫-扣除转移/保证金-淘宝-出账缴存/保证金-淘宝-扣除转移,,,1,,,,2026-08-20T12:06:40+08:00
+before,taobao,remark,contains,商家集运中转操作费/商家集运物流服务费,logistics_fee,,,,,,2026-08-20T13:14:48+08:00
+before,taobao,remark,contains,商家集运物流责任货值赔付/售后退款追缴消费券返还金额,trade_compensation,,,,,,2026-08-20T13:17:50+08:00
+before,taobao,remark,contains,先用后付技术服务费,software_fee,,,,,,2026-08-20T13:20:15+08:00
+after,taobao,remark,contains,退差价/退货退款/退货款/退运费/退款/差价/返差价,trade_refund,销售退款,,,空业务描述、备注是退款短词。天猫 6 月这一块拦着结账，不在原先 20 条里。,,2026-08-20T14:00:00+08:00
+after,taobao,remark,contains,好评返现/协商返款/协商售后/KT运损补偿,trade_compensation,交易赔付,,,空业务描述。给买家的钱，不是把货款退回去。避开「退回」，那是网商银行进出腿。,,2026-08-20T14:00:00+08:00
+before,pdd,subject,contains,其他支出-分账支出,logistics_fee,,,,,,2026-08-20T16:41:49+08:00

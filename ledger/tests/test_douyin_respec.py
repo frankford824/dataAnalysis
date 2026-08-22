@@ -79,7 +79,7 @@ class TestTheFiveItemsAreSplitApart:
             _dy_row("消费者赔付", "-3.00", sub="126F00", order="126", direction="出账"),
         ], model)
         assert out.get_column(COL_MAJOR).to_list() == [
-            "trade_receipt", "trade_refund", "software_fee", "trade_compensation",
+            "trade_receipt", "trade_refund", "logistics_fee", "trade_compensation",
         ]
 
     def test_every_item_has_a_metric_and_a_statement_line(self, model):
@@ -144,6 +144,72 @@ class TestSettlementHeaderVariants:
         result = ingest([path], model, [s.name for s in model.stores])
         hit = next(i for i in result.items if i.recognition and i.recognition.template_id)
         assert hit.recognition.template_id == "douyin_settlement_v1"
+
+
+#: 蔡果-抖店烘焙交上来的「对账-抖音皇莉诗」工作表。金额列带（元）、订单号列带「关联」。
+HUANGLISHI_SETTLE = [
+    "动账时间", "动账流水号", "动账方向", "动账金额(元)", "动账账户", "动账场景",
+    "计费类型", "关联子订单号", "关联订单号", "售后编号", "备注",
+]
+
+
+class TestHuanglishiSettlementIsNotInsurance:
+    """这种表头曾经被接表向导登记成保费表，整张对账进了权益保险。"""
+
+    def test_it_routes_to_the_settlement_template(self, model) -> None:
+        from ledger.engine.recognize import match_headers
+        from ledger.engine.types import FileRef
+
+        rec = match_headers(
+            HUANGLISHI_SETTLE, model,
+            FileRef(sha256="x" * 64, filename="对账-蔡果-抖店烘焙.xlsx", sheet="对账-抖音皇莉诗"),
+        )
+        assert rec.template_id == "douyin_settlement_v2", rec.reason
+        assert rec.source_id == "settlement"
+
+    def test_the_real_insurance_table_still_goes_to_j(self, model) -> None:
+        from ledger.engine.recognize import match_headers
+        from ledger.engine.types import FileRef
+
+        rec = match_headers(
+            ["保险单号", "动账流水号", "关联子订单号", "摘要描述", "动账时间", "金额(元)"],
+            model,
+            FileRef(sha256="x" * 64, filename="权益保险-抖音浅花涧.xlsx"),
+        )
+        assert rec.template_id == "insurance_douyin_v1"
+
+    def test_scenes_land_on_their_fee_lines(self, tmp_path, model) -> None:
+        row = [""] * len(HUANGLISHI_SETTLE)
+        row[0] = "2026-06-20 10:00:00"
+        row[1] = "流水1"
+        row[2] = "入账"
+        row[3] = "16.32"
+        row[5] = "货款结算入账"
+        row[7] = "123F00"
+        row[8] = "123"
+        refund = list(row)
+        refund[1] = "流水2"
+        refund[2] = "出账"
+        refund[3] = "-4.57"
+        refund[5] = "退款-订单退款触发-分账"
+        ship = list(row)
+        ship[1] = "流水3"
+        ship[2] = "出账"
+        ship[3] = "-6.80"
+        ship[5] = "上门取件运费"
+        path = write_xlsx(tmp_path / "对账-蔡果-抖店烘焙.xlsx", [
+            HUANGLISHI_SETTLE, row, refund, ship,
+        ])
+        rec = recognize(path, model)
+        assert rec[0].template_id == "douyin_settlement_v2", rec[0].reason
+        result = ingest([path], model, [s.name for s in model.stores])
+        item = next(i for i in result.items if i.frame is not None)
+        from ledger.engine.classify import classify, COL_MAJOR
+
+        out, _ = classify(item.frame, model, "douyin", template=item.template)
+        assert out.get_column(COL_MAJOR).to_list() == [
+            "trade_receipt", "trade_refund", "logistics_fee",
+        ]
 
 
 class TestTheInsuranceTableIsAccepted:

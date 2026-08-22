@@ -137,9 +137,29 @@ class TestWhatCountsAsWorthShowing:
 
     def test_a_negative_unlinked_total_reads_as_an_amount_not_as_minus(self, model):
         """未归属总额是净额，可能是负的。「有 -357.06 挂不上订单」要在脑子里绕一圈。"""
-        rows = gaps.gaps(_payload(unlinked_total=-357.06), model)
+        rows = gaps.gaps(_payload(
+            unlinked_total=-357.06,
+            unlinked_buckets=[{"label": "取不出订单号，要查归属", "count": 3, "amount": -357.06}],
+        ), model)
         assert "357.06" in rows[0]["title"] and "-357.06" not in rows[0]["title"]
         assert rows[0]["amount"] == -357.06
+
+    def test_parked_topup_is_not_an_unlinked_gap(self, model):
+        """广告充值这类已经有解释的钱，不该再报成「要人查清归属」。
+
+        真事：抖音浅花涧 2026-05 未归属总额 -357.06，全是 664 笔货款直投千川。
+        卡片写「有 357.06 挂不上订单」，点进去却一行都没有——「要查」那一桶是空的，
+        点开走的是那一桶。这些行在「没进利润的钱」里，标着货款直投千川。
+        """
+        rows = gaps.gaps(_payload(
+            unlinked_total=-357.06,
+            unlinked_buckets=[
+                {"label": "其他店的数据（公司级主表）", "count": 299488, "amount": -552699.37},
+                {"label": "货款直投千川", "count": 664, "amount": -357.06},
+                {"label": "其他账期的订单", "count": 5, "amount": 125.83},
+            ],
+        ), model)
+        assert "unlinked" not in _kinds(rows)
 
     def test_coverage_at_full_is_not_an_issue(self, model):
         rows = gaps.gaps(_payload(quality=[

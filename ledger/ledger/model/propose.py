@@ -347,6 +347,12 @@ class Draft:
     parse: ParseOptions = field(default_factory=ParseOptions)
     #: 时间槽位。账期是按时间分的，不给槽位这张表算不出属于哪个月。
     time_slots: dict[str, str] = field(default_factory=dict)
+    #: 每个角色在模型里被当成什么形态用。用途见 `_binding_kind`。
+    role_shapes: dict[str, str] = field(default_factory=dict)
+    #: 现有模板的时间槽位惯例：槽位 → 角色。和 `time_slots` 的区别是它不看
+    #: 这张表映上了什么，是一份完整的候选表，供 `template()` 按人最终确认的
+    #: 映射重新对一遍。用途见那里。
+    slot_conventions: dict[str, str] = field(default_factory=dict)
     #: 合计行标记角色。表底那行合计不丢掉，每一列金额会刚好翻倍。
     total_row_marker: str | None = None
 
@@ -419,7 +425,7 @@ class Draft:
                 # 不该让整张表解析不出来——那会把「少一列」升级成「这个月没数据」。
                 required=False,
                 # 把看出来的类型写下来，别让引擎再去按角色名猜。
-                kind=_binding_kind(guess.shape),
+                kind=_binding_kind(guess.shape, self.role_shapes.get(role, "")),
             ))
         if dup := [r for r, n in Counter(b.role for b in bindings).items() if n > 1]:
             raise ModelError(
@@ -428,10 +434,22 @@ class Draft:
                   "重名列请只留一列，其余选「不映射」。"
             )
         picked = match_columns or self._match_columns(final)
-        slots = {
-            slot: role for slot, role in self.time_slots.items()
-            if role in {b.role for b in bindings}
-        }
+        # 槽位按人最终确认的映射重对一遍，不能只拿草案那份来过滤。
+        #
+        # 草案的槽位是按草案自己映上的角色填的（见 `_fill_slots`），而人在界面上
+        # 还会接着改：列名模型没见过时，草案根本猜不到那是时间列，得人自己选。
+        # 只过滤不重算的话，这种「人补上的时间列」拿不到槽位——整张表算不出账期。
+        #
+        # 实测 2026-08-21 接进来的京东新版对账表就是这样：结算时间这个列名模型
+        # 没见过（旧版那张叫「到账时间」），草案没映上 settle_time，落库的模板
+        # 一个槽位都没有。24,578 行里 13,045 行结算时间在 2026-06，界面上却写着
+        # 「传了，但里面没有 2026-06 的数据」。人以为是文件不对，前后传了六次、
+        # 手改了三轮列名——真正的原因和列名一点关系都没有。
+        got = {b.role for b in bindings}
+        slots = {slot: role for slot, role in self.time_slots.items() if role in got}
+        for slot, role in self.slot_conventions.items():
+            if role in got:
+                slots.setdefault(slot, role)
         return Template(
             id=template_id,
             source=source or self.source,
@@ -508,6 +526,7 @@ def propose(
     vocab = vocabulary(model)
     base_roles = _base_roles(model, base)
     globals_ = role_facts(model)
+    draft.role_shapes = {role: f.kind for role, f in globals_.items()}
     samples = _sample_columns(headers, rows or [])
     present = {normalize_header(h) for h in headers if normalize_header(h)}
     derived = _derived_names(model)
@@ -652,7 +671,7 @@ def _guess_column(
     return ColumnGuess(column=col, confidence="unknown")
 
 
-def _binding_kind(shape: Shape) -> str:
+def _binding_kind(shape: Shape, role_shape: str = "") -> str:
     """采样看出来的形态翻成绑定上的类型声明。
 
     只写 number 和 time，看着是文本也留空。原因是这个声明的分量不对称：写下
@@ -662,7 +681,20 @@ def _binding_kind(shape: Shape) -> str:
 
     编号也留空：19 位的订单号超过 float64 能精确表示的范围，转一次就变成另一个
     订单号，而且看不出来。
+
+    `time` 得再过一道：只有这个角色在模型里本来就当时间用，才照采样写下去。
+    写 time 和写 text 一样是按死一列——按时间解不出来的值会变成空。而备注是
+    取订单号的主要来源（淘宝那七条取键规则全从备注里抠），一列备注静默变空，
+    表现是这张表大半的钱挂不上订单，没有一处报错。
+
+    实测 2026-08-21 接进来的 settlement_v10 就把「资金动账备注」绑成了 time：
+    那一列采样出来的形态像日期（值里带着日期），而 remark 这个角色在模型里
+    是文本。采样看到的是这一列长什么样，模型知道的是这个角色拿来做什么用，
+    后者说了算——这个声明的作用就是覆盖引擎按角色名的猜测，不该让它覆盖到
+    角色的既有用法上去。
     """
+    if shape == "time" and role_shape != "time":
+        return ""
     return {"number": "number", "time": "time"}.get(shape, "")
 
 
@@ -676,10 +708,14 @@ def _fill_slots(draft: Draft, model: Model, facts: dict[str, RoleFacts]) -> None
     got = {g.role for g in draft.mapped}
 
     # 时间槽位：别的模板把哪个角色放在哪个槽位上，这里照着放。
+    #
+    # 惯例整份记下来，不只记这张表眼下映上的那些。草案只是默认值，人还会接着改
+    # 映射，而槽位得跟着人最终确认的那份走——见 `Draft.template` 里的重对。
     for tpl in model.templates:
         if draft.source and tpl.source != draft.source:
             continue
         for slot, role in tpl.time_slots.items():
+            draft.slot_conventions.setdefault(slot, role)
             if role in got:
                 draft.time_slots.setdefault(slot, role)
 

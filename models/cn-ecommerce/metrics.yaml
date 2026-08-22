@@ -14,6 +14,12 @@
 # 指标，结果永远是个位数百分比，界面上一整列恒定为红。一旦某一列颜色不再变化，
 # 人就不看它了，真正的缺数据信号也跟着一起没人看见。
 
+# 淘宝这七个对账科目的 link 都带 fallback_to: [order.sub_order_id]。对账表的订单号
+# 埋在备注里，平台给的有时是主订单号、有时是子订单号，人工表用 XLOOKUP 在主订单编号、
+# 子订单编号两列里查，命中都返回主订单编号，再按收入分配率摊到子订单。只认主订单号的
+# 话给了子订单号的行全部挂不上——天猫皇莉诗 2026-06 有 119 行、营销费用 -58.39 元就是
+# 这么留在「挂不上订单」那一桶里的，报表上少了这笔钱而没有一处报错。
+#
 # ---------------------------------------------------------------- 收入 --- #
 - id: trade_receipt
   name: 销售收入
@@ -23,7 +29,8 @@
   value: {op: sum, of: [income, outgo]}
   sign: as_is
   time_basis: settle_date
-  link: {key: base_order_id, to: order.order_id, grain: order}
+  link: {key: base_order_id, to: order.order_id, grain: order,
+         fallback_to: [order.sub_order_id]}
   allocate: {mode: ratio, by: alloc_ratio}
   expect:
     - {field: pay_time, op: notnull}
@@ -46,7 +53,8 @@
   value: {op: sum, of: [income, outgo]}
   sign: as_is
   time_basis: settle_date
-  link: {key: base_order_id, to: order.order_id, grain: order}
+  link: {key: base_order_id, to: order.order_id, grain: order,
+         fallback_to: [order.sub_order_id]}
   allocate: {mode: ratio, by: alloc_ratio}
   note: 源数据本身是负数，直接用，不取反。
 
@@ -60,26 +68,39 @@
   value: {op: sum, of: [income, outgo]}
   sign: as_is
   time_basis: settle_date
-  link: {key: base_order_id, to: order.order_id, grain: order}
+  link: {key: base_order_id, to: order.order_id, grain: order,
+         fallback_to: [order.sub_order_id]}
   allocate: {mode: ratio, by: alloc_ratio}
   note: 含类目软件服务费（原天猫佣金）、基础软件服务费、跨境服务增值费等。源数据为负。
 
-# 这里原先有一个 logistics_fee 指标，从对账表取平台物流费，现在删掉了。
-#
-# 对账表里根本没有「物流运费」这个业务大类——费项分类对照表淘宝天猫那 81 条里
-# 一条都没有。它一直是靠模板里一条手写规则（商家集运物流责任货值赔付 → 物流运费）
-# 单独撑着的，业务已经把那条改判成交易赔付，来源就没了。
-#
-# 报表上那一行也一起删了（statement.yaml 的 n_logistics）。留个空壳指标或者
-# 恒为 0 的常量行都不行：模型校验器不允许指标指向没人产出的口径项，那正是
-# 「某一列悄悄恒为 0 却没人发现」的防线。
-#
-# 这不只是引擎口径的问题——费项分类对照表五个平台加起来一条都没有「物流运费」
-# 这个业务大类，而且它把商家集运物流服务费、商家集运中转操作费明确定成软件服务费，
-# 和引擎现在的做法一致。也就是说业务自己的分类表里就没有平台物流费这回事。
-#
-# 将来真有来源接进来时，把指标加回这儿、报表行加回 statement.yaml。注意符号：
-# 源数据是正数、利润公式里是减号，所以当时用的是 sign: negate。
+# 物流运费、跨境服务费：字典里几乎没有对应科目，靠费项页配规则第一次把钱归进来。
+# 所以指标必须先在，否则归上之后从未归类清单里消失、却也不进损益表。
+# 符号跟平台服务费一样走源数据（对账表支出栏本身是负的），不再取反。
+- id: logistics_fee
+  name: 物流运费
+  occasional: true
+  source: settlement
+  platform: taobao
+  major: logistics_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order,
+         fallback_to: [order.sub_order_id]}
+  allocate: {mode: ratio, by: alloc_ratio}
+
+- id: cross_border_fee
+  name: 跨境服务费
+  occasional: true
+  source: settlement
+  platform: taobao
+  major: cross_border_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order,
+         fallback_to: [order.sub_order_id]}
+  allocate: {mode: ratio, by: alloc_ratio}
 
 - id: trade_compensation
   name: 交易赔付
@@ -90,7 +111,8 @@
   value: {op: sum, of: [income, outgo]}
   sign: as_is
   time_basis: settle_date
-  link: {key: base_order_id, to: order.order_id, grain: order}
+  link: {key: base_order_id, to: order.order_id, grain: order,
+         fallback_to: [order.sub_order_id]}
   allocate: {mode: ratio, by: alloc_ratio}
 
 - id: marketing_fee
@@ -102,7 +124,8 @@
   value: {op: sum, of: [income, outgo]}
   sign: as_is
   time_basis: settle_date
-  link: {key: base_order_id, to: order.order_id, grain: order}
+  link: {key: base_order_id, to: order.order_id, grain: order,
+         fallback_to: [order.sub_order_id]}
   allocate: {mode: ratio, by: alloc_ratio}
   note: >
     主要来自业务描述为空的「交易分账」行，实测 11,462 行。
@@ -352,6 +375,66 @@
     保障服务、先采后付、交易技术服务费、赔付补贴全归这一条，不拆费项。
     人工口径就是不拆——1688 的订单明细表里只有「销售支出」一列。
 
+- id: logistics_fee_1688
+  name: 物流运费
+  occasional: true
+  source: settlement
+  platform: alibaba1688
+  major: logistics_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
+- id: cross_border_fee_1688
+  name: 跨境服务费
+  occasional: true
+  source: settlement
+  platform: alibaba1688
+  major: cross_border_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
+# 下面两条对着界面上配的规则开：财务 2026-08-20 把 1688 的大分销抽佣、跨境供应链
+# 服务费、技术服务费缴纳改判平台服务费，仅退款补贴改判交易赔付——都从原先那个
+# 不拆费项的「销售支出」里搬了出去。
+#
+# 搬出去就得有指标接着，不然钱直接从损益表上消失：科目改判了，而 1688 这边
+# 一条 software_fee / trade_compensation 的指标都没有，投影时没人认领。
+# 实测 1688 星泽 2026-05 少了 349.57 元——销售支出从 -375.43 收到 -25.86，
+# 利润反而多出同样的数，费用科目之间搬家却动了利润，就是钱掉了的样子。
+# 拼多多的多多进宝在 2026-08-19 掉过一次同样的坑（4.79 元）。
+#
+# 取数照 trade_expense_1688 写，只汇总 outgo：1688 交上来的是收款、付款两张表，
+# 收款那张只有「已收金额(元)」一列，没有 outgo。写成 of: [income, outgo] 的话
+# 付款表少一列、指标一行都出不来——加了指标钱照样不进账，看着像没生效。
+# 改判走的这批全在付款表上（实测 1,720 行 -467.07 元、赔付退回 1 行 +10.00）。
+- id: software_fee_1688
+  name: 平台服务费
+  occasional: true
+  source: settlement
+  platform: alibaba1688
+  major: software_fee
+  value: {op: sum, of: [outgo]}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
+- id: trade_compensation_1688
+  name: 交易赔付
+  occasional: true
+  source: settlement
+  platform: alibaba1688
+  major: trade_compensation
+  value: {op: sum, of: [outgo]}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
 # ----------------------------------------------------------------- 京东 --- #
 # 口径来自京东那张订单明细表的公式，每一项都除以 countifs(订单号)，也就是同一订单的
 # 多行之间均摊。它的对账表只拆三项：交易收款、交易退款、平台技术服务费。
@@ -406,8 +489,53 @@
   allocate: {mode: even}
   note: >
     京东叫平台技术服务费，含佣金、交易服务费、商品保险服务费、运费保险服务费、
-    综合违约金、随单送的京豆，以及规则表指定并到这里的售后卖家赔付费和返利框架费。
+    综合违约金、随单送的京豆，以及规则表指定并到这里的返利框架费。
     不设 occasional：这个平台每一单都有佣金和交易服务费，缺了就是对账表没交全。
+
+    规则表原先把售后卖家赔付费也填在这一项里，财务 2026-08-20 在界面上把它
+    改判交易赔付，见下面的 trade_compensation_jd。
+
+- id: logistics_fee_jd
+  name: 物流运费
+  occasional: true
+  source: settlement
+  platform: jd
+  major: logistics_fee
+  value: {op: sum, of: [income]}
+  where:
+    - {field: bill_status, op: eq, value: 已结算}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
+- id: cross_border_fee_jd
+  name: 跨境服务费
+  occasional: true
+  source: settlement
+  platform: jd
+  major: cross_border_fee
+  value: {op: sum, of: [income]}
+  where:
+    - {field: bill_status, op: eq, value: 已结算}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
+# 财务 2026-08-20 在界面上把售后卖家赔付费从平台服务费改判交易赔付——赔给买家的钱
+# 和给平台的技术服务费是两回事，京东规则表当初把它们填在一起。改判就得有指标接着，
+# 不然这批钱归上了类却没人认领，直接从损益表消失。1688 和拼多多各掉过一次同样的坑。
+- id: trade_compensation_jd
+  name: 交易赔付
+  occasional: true
+  source: settlement
+  platform: jd
+  major: trade_compensation
+  value: {op: sum, of: [income]}
+  where:
+    - {field: bill_status, op: eq, value: 已结算}
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
 
 # --------------------------------------------------------------- 拼多多 --- #
 # 口径来自拼多多那张订单明细表的公式。和京东最大的差别是对账那四项都不除 countifs——
@@ -450,6 +578,30 @@
   allocate: {mode: even}
   note: 技术服务费和基础技术服务费。费率很低，本期 7,847 行合计只有 -522.14 元。
 
+- id: logistics_fee_pdd
+  name: 物流运费
+  occasional: true
+  source: settlement
+  platform: pdd
+  major: logistics_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
+- id: cross_border_fee_pdd
+  name: 跨境服务费
+  occasional: true
+  source: settlement
+  platform: pdd
+  major: cross_border_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
 - id: trade_compensation_pdd
   name: 交易赔付
   occasional: true
@@ -464,6 +616,23 @@
   note: >
     售后费用那一组（运费补偿、售后补偿消费者、延迟发货、虚假发货、缺货、
     发票服务承诺未兑现）加上其他收支那一组（申诉补回、合作费追回）。
+
+- id: marketing_fee_pdd
+  name: 平台营销费用
+  occasional: true
+  source: settlement
+  platform: pdd
+  major: marketing_fee
+  value: {op: sum, of: [income, outgo]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+  note: >
+    多多进宝。字典和界面规则都能把它归成 marketing_fee，但原先只有淘宝那条
+    marketing_fee 指标，platform 写死 taobao。归类对了也没有指标消费，
+    损益表「平台营销费用」恒为 0，下钻也是空的——好日子 2026-06 那 8 笔就是这样
+    从报表上消失的。这不是「没配上规则」，是拼多多缺这一项。
 
 # --------------------------------------------------------------- 抖音收支 --- #
 # 抖音本来是「一条净额」：销售收入=sumifs(对账表动账金额,子订单号,子订单编号)，
@@ -519,6 +688,30 @@
   link: {key: base_order_id, to: order.order_id, grain: order}
   allocate: {mode: even}
   note: 偏远地区物流服务、上门取件运费、权益保险（运费险）三个动账场景。
+
+- id: logistics_fee_douyin
+  name: 物流运费
+  occasional: true
+  source: settlement
+  platform: douyin
+  major: logistics_fee
+  value: {op: sum, of: [income]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
+
+- id: cross_border_fee_douyin
+  name: 跨境服务费
+  occasional: true
+  source: settlement
+  platform: douyin
+  major: cross_border_fee
+  value: {op: sum, of: [income]}
+  sign: as_is
+  time_basis: settle_date
+  link: {key: base_order_id, to: order.order_id, grain: order}
+  allocate: {mode: even}
 
 - id: trade_compensation_douyin
   name: 交易赔付

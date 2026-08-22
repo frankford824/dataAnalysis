@@ -531,13 +531,14 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
         name = node.name if node else node_id
         kind = "statement"
         skip_claim = False
+    key_label = _link_key_label(model, metrics)
     empty = {
         "node": node_id, "name": name,
         "metrics": [], "total": 0.0, "source_total": 0.0, "value": value,
         "rows": 0, "by_subject": [], "by_file": [], "sample": [],
         "selection": _selection(0, 0.0, offset, limit, subject, file, q),
         "only": only, "graded": True, "uncounted": _uncounted(0, 0.0),
-        "truncated": False, "kind": kind,
+        "truncated": False, "kind": kind, "key_label": key_label,
     }
     if facts.is_empty() or (not skip_claim and not metrics):
         return empty
@@ -657,9 +658,29 @@ def drill(facts: pl.DataFrame, model: Model, node_id: str, limit: int = DRILL_LI
         #: 不用自己记——记岔了会出现「显示按科目筛着、其实没筛」这种最难查的错。
         "selection": _selection(int(picked.height), picked_total, offset, limit,
                                 subject, file, q),
+        "key_label": key_label,
         # 老字段，留着不动界面。现在的含义是「还有下一页」。
         "truncated": max(offset, 0) + limit < int(picked.height),
     }
+
+
+def _link_key_label(model: Model, metrics: list[str]) -> str:
+    """下钻表头：推广表挂的是商品 ID，不能写成订单号。
+
+    拼多多商品分天推广那列绑定的是 product_id，下钻却整列写着「订单号」。
+    人对着订单库去查这些号，永远查不到，还会以为匹配规则写错了。
+    """
+    grains = []
+    for mid in metrics:
+        try:
+            metric = model.metric(mid)
+        except KeyError:
+            continue
+        if metric.link:
+            grains.append(metric.link.grain)
+    if grains and all(g == "product" for g in grains):
+        return "商品ID"
+    return "订单号"
 
 
 def _special_drill(facts: pl.DataFrame, model: Model, node_id: str):

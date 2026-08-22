@@ -378,6 +378,18 @@ def test_keyword_searches_the_order_id():
     assert [r["row_no"] for r in d["sample"]] == [6]
 
 
+def test_promotion_drill_labels_the_key_as_product_id(real):
+    """拼多多商品分天推广挂的是商品 ID。写成订单号的话人会对着订单库去查。"""
+    d = drill(_facts([{"metric_id": "ad_cost", "amount": -7.47}]), real, "n_ad")
+    assert d["key_label"] == "商品ID"
+
+
+def test_fee_drill_still_says_order_id(real):
+    d = drill(_facts([{"metric_id": "software_fee", "amount": -1.0, "major": "software_fee"}]),
+              real, "n_software")
+    assert d["key_label"] == "订单号"
+
+
 def test_keyword_is_taken_literally():
     """科目名里带括号、加号的多得是。当成正则不是报错就是撞出一堆无关的行。"""
     d = drill(_facts([

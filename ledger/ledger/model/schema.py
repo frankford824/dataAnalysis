@@ -512,6 +512,15 @@ class LinkRule(Base):
     extract: str | None = None
     #: 关联目标。形如 `order.sub_order_id`。
     to: str | None = None
+    #: `to` 挂不上时依次再试的角色。命中后把键换算成 `to` 那个角色的值，
+    #: 归集层级不变。
+    #:
+    #: 淘宝对账表的订单号埋在备注里，平台给的有时是主订单号、有时是子订单号
+    #: （实测天猫皇莉诗 2026-06 有 119 行给的是子订单号）。人工表用的是
+    #: XLOOKUP 在主订单编号、子订单编号两列里查，命中都返回主订单编号，
+    #: 再按收入分配率摊到子订单。只认主订单号的话这些行全部挂不上，
+    #: 钱静悄悄地留在「挂不上订单」那一桶里——营销费用 -58.39 元就是这么丢的。
+    fallback_to: tuple[str, ...] = ()
     grain: Grain = "order"
     #: 命中率低于此值告警。
     min_hit_rate: float = 0.95
@@ -721,6 +730,18 @@ class DictionaryEntry(Base):
     naturally_unlinked: bool = False
 
 
+def _contains_needles(value: str) -> tuple[str, ...]:
+    """「包含」规则里用 / 隔开的是多个关键词，命中任一即可。
+
+    界面上把几条相近的包含规则合成一条时，词与词之间习惯写成
+    「上门取件运费/偏远地区物流服务」。引擎的 contains 是「字段含其中任一」，
+    不是「整段原样出现」。不拆的话，带斜杠的那一整串永远匹配不上任何一行
+    真实流水——合并完 20 条看起来齐了，账上该归的还是未归类。
+    """
+    parts = tuple(p.strip() for p in value.split("/") if p.strip())
+    return parts or (value,)
+
+
 class FeeRule(Base):
     """从界面配的一条归类规则。
 
@@ -792,9 +813,17 @@ class FeeRule(Base):
     @property
     def label(self) -> str:
         """给界面和规则链统计用的一句话。"""
-        field = {"subject": "业务描述", "remark": "备注", "biz_type": "业务类型"}.get(
-            self.field, self.field
-        )
+        field = {
+            "subject": "业务描述",
+            "remark": "备注",
+            "biz_type": "业务类型",
+            "douyin_scene": "动帐场景",
+            "jd_fee_name": "费用名称",
+            "jd_fee_meaning": "费用项含义",
+            "scene_type": "场景类型",
+            "scene_detail": "场景明细",
+            "bill_type": "账单类型",
+        }.get(self.field, self.field)
         how = {
             "exact": "等于",
             "equals": "完全一致",
@@ -809,7 +838,7 @@ class FeeRule(Base):
         when = FieldMatch(
             field=self.field,
             equals=(self.value,) if self.how in ("exact", "equals") else (),
-            contains=(self.value,) if self.how == "contains" else (),
+            contains=_contains_needles(self.value) if self.how == "contains" else (),
             matches=self.value if self.how == "regex" else None,
             normalized=self.how == "exact",
         )
@@ -837,6 +866,7 @@ class Check(Base):
         "link_rate",         # 关联命中率达标：附属数据挂上了订单
         "spine_coverage",    # 覆盖率达标：订单拿到了这项数据
         "no_unclassified",   # 无未归类科目
+        "major_has_metric",  # 归到的科目在本平台有指标接着
         "completeness",      # 数据源到齐
         "tie_out",           # 勾稽等式成立
         "unlinked_disclosed",  # 未归属金额已显式呈现

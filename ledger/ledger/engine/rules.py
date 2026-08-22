@@ -23,6 +23,29 @@ from ..model.schema import Bridge, ClassifyRule, FieldMatch, KeyRule, normalize_
 #: 规则链求值结果里表示"显式排除"的哨兵。与"没命中"必须区分开。
 EXCLUDED = "\x00excluded"
 
+#: 界面按对账表列名配规则。引擎帧上是角色名，而且同一列名在不同模板上
+#: 可能绑到不同角色：1688 收款的「场景类型」是 subject，付款的「场景明细」才是
+#: subject。解析时按这个顺序找第一个实际存在的列。
+CLASSIFY_FIELD_ROLES: dict[str, tuple[str, ...]] = {
+    "subject": ("subject",),
+    "remark": ("remark",),
+    "biz_type": ("biz_type",),
+    "douyin_scene": ("subject",),
+    "jd_fee_name": ("subject",),
+    "jd_fee_meaning": ("fee_meaning",),
+    "scene_type": ("scene_type", "subject"),
+    "scene_detail": ("minor_subject", "subject"),
+    "bill_type": ("biz_type",),
+}
+
+
+def resolve_classify_field(field: str, columns) -> str | None:
+    """规则上的字段 id 落到这一帧真正有的角色列。没有就当这一环不适用。"""
+    for role in CLASSIFY_FIELD_ROLES.get(field, (field,)):
+        if role in columns:
+            return role
+    return None
+
 
 @dataclass
 class ChainStats:
@@ -247,7 +270,8 @@ def resolve_class(
                 stats.record(i)
             return found[0], found[1], False, False, rule.label
         assert rule.matcher is not None
-        if rule.matcher.apply(row.get(rule.matcher.field)) is None:
+        col = resolve_classify_field(rule.matcher.field, row)
+        if rule.matcher.apply(row.get(col) if col else None) is None:
             continue
         if stats:
             stats.record(i, excluded=rule.exclude)
@@ -264,9 +288,17 @@ def resolve_class(
 def _describe(spec: FieldMatch | None) -> str:
     if spec is None:
         return "（无条件）"
-    field = {"subject": "业务描述", "remark": "备注", "biz_type": "业务类型"}.get(
-        spec.field, spec.field
-    )
+    field = {
+        "subject": "业务描述",
+        "remark": "备注",
+        "biz_type": "业务类型",
+        "douyin_scene": "动帐场景",
+        "jd_fee_name": "费用名称",
+        "jd_fee_meaning": "费用项含义",
+        "scene_type": "场景类型",
+        "scene_detail": "场景明细",
+        "bill_type": "账单类型",
+    }.get(spec.field, spec.field)
     bits = [field]
     if spec.equals:
         bits.append("完全一致「" + " / ".join(list(spec.equals)[:2]) + "」")
@@ -285,7 +317,7 @@ _NOISE = re.compile(r"[\s\u3000'\"]+")
 def _norm(value: object) -> str:
     if value is None:
         return ""
-    s = _NOISE.sub("", str(value))
+    s = _NOISE.sub("", str(value)).lstrip("@")
     if s.endswith(".0") and s[:-2].isdigit():
         s = s[:-2]
     return s
@@ -297,8 +329,11 @@ def norm_expr(col: pl.Expr) -> pl.Expr:
     `.0` 结尾那一段是在还原一个具体的坑：订单号列被 Excel 当数字存过，
     读出来是 `12345.0`，和另一张表里的 `12345` 挂不上。只有纯数字才砍，
     否则会把 `V1.0` 这种真名字砍成 `V1`。
+
+    开头的 `@` 是另一个 Excel 痕迹：长数字被标成文本时，格子里会留下 `@435…`。
+    支付宝备注抠出的运单号没有这个前缀，聚水潭快递单号有，不折掉就回查不上。
     """
-    s = col.fill_null("").str.replace_all(r"[\s\u3000'\"]+", "")
+    s = col.fill_null("").str.replace_all(r"[\s\u3000'\"]+", "").str.strip_chars_start("@")
     stem = s.str.strip_suffix(".0")
     return pl.when(stem.str.contains(r"^\d+$")).then(stem).otherwise(s)
 

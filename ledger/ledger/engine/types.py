@@ -119,6 +119,8 @@ class LinkReport:
     naturally_unlinked_rows: int = 0
     #: 正则提取失败的行数。
     extract_failed_rows: int = 0
+    #: 靠备用角色换算才挂上的行数。见 LinkRule.fallback_to。
+    fallback_rows: int = 0
     unlinked_amount: float = 0.0
     #: 被规则链显式排除的行数。这类不算异常。
     excluded_rows: int = 0
@@ -170,6 +172,34 @@ class ClassifyReport:
     def note_unmatched(self, label: str, row: tuple[str, str, str], amount: float) -> None:
         """记一行未归类。同一物理行重复报只留一次。"""
         self.unmatched_rows.setdefault(label, {})[row] = amount
+
+    def for_rows(self, anchors: set[tuple[str, str, str]]) -> ClassifyReport:
+        """只留这些物理行的未归类，其余字段照抄。
+
+        归类是按表跑的，一张表跑完就是一份报告；而账是按（店，账期）结的。
+        两者不是一回事，中间必须过滤一次。不过滤的后果是：全公司共用的那几张
+        表——小额打款、运费、聚水潭成本——里任何一行归不上，会同时拦住每一家店
+        每一个账期结账，而且每家店看到的都是同一句话，谁都不知道那行是不是自己的。
+
+        实测小额打款表第 1671、1672 行网店名称、下单日期、摘要三列全空，只有
+        收款人和 3 元金额。它们没进任何一家店的账（算不出账期），却让八家店
+        全部 can_close=false，报出来的说法还是「业务描述为空」——那张表根本
+        没有业务描述这一列。
+
+        行数与命中率不跟着过滤：它们是「这批表认识多少科目」的统计，
+        本身就不按店期分。真正卡结账的是未归类，只过滤它。
+        """
+        scoped = {
+            label: {row: amt for row, amt in rows.items() if row in anchors}
+            for label, rows in self.unmatched_rows.items()
+        }
+        return ClassifyReport(
+            total_rows=self.total_rows,
+            classified_rows=self.classified_rows,
+            unmatched_rows={k: v for k, v in scoped.items() if v},
+            excluded_rows=self.excluded_rows,
+            chain=self.chain,
+        )
 
     @property
     def unmatched(self) -> dict[str, tuple[int, float]]:

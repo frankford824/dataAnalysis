@@ -148,11 +148,19 @@ def diff_table(model: Model, table: dict[str, str], platforms: set[str] | None =
     return diff
 
 
-#: 界面上能配的匹配列。角色名是引擎的，中文是人对账表上看到的列名。
+#: 界面配的匹配列。id 写入 fee-rules.csv；第三项是平台，`*` 是各平台都有的通用列。
+#: 平台专属列用对账表上的原名，别再叫「业务描述」——抖音那列叫动帐场景，
+#: 人选「业务描述」会对不上自己手里的表。
 FEE_FIELDS = (
-    ("subject", "业务描述"),
-    ("remark", "备注"),
-    ("biz_type", "业务类型"),
+    ("subject", "业务描述", "*"),
+    ("remark", "备注", "*"),
+    ("biz_type", "业务类型", "*"),
+    ("douyin_scene", "动帐场景", "douyin"),
+    ("jd_fee_name", "费用名称", "jd"),
+    ("jd_fee_meaning", "费用项含义", "jd"),
+    ("scene_type", "场景类型", "alibaba1688"),
+    ("scene_detail", "场景明细", "alibaba1688"),
+    ("bill_type", "账单类型", "alibaba1688"),
 )
 
 FEE_HOWS = (
@@ -163,8 +171,8 @@ FEE_HOWS = (
 )
 
 FEE_STAGES = (
-    ("after", "仅处理尚未归类的流水"),
-    ("before", "优先于现有规则"),
+    ("after", "只改还未挂上费项的流水"),
+    ("before", "覆盖模板里已有的归类"),
 )
 
 #: 口径项没有对应指标时的中文名。和 asset-import.yaml 的 major_labels 对齐。
@@ -177,9 +185,10 @@ MAJOR_LABELS = {
     "marketing_fee": "平台营销费用",
     "dropship_cost": "代购代发",
     "logistics_fee": "物流运费",
+    "cross_border_fee": "跨境服务费",
     "withdrawal": "提现",
     "deposit": "保证金",
-    "ad_topup": "广告充值",
+    "ad_topup": "广告费用",
     "misc_payment": "往来款",
     "trade_receipt_1688": "销售收入（1688）",
     "trade_expense_1688": "销售支出（1688）",
@@ -193,7 +202,7 @@ EXTRA_PLATFORM_NAMES = {
 }
 
 _EMPTY_SUBJECT = "（业务描述为空）"
-_FIELD_CN = dict(FEE_FIELDS)
+_FIELD_CN = {i: n for i, n, *_ in FEE_FIELDS}
 
 #: 支付宝备注里用来区分每一笔的编号。展示和归类时都该拿掉，不然几百行
 #: 看起来都一样，点进去却配出几百条只命中一笔的规则。
@@ -318,7 +327,7 @@ def humanize_via(text: str, model: Model | None = None) -> str:
     if not text:
         return text
     shown = text.replace("[配置]", "费项规则")
-    for eng, cn in FEE_FIELDS:
+    for eng, cn, *_ in sorted(FEE_FIELDS, key=lambda t: -len(t[0])):
         shown = shown.replace(f"{eng} ", f"{cn} ")
         if shown == eng or shown.startswith(eng + " "):
             shown = cn + shown[len(eng):]

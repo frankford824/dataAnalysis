@@ -66,6 +66,58 @@ class TestEvenAllocation:
         assert round(sum(proj.facts.get_column("amount").to_list()), 2) == 10.0
 
 
+class TestFullyOffsetOrdersStayOnTheSpine:
+    """一收一退相抵到 0 的订单，照样要留在脊柱上。
+
+    脊柱行是「这笔钱算进了账」的凭据：`runtime._mark_counted` 就按这个标源行进没
+    进账。整笔相抵的订单要是不留，标出来是「没进账」，和真正挂不上订单的钱并排
+    列在同一张清单上——人分不出哪些要查，只能一单一单去核，核完发现是相抵的。
+
+    金额上两种做法没有区别，加 0 不改变任何合计。差别全在能不能说清楚。
+
+    实测 1688 朗歆 2026-06 有 8 单是这样，每单一行订单收入、一行订单售后退款，
+    金额分毫不差（77.40 / 35.15 / 34.80 / 34.59 …）。财务逐单核对时把它们当成
+    少算了的收入报了过来：单号对、费项大类对、二级科目也对，界面偏说没进账。
+    """
+
+    def test_an_offset_order_still_produces_a_spine_row(self):
+        spine = _spine([{"order_id": "A", "store": "s", "period": "p"}])
+        proj = project(_facts([("A", 77.4), ("A", -77.4)]),
+                       _metric(Allocation(mode="even")), spine)
+        assert proj.facts.height == 1, "相抵的订单不留在脊柱上，就会被标成没进账"
+        assert proj.facts.get_column("amount").to_list() == [0.0]
+
+    def test_a_spine_row_that_got_nothing_is_still_dropped(self):
+        """没分到钱的脊柱行照旧丢掉。这条和上面那条长得一样，含义相反。"""
+        spine = _spine([
+            {"order_id": "A", "store": "s", "period": "p"},
+            {"order_id": "B", "store": "s", "period": "p"},
+        ])
+        proj = project(_facts([("A", 50.0)]), _metric(Allocation(mode="even")), spine)
+        assert proj.facts.get_column("link_key").to_list() == ["A"]
+
+    def test_the_total_does_not_move(self):
+        spine = _spine([
+            {"order_id": "A", "store": "s", "period": "p"},
+            {"order_id": "B", "store": "s", "period": "p"},
+        ])
+        proj = project(_facts([("A", 77.4), ("A", -77.4), ("B", 12.5)]),
+                       _metric(Allocation(mode="even")), spine)
+        assert round(sum(proj.facts.get_column("amount").to_list()), 2) == 12.5
+
+    def test_every_sub_order_of_an_offset_order_is_kept(self):
+        """一个主订单下几个子订单，相抵之后每个子订单都留一行 0。
+
+        留一行、留几行，报表上都是 0。留全是因为下钻要能对上：这一单在脊柱上有
+        几行，进账清单里就该看到几行，少了人又要问那几行去哪了。
+        """
+        spine = _spine([{"order_id": "A", "store": "s", "period": "p"} for _ in range(3)])
+        proj = project(_facts([("A", 30.0), ("A", -30.0)]),
+                       _metric(Allocation(mode="even")), spine)
+        assert proj.facts.height == 3
+        assert proj.facts.get_column("amount").to_list() == [0.0, 0.0, 0.0]
+
+
 class TestRatioAllocation:
     """按占比分。淘宝的口径，分配率由平台给。"""
 
@@ -132,6 +184,87 @@ class TestRatioAllocation:
         got = [round(x, 2) for x in proj.facts.get_column("amount").to_list()]
         assert got == [70.0, 30.0]
         assert any("买家实付" in n for n in proj.notes)
+
+
+class TestDerivedRatioFollowsTheManualDefinition:
+    """自己推分配率时，口径照财务表来：子订单收入 = 买家实付 - 退款金额。
+
+    淘宝喜必顺那份订单明细是人工工作表原件，第一行逐列写着公式：
+    子订单收入 = 买家实付金额 - 退款金额（报错取买家实付、负数计 0），
+    主订单收入 = 按主订单编号汇总子订单收入，收入分配率 = 两者相除，
+    各费项 = 按主订单号汇总的金额 × 收入分配率。天猫皇莉诗交上来的那份只有
+    前九列，分配率得自己推，推的口径必须和这套对齐，否则同一笔平台费用
+    落到哪个子订单、进而毛利和提成算给谁，两边就不一样。
+    """
+
+    def _metric(self):
+        return _metric(Allocation(mode="ratio", by="alloc_ratio"))
+
+    def test_refund_comes_off_before_taking_the_share(self):
+        spine = _spine([
+            {"order_id": "A", "buyer_paid": 70.0, "refund_amount": 20.0,
+             "store": "s", "period": "p"},
+            {"order_id": "A", "buyer_paid": 30.0, "refund_amount": 0.0,
+             "store": "s", "period": "p"},
+        ])
+        proj = project(_facts([("A", 80.0)]), self._metric(), spine)
+        got = [round(x, 2) for x in proj.facts.get_column("amount").to_list()]
+        # 净收入 50 和 30，占比 5:3
+        assert got == [50.0, 30.0]
+        assert round(sum(got), 2) == 80.0
+        assert any("扣退款后" in n for n in proj.notes)
+
+    def test_no_refund_filed_reads_as_zero_not_as_a_hole(self):
+        """退款金额那格常填「无退款申请」，转数值后是空，得落回买家实付。
+
+        人工公式是 IFERROR 回买家实付金额，按空值当 0 减就是同一个结果。
+        """
+        spine = _spine([
+            {"order_id": "A", "buyer_paid": 70.0, "refund_amount": None,
+             "store": "s", "period": "p"},
+            {"order_id": "A", "buyer_paid": 30.0, "refund_amount": None,
+             "store": "s", "period": "p"},
+        ])
+        proj = project(_facts([("A", 100.0)]), self._metric(), spine)
+        got = [round(x, 2) for x in proj.facts.get_column("amount").to_list()]
+        assert got == [70.0, 30.0]
+
+    def test_a_fully_refunded_sub_order_carries_nothing(self):
+        """全退的子订单收入是 0，费用不该摊到它头上。
+
+        退款比实付还多的也一样——人工公式写着「值 < 0 则计为 0」，
+        不计零的话这一行会拿到负的分摊比例，把钱倒推给别的子订单。
+        """
+        spine = _spine([
+            {"order_id": "A", "buyer_paid": 40.0, "refund_amount": 0.0,
+             "store": "s", "period": "p"},
+            {"order_id": "A", "buyer_paid": 39.6, "refund_amount": 39.6,
+             "store": "s", "period": "p"},
+            {"order_id": "A", "buyer_paid": 17.5, "refund_amount": 18.5,
+             "store": "s", "period": "p"},
+        ])
+        proj = project(_facts([("A", 60.0)]), self._metric(), spine)
+        got = [round(x, 2) for x in proj.facts.get_column("amount").to_list()]
+        # 分到 0 的行不落账，钱整笔留在唯一还有收入的那个子订单上
+        assert got == [60.0]
+
+    def test_an_all_refunded_order_keeps_its_fee_on_the_books(self):
+        """一单全退到没有可比收入了，退回笔数均摊——钱不能丢。
+
+        人工表这里分配率算成 0，挂在这单上的费用整块消失（实测天猫皇莉诗
+        2026-06 有 3 单、5.45 元）。但佣金是真扣走了的，账上得留着，
+        只是没法说清该摊给哪个子订单。
+        """
+        spine = _spine([
+            {"order_id": "A", "buyer_paid": 39.6, "refund_amount": 39.6,
+             "store": "s", "period": "p"},
+            {"order_id": "A", "buyer_paid": 10.0, "refund_amount": 10.0,
+             "store": "s", "period": "p"},
+        ])
+        proj = project(_facts([("A", -5.45)]), self._metric(), spine)
+        got = proj.facts.get_column("amount").to_list()
+        assert [round(x, 3) for x in got] == [-2.725, -2.725]
+        assert round(sum(got), 2) == -5.45
 
 
 class TestNoAllocation:
@@ -224,3 +357,60 @@ class TestOrderlessStillEntersProfit:
         assert "JULY" not in proj.facts.get_column("link_key").to_list()
         assert proj.orphan_keys == 1
         assert proj.orphan_amount == -0.49
+
+    def test_the_period_comes_from_the_first_physical_row(self):
+        """同一个订单号跨了两个账期时，跟源文件里最早出现的那一行。
+
+        取哪一行决定这笔钱落哪个月，所以不能让它随机。polars 的 group_by 默认
+        不保证组内顺序，多线程下 first() 取到的是哪一行不定——同一份表跑两遍
+        给出两个利润，那两个数就都不可信。实测京东皇莉诗 2026-05 的负基数合计
+        在 -5,777.56 和 -5,779.26 之间跳，差的正是一笔 1.70 元有时进本期、
+        有时落到别的月。
+        """
+        spine = _spine([
+            {"order_id": "IN", "store": "s", "period": "p"},
+            {"order_id": "IN2", "store": "s", "period": "q"},
+        ])
+        # 同一个 OUT 在源表里三行，账期先 q 后 p。行序倒着放也要拿到 q。
+        facts = pl.DataFrame({
+            "metric_id": ["freight_cost"] * 4,
+            "source_id": ["freight"] * 4,
+            "store": ["s"] * 4,
+            "period": ["p", "q", "p", "p"],
+            "link_key": ["IN", "OUT", "OUT", "OUT"],
+            "amount": [10.0, -0.49, -0.49, -0.49],
+            "count_without_order": [False, True, True, True],
+            "file_sha": ["sha"] * 4,
+            "sheet": ["S"] * 4,
+            "row_no": [1, 20, 30, 40],
+        })
+        out = project(facts, _metric(None), spine).facts.filter(
+            pl.col("link_key") == "OUT"
+        )
+        assert out.get_column("period").to_list() == ["q"]
+
+    def test_the_first_row_wins_no_matter_how_the_rows_arrive(self):
+        """把同样的行倒着交进来，结果必须一模一样。"""
+        spine = _spine([
+            {"order_id": "IN", "store": "s", "period": "p"},
+            {"order_id": "IN2", "store": "s", "period": "q"},
+        ])
+        base = {
+            "metric_id": ["freight_cost"] * 3,
+            "source_id": ["freight"] * 3,
+            "store": ["s"] * 3,
+            "link_key": ["OUT"] * 3,
+            "amount": [-0.49] * 3,
+            "count_without_order": [True] * 3,
+            "file_sha": ["sha"] * 3,
+            "sheet": ["S"] * 3,
+        }
+        forward = pl.DataFrame({**base, "period": ["q", "p", "p"],
+                                "row_no": [20, 30, 40]})
+        backward = pl.DataFrame({**base, "period": ["p", "p", "q"],
+                                 "row_no": [40, 30, 20]})
+        got = [
+            project(f, _metric(None), spine).facts.get_column("period").to_list()
+            for f in (forward, backward)
+        ]
+        assert got[0] == got[1] == ["q"]

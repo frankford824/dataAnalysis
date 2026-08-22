@@ -68,6 +68,71 @@ def _classified(tmp_path, rows, model, platform):
     return out, item.template
 
 
+class TestASourceThatCouldNotBeComputedSaysSo:
+    """指标算不出来时，界面上不能说成「表里没有这个月的数据」。
+
+    京东 2026-08 换了对账表的导出口。新版少了「结算状态」一列，而京东那几条指标
+    都筛「只算已结算」，于是六条指标全部停在这一列上，事实里一行都没有。完整度那边
+    照「事实里找不到这个源」的老路，报的是「传了，但里面没有 2026-06 的数据」。
+
+    这句话把人指向了错误的地方：表里 24,578 行、13,045 行就在 2026-06。财务照着
+    这句话找了一下午——前后传了六次、手改了三轮列名（下单时间→订单下单时间、
+    金额→应结金额），而列名和这件事毫无关系。
+
+    报错本身是对的：缺一列就该停下，别蒙一个数出来。要改的是说法。
+    """
+
+    # 新版导出的表头。少了结算状态、收支方向叫费用分类，见 settlement_v10。
+    NEW = [
+        "订单编号", "父单号", "订单状态", "订单下单时间", "订单完成时间", "商品编号",
+        "商品名称", "商品单价", "商品数量", "结算时间", "商户订单号", "资金动账备注",
+        "费用名称", "费用分类", "应结金额", "结算单类型", "结算单号", "结算主体",
+    ]
+    ORDER = ["订单号", "商品ID", "商品名称", "订购数量", "商家应收", "订单状态",
+             "商家SKUID", "下单时间", "付款确认时间"]
+
+    def _reason(self, tmp_path, model):
+        from ledger.engine.runtime import _completeness, run
+
+        settle = write_xlsx(tmp_path / "对账-京东皇莉诗.xlsx", [self.NEW, [
+            "3553498017448001", "", "已完成", "2026-06-10 14:41:34",
+            "2026-06-12 09:00:00", "-", "皇莉诗手持小横幅", "20.8", "1",
+            "2026-06-30 12:20:57", "202606300000011332601610021", "6月结算款",
+            "货款", "收入", "36.80", "", "", "",
+        ]])
+        order = write_xlsx(tmp_path / "订单明细-京东皇莉诗.xlsx", [self.ORDER, [
+            "3553498017448001", "10170858471951", "皇莉诗手持小横幅", "1", "36.80",
+            "完成", "SKU1", "2026-06-10 14:41:34", "2026-06-10 14:42:00",
+        ]])
+        ing = ingest([settle, order], model, ["京东皇莉诗"])
+        res = run(ing, "jd")
+        assert res.eval_errors.get("settlement"), (
+            "这条测的前提是对账那几条指标真的停下来了"
+        )
+        # 这家店只交了对账和订单明细两张表，对账全停下、订单明细是脊柱源不产事实，
+        # 于是一个切片都开不出来。要看的就是这种情形下完整度怎么说话。
+        comp = _completeness(
+            model, ing, res.facts, res.facts, res.spine_facts,
+            "京东皇莉诗", "2026-06", res.spine_rows, res.eval_errors,
+        )
+        return comp.reasons.get("settlement", "")
+
+    def test_it_does_not_claim_the_month_is_missing(self, tmp_path, model):
+        got = self._reason(tmp_path, model)
+        assert "没有 2026-06 的数据" not in got, (
+            "这句话会把人赶回去翻文件，而文件是好的"
+        )
+
+    def test_it_names_the_column_that_stopped_it(self, tmp_path, model):
+        got = self._reason(tmp_path, model)
+        assert "算不出来" in got and "bill_status" in got, got
+
+    def test_it_says_how_many_metrics_stopped_there(self, tmp_path, model):
+        """六条指标都停在同一列上，说一次就够，但要让人知道不止一条。"""
+        got = self._reason(tmp_path, model)
+        assert "另有" in got and "同样停在这里" in got, got
+
+
 class TestJdReceiptPaidOutIsARefund:
     """费项=交易收款 且 收支方向=支出 → 交易退款。京东规则表第二步。"""
 
@@ -76,11 +141,28 @@ class TestJdReceiptPaidOutIsARefund:
             JD_SETTLE,
             _jd_row("3553498017448001", "货款", "36.80", "收入"),
             _jd_row("3553498017448002", "货款", "-13.80", "支出"),
-            _jd_row("3553498017448003", "代收配送费", "-6.00", "支出"),
         ], model, "jd")
         assert out.get_column(COL_MAJOR).to_list() == [
-            "trade_receipt", "trade_refund", "trade_refund",
+            "trade_receipt", "trade_refund",
         ]
+
+    def test_a_subject_claimed_on_the_screen_never_reaches_the_rewrite(
+        self, tmp_path, model
+    ):
+        """界面上配了规则的科目，方向改判轮不到它。
+
+        代收配送费在科目字典里是交易收款，按方向改判该跟货款一样变退款。
+        但财务 2026-08-20 在界面上把它配成了物流运费，那条规则跑在字典前面，
+        大类一开始就不是交易收款，改判的前提不成立。
+
+        这个先后顺序是界面配规则能用的前提：人在界面上改口径，就是因为
+        字典或内置改判和自家账不一样。配完还被内置逻辑覆盖回去，
+        那一栏就成了摆设。
+        """
+        out, _ = _classified(tmp_path, [
+            JD_SETTLE, _jd_row("3553498017448003", "代收配送费", "-6.00", "支出"),
+        ], model, "jd")
+        assert out.get_column(COL_MAJOR).to_list() == ["logistics_fee"]
 
     def test_the_platform_subject_name_survives_the_rewrite(self, tmp_path, model):
         """改判只动大类，细项还是平台自己那个科目名。
@@ -103,13 +185,20 @@ class TestJdReceiptPaidOutIsARefund:
         assert set(out.get_column(COL_MAJOR).to_list()) == {"software_fee"}
 
     def test_the_two_subjects_the_rule_sheet_reassigns(self, tmp_path, model):
-        """规则表写「售后卖家赔付费、返利框架费的值填充为平台技术服务费」。"""
+        """规则表写「售后卖家赔付费、返利框架费的值填充为平台技术服务费」。
+
+        这两项现在只有返利框架费还照规则表走。售后卖家赔付费财务 2026-08-20
+        在界面上改判成了交易赔付——赔给买家的钱和给平台的技术服务费是两回事，
+        规则表当初把它们填在一起，界面上分开了。
+        """
         out, _ = _classified(tmp_path, [
             JD_SETTLE,
             _jd_row("3553498017448006", "售后卖家赔付费", "-23.90", "支出"),
             _jd_row("3553498017448007", "返利框架费", "-3.92", "支出"),
         ], model, "jd")
-        assert set(out.get_column(COL_MAJOR).to_list()) == {"software_fee"}
+        assert out.get_column(COL_MAJOR).to_list() == [
+            "trade_compensation", "software_fee",
+        ]
 
     def test_a_rewrite_needs_both_conditions(self):
         """改判规则必须同时给「原来是哪个大类」和「还要满足什么」。
@@ -336,3 +425,38 @@ class TestJdSpineHasNoWaybillColumn:
         assert any(
             r.via and r.via.source == "order_cost" for r in freight.key_rules
         ), "聚水潭回查那条没了，京东的发货运费会整块挂不上"
+
+
+class TestPddJinbaoHasAMarketingMetric:
+    """拼多多「多多进宝」必须有指标接到损益表「平台营销费用」。
+
+    字典和界面规则都能把它归成 marketing_fee。没有这条指标的话，归类对了
+    也不进利润、不进未归类——报表上看不出少了什么。好日子 2026-06 那 8 笔
+    就是这样从「平台营销费用」上消失的。
+    """
+
+    SUBJECT = "0060001|营销费用-多多进宝"
+
+    def test_the_metric_exists_and_feeds_the_statement(self, model) -> None:
+        m = model.metric("marketing_fee_pdd")
+        assert m.platform == "pdd"
+        assert m.major == "marketing_fee"
+        node = next(n for n in model.statement if n.id == "n_marketing")
+        assert "marketing_fee_pdd" in node.formula.of
+
+    def test_jinbao_is_marketing_named_jinbao(self, model) -> None:
+        import polars as pl
+
+        tpl = model.template("pdd_settlement_v1")
+        frame = pl.DataFrame({
+            "subject": [self.SUBJECT],
+            "remark": ["多多进宝佣金扣除"],
+            "income": [0.0],
+            "outgo": [-0.9],
+            "biz_type": ["多多进宝"],
+            "merchant_order_id": ["260625-142123998772778"],
+        })
+        out, report = classify(frame, model, "pdd", "outgo", tpl)
+        assert out.get_column(COL_MAJOR).to_list() == ["marketing_fee"]
+        assert out.get_column(COL_MINOR).to_list() == ["多多进宝"]
+        assert report.unmatched == {}

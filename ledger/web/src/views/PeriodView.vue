@@ -372,14 +372,13 @@ watch(
                   缺一张，损益表上就有一行出不了数。
                 </p>
                 <div class="scroll">
-                  <n-table size="small" :bordered="false">
+                  <n-table size="small" :bordered="false" :single-line="false" class="src-table">
                     <tbody>
                       <tr v-for="s in snap.sources || []" :key="s.id">
-                        <td class="small">{{ s.name }}</td>
-                        <td class="right">
-                          <n-tag size="small" :type="s.arrived ? 'success' : 'warning'" :bordered="false">
-                            {{ s.arrived ? '已交' : s.reason || '没交' }}
-                          </n-tag>
+                        <td class="small nowrap">{{ s.name }}</td>
+                        <td class="wrap-cell">
+                          <n-tag v-if="s.arrived" size="small" type="success" :bordered="false">已交</n-tag>
+                          <span v-else class="src-miss">{{ s.reason || '没交' }}</span>
                         </td>
                       </tr>
                     </tbody>

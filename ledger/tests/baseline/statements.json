@@ -1,5 +1,5 @@
 {
- "engine_version": "1c23356",
+ "engine_version": "9c8d141-dirty",
  "note": "",
  "stores": {
   "alibaba1688_xingze": {
@@ -64,6 +64,15 @@
      },
      {
       "blocking": false,
+      "head": "归到的科目都有指标接着",
+      "id": "chk_major_has_metric",
+      "lines": [],
+      "message": "归到的科目都有指标接着",
+      "name": "科目有指标接着",
+      "passed": true
+     },
+     {
+      "blocking": false,
       "head": "该到的数据都到了（4/4）",
       "id": "chk_sources_ready",
       "lines": [],
@@ -73,13 +82,13 @@
      },
      {
       "blocking": false,
-      "head": "这个月共 298,762 笔钱没对上订单，分 2 类：",
+      "head": "这个月共 298,761 笔钱没对上订单，分 2 类：",
       "id": "chk_unlinked_disclosed",
       "lines": [
-       "其他店的数据（公司级主表）298,309 笔，-550,056.62 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
+       "其他店的数据（公司级主表）298,308 笔，-550,046.62 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
        "其他账期的订单 453 笔，-151.04 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"
       ],
-      "message": "这个月共 298,762 笔钱没对上订单，分 2 类：· 其他店的数据（公司级主表）298,309 笔，-550,056.62 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 其他账期的订单 453 笔，-151.04 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
+      "message": "这个月共 298,761 笔钱没对上订单，分 2 类：· 其他店的数据（公司级主表）298,308 笔，-550,046.62 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 其他账期的订单 453 笔，-151.04 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
       "name": "未归属金额已呈现",
       "passed": true
      }
@@ -162,9 +171,39 @@
       "occasional": true,
       "rows": 2732,
       "spine_total": 1516
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 1231,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 1516,
+      "hit_rate": 0.575402635431918,
+      "linked": 1572,
+      "metric": "software_fee_1688",
+      "name": "平台服务费",
+      "occasional": true,
+      "rows": 2732,
+      "spine_total": 1516
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 1231,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 1516,
+      "hit_rate": 0.575402635431918,
+      "linked": 1572,
+      "metric": "trade_compensation_1688",
+      "name": "交易赔付",
+      "occasional": true,
+      "rows": 2732,
+      "spine_total": 1516
      }
     ],
-    "rows": 309114,
+    "rows": 313137,
     "sources": [
      {
       "arrived": true,
@@ -229,12 +268,56 @@
       "available": true,
       "display": "amount",
       "drillable": true,
+      "id": "n_software",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "平台服务费",
+      "value": -385.43
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_logistics",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "物流运费",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_cross_border",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "跨境服务费",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_compensation",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "交易赔付",
+      "value": 10.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
       "id": "n_expense",
       "is_total": false,
       "level": 2,
       "missing_sources": [],
       "name": "平台综合支出",
-      "value": -375.43
+      "value": 0.0
      },
      {
       "available": true,
@@ -363,8 +446,8 @@
     "unclassified": [],
     "unlinked_buckets": [
      {
-      "amount": -550056.62,
-      "count": 298309,
+      "amount": -550046.62,
+      "count": 298308,
       "counted": false,
       "label": "其他店的数据（公司级主表）",
       "why": "运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店"
@@ -442,6 +525,15 @@
      },
      {
       "blocking": false,
+      "head": "归到的科目都有指标接着",
+      "id": "chk_major_has_metric",
+      "lines": [],
+      "message": "归到的科目都有指标接着",
+      "name": "科目有指标接着",
+      "passed": true
+     },
+     {
+      "blocking": false,
       "head": "该到的数据都到了（4/4）",
       "id": "chk_sources_ready",
       "lines": [],
@@ -451,14 +543,14 @@
      },
      {
       "blocking": false,
-      "head": "这个月共 300,158 笔钱没对上订单，分 3 类：",
+      "head": "这个月共 300,157 笔钱没对上订单，分 3 类：",
       "id": "chk_unlinked_disclosed",
       "lines": [
-       "其他店的数据（公司级主表）299,489 笔，-552,711.33 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
+       "其他店的数据（公司级主表）299,488 笔，-552,701.33 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
        "货款直投千川 664 笔，-357.06 元 —— 有解释，不影响利润",
        "其他账期的订单 5 笔，125.83 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"
       ],
-      "message": "这个月共 300,158 笔钱没对上订单，分 3 类：· 其他店的数据（公司级主表）299,489 笔，-552,711.33 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 货款直投千川 664 笔，-357.06 元 —— 有解释，不影响利润 · 其他账期的订单 5 笔，125.83 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
+      "message": "这个月共 300,157 笔钱没对上订单，分 3 类：· 其他店的数据（公司级主表）299,488 笔，-552,701.33 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 货款直投千川 664 笔，-357.06 元 —— 有解释，不影响利润 · 其他账期的订单 5 笔，125.83 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
       "name": "未归属金额已呈现",
       "passed": true
      }
@@ -626,6 +718,36 @@
       "expected": 241,
       "hit_rate": 0.10662177328843996,
       "linked": 190,
+      "metric": "logistics_fee_douyin",
+      "name": "物流运费",
+      "occasional": true,
+      "rows": 1782,
+      "spine_total": 241
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 174,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 241,
+      "hit_rate": 0.10662177328843996,
+      "linked": 190,
+      "metric": "cross_border_fee_douyin",
+      "name": "跨境服务费",
+      "occasional": true,
+      "rows": 1782,
+      "spine_total": 241
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 174,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 241,
+      "hit_rate": 0.10662177328843996,
+      "linked": 190,
       "metric": "trade_compensation_douyin",
       "name": "交易赔付",
       "occasional": true,
@@ -648,7 +770,7 @@
       "spine_total": 0
      }
     ],
-    "rows": 303700,
+    "rows": 305417,
     "sources": [
      {
       "arrived": true,
@@ -729,6 +851,28 @@
       "level": 2,
       "missing_sources": [],
       "name": "平台服务费",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_logistics",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "物流运费",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_cross_border",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "跨境服务费",
       "value": 0.0
      },
      {
@@ -902,8 +1046,8 @@
     "unclassified": [],
     "unlinked_buckets": [
      {
-      "amount": -552711.33,
-      "count": 299489,
+      "amount": -552701.33,
+      "count": 299488,
       "counted": false,
       "label": "其他店的数据（公司级主表）",
       "why": "运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店"
@@ -931,15 +1075,15 @@
     "can_close": true,
     "commission": {
      "base_node": "net_profit",
-     "base_total": 22510.91,
+     "base_total": 21843.45,
      "fallback_base": 0.0,
-     "negative_base": -5752.19,
-     "negative_orders": 1174,
+     "negative_base": -5789.04,
+     "negative_orders": 1176,
      "on_loss": "deduct",
      "people": [],
      "skipped_loss_base": 0.0,
      "total": 0.0,
-     "unassigned_base": 22510.91
+     "unassigned_base": 21843.45
     },
     "entity": "",
     "findings": [
@@ -981,6 +1125,15 @@
      },
      {
       "blocking": false,
+      "head": "归到的科目都有指标接着",
+      "id": "chk_major_has_metric",
+      "lines": [],
+      "message": "归到的科目都有指标接着",
+      "name": "科目有指标接着",
+      "passed": true
+     },
+     {
+      "blocking": false,
       "head": "该到的数据都到了（4/4）",
       "id": "chk_sources_ready",
       "lines": [],
@@ -990,13 +1143,13 @@
      },
      {
       "blocking": false,
-      "head": "这个月共 297,665 笔钱没对上订单，分 2 类：",
+      "head": "这个月共 297,404 笔钱没对上订单，分 2 类：",
       "id": "chk_unlinked_disclosed",
       "lines": [
-       "其他店的数据（公司级主表）297,661 笔，-549,326.35 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
+       "其他店的数据（公司级主表）297,400 笔，-548,648.89 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
        "其他账期的订单 4 笔，-18.96 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"
       ],
-      "message": "这个月共 297,665 笔钱没对上订单，分 2 类：· 其他店的数据（公司级主表）297,661 笔，-549,326.35 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 其他账期的订单 4 笔，-18.96 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
+      "message": "这个月共 297,404 笔钱没对上订单，分 2 类：· 其他店的数据（公司级主表）297,400 笔，-548,648.89 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 其他账期的订单 4 笔，-18.96 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
       "name": "未归属金额已呈现",
       "passed": true
      }
@@ -1007,13 +1160,13 @@
     "quality": [
      {
       "company_wide": true,
-      "coverage": 0.6718120805369128,
-      "covered": 2002,
+      "coverage": 0.7573825503355704,
+      "covered": 2257,
       "excluded": 0,
       "expect_label": "",
       "expected": 2980,
       "hit_rate": null,
-      "linked": 2014,
+      "linked": 2274,
       "metric": "freight_cost",
       "name": "发货运费",
       "occasional": false,
@@ -1154,9 +1307,54 @@
       "occasional": true,
       "rows": 36911,
       "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2867,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": 0.6062691338625342,
+      "linked": 22378,
+      "metric": "logistics_fee_jd",
+      "name": "物流运费",
+      "occasional": true,
+      "rows": 36911,
+      "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2867,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": 0.6062691338625342,
+      "linked": 22378,
+      "metric": "cross_border_fee_jd",
+      "name": "跨境服务费",
+      "occasional": true,
+      "rows": 36911,
+      "spine_total": 2980
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2867,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2980,
+      "hit_rate": 0.6062691338625342,
+      "linked": 22378,
+      "metric": "trade_compensation_jd",
+      "name": "交易赔付",
+      "occasional": true,
+      "rows": 36911,
+      "spine_total": 2980
      }
     ],
-    "rows": 374122,
+    "rows": 441255,
     "sources": [
      {
       "arrived": true,
@@ -1193,7 +1391,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "收入",
-      "value": 60886.23
+      "value": 60822.23
      },
      {
       "available": true,
@@ -1204,7 +1402,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "销售收入",
-      "value": 65000.93
+      "value": 64930.93
      },
      {
       "available": true,
@@ -1215,7 +1413,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "销售退款",
-      "value": -4114.7
+      "value": -4108.7
      },
      {
       "available": true,
@@ -1226,7 +1424,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "平台费用",
-      "value": -10436.36
+      "value": -10372.36
      },
      {
       "available": true,
@@ -1237,7 +1435,40 @@
       "level": 2,
       "missing_sources": [],
       "name": "平台服务费",
-      "value": -10436.36
+      "value": -10398.56
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_logistics",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "物流运费",
+      "value": 64.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_cross_border",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "跨境服务费",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_compensation",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "交易赔付",
+      "value": -37.8
      },
      {
       "available": true,
@@ -1292,7 +1523,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "履约成本",
-      "value": -3646.55
+      "value": -4314.01
      },
      {
       "available": true,
@@ -1303,7 +1534,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "发货运费",
-      "value": -3646.55
+      "value": -4314.01
      },
      {
       "available": true,
@@ -1358,7 +1589,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "毛利",
-      "value": 43210.83
+      "value": 43140.83
      },
      {
       "available": true,
@@ -1369,7 +1600,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润",
-      "value": 22510.91
+      "value": 21843.45
      },
      {
       "available": true,
@@ -1380,7 +1611,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润率",
-      "value": 0.3463167373143738
+      "value": 0.3364105519511272
      }
     ],
     "store": "京东皇莉诗",
@@ -1388,8 +1619,8 @@
     "unclassified": [],
     "unlinked_buckets": [
      {
-      "amount": -549326.35,
-      "count": 297661,
+      "amount": -548648.89,
+      "count": 297400,
       "counted": false,
       "label": "其他店的数据（公司级主表）",
       "why": "运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店"
@@ -1460,6 +1691,15 @@
      },
      {
       "blocking": false,
+      "head": "归到的科目都有指标接着",
+      "id": "chk_major_has_metric",
+      "lines": [],
+      "message": "归到的科目都有指标接着",
+      "name": "科目有指标接着",
+      "passed": true
+     },
+     {
+      "blocking": false,
       "head": "该到的数据都到了（4/4）",
       "id": "chk_sources_ready",
       "lines": [],
@@ -1477,10 +1717,10 @@
        "其他店的数据（公司级主表）298,014 笔，-548,376.97 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
        "提现 1 笔，-57,600.00 元 —— 有解释，不影响利润",
        "万相台 2 笔，-2,000.00 元 —— 有解释，不影响利润",
-       "售后费用-虚假发货 1 笔，-5.00 元 —— 有解释，不影响利润",
+       "0040005|售后费用-虚假发货 1 笔，-5.00 元 —— 有解释，不影响利润",
        "其他账期的订单 749 笔，5,058.02 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"
       ],
-      "message": "有 7 笔、-7.72 元既取不出订单号、也没有规则认领。有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。这个月共 298,774 笔钱没对上订单，分 6 类：· 取不出订单号，要查归属 7 笔，-7.72 元 —— 要人查清归属 · 其他店的数据（公司级主表）298,014 笔，-548,376.97 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 提现 1 笔，-57,600.00 元 —— 有解释，不影响利润 · 万相台 2 笔，-2,000.00 元 —— 有解释，不影响利润 · 售后费用-虚假发货 1 笔，-5.00 元 —— 有解释，不影响利润 · 其他账期的订单 749 笔，5,058.02 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
+      "message": "有 7 笔、-7.72 元既取不出订单号、也没有规则认领。有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。这个月共 298,774 笔钱没对上订单，分 6 类：· 取不出订单号，要查归属 7 笔，-7.72 元 —— 要人查清归属 · 其他店的数据（公司级主表）298,014 笔，-548,376.97 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 提现 1 笔，-57,600.00 元 —— 有解释，不影响利润 · 万相台 2 笔，-2,000.00 元 —— 有解释，不影响利润 · 0040005|售后费用-虚假发货 1 笔，-5.00 元 —— 有解释，不影响利润 · 其他账期的订单 749 笔，5,058.02 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
       "name": "未归属金额已呈现",
       "passed": false
      }
@@ -1633,14 +1873,59 @@
       "expected": 2296,
       "hit_rate": 0.3202503509592887,
       "linked": 5475,
+      "metric": "logistics_fee_pdd",
+      "name": "物流运费",
+      "occasional": true,
+      "rows": 17096,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2167,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.3202503509592887,
+      "linked": 5475,
+      "metric": "cross_border_fee_pdd",
+      "name": "跨境服务费",
+      "occasional": true,
+      "rows": 17096,
+      "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2167,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.3202503509592887,
+      "linked": 5475,
       "metric": "trade_compensation_pdd",
       "name": "交易赔付",
       "occasional": true,
       "rows": 17096,
       "spine_total": 2296
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 2167,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 2296,
+      "hit_rate": 0.3202503509592887,
+      "linked": 5475,
+      "metric": "marketing_fee_pdd",
+      "name": "平台营销费用",
+      "occasional": true,
+      "rows": 17096,
+      "spine_total": 2296
      }
     ],
-    "rows": 328481,
+    "rows": 346985,
     "sources": [
      {
       "arrived": true,
@@ -1727,12 +2012,45 @@
       "available": true,
       "display": "amount",
       "drillable": true,
+      "id": "n_logistics",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "物流运费",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_cross_border",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "跨境服务费",
+      "value": 0.0
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
       "id": "n_compensation",
       "is_total": false,
       "level": 2,
       "missing_sources": [],
       "name": "交易赔付",
       "value": -305.44
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_marketing",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "平台营销费用",
+      "value": 0.0
      },
      {
       "available": true,
@@ -1914,7 +2232,7 @@
       "amount": -5.0,
       "count": 1,
       "counted": true,
-      "label": "售后费用-虚假发货",
+      "label": "0040005|售后费用-虚假发货",
       "why": ""
      },
      {
@@ -1933,15 +2251,15 @@
     "can_close": false,
     "commission": {
      "base_node": "net_profit",
-     "base_total": 322473.26,
+     "base_total": 322829.11,
      "fallback_base": 0.0,
-     "negative_base": -37232.65,
-     "negative_orders": 9041,
+     "negative_base": -37495.07,
+     "negative_orders": 9169,
      "on_loss": "deduct",
      "people": [],
      "skipped_loss_base": 0.0,
      "total": 0.0,
-     "unassigned_base": 322473.26
+     "unassigned_base": 322829.11
     },
     "entity": "",
     "findings": [
@@ -1983,6 +2301,15 @@
      },
      {
       "blocking": false,
+      "head": "归到的科目都有指标接着",
+      "id": "chk_major_has_metric",
+      "lines": [],
+      "message": "归到的科目都有指标接着",
+      "name": "科目有指标接着",
+      "passed": true
+     },
+     {
+      "blocking": false,
       "head": "该到的数据都到了（4/4）",
       "id": "chk_sources_ready",
       "lines": [],
@@ -1992,17 +2319,17 @@
      },
      {
       "blocking": false,
-      "head": "有 396 笔、-3,122.09 元既取不出订单号、也没有规则认领。有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。",
+      "head": "有 395 笔、-3,146.49 元既取不出订单号、也没有规则认领。有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。",
       "id": "chk_unlinked_disclosed",
       "lines": [
-       "这个月共 287,147 笔钱没对上订单，分 5 类：",
-       "取不出订单号，要查归属 396 笔，-3,122.09 元 —— 要人查清归属",
+       "这个月共 287,023 笔钱没对上订单，分 5 类：",
+       "取不出订单号，要查归属 395 笔，-3,146.49 元 —— 要人查清归属",
        "非经营流水（规则已排除）39 笔，-1,334,996.73 元 —— 理财申购、银行间调拨、保证金进出、广告预充值——规则链认出来了并且决定不算",
-       "其他店的数据（公司级主表）213,440 笔，-403,409.24 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
+       "其他店的数据（公司级主表）213,436 笔，-403,350.64 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
        "提现 2 笔，-124,071.03 元 —— 有解释，不影响利润",
-       "其他账期的订单 73,270 笔，352,401.36 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"
+       "其他账期的订单 73,151 笔，352,459.75 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"
       ],
-      "message": "有 396 笔、-3,122.09 元既取不出订单号、也没有规则认领。有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。这个月共 287,147 笔钱没对上订单，分 5 类：· 取不出订单号，要查归属 396 笔，-3,122.09 元 —— 要人查清归属 · 非经营流水（规则已排除）39 笔，-1,334,996.73 元 —— 理财申购、银行间调拨、保证金进出、广告预充值——规则链认出来了并且决定不算 · 其他店的数据（公司级主表）213,440 笔，-403,409.24 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 提现 2 笔，-124,071.03 元 —— 有解释，不影响利润 · 其他账期的订单 73,270 笔，352,401.36 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
+      "message": "有 395 笔、-3,146.49 元既取不出订单号、也没有规则认领。有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。这个月共 287,023 笔钱没对上订单，分 5 类：· 取不出订单号，要查归属 395 笔，-3,146.49 元 —— 要人查清归属 · 非经营流水（规则已排除）39 笔，-1,334,996.73 元 —— 理财申购、银行间调拨、保证金进出、广告预充值——规则链认出来了并且决定不算 · 其他店的数据（公司级主表）213,436 笔，-403,350.64 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 提现 2 笔，-124,071.03 元 —— 有解释，不影响利润 · 其他账期的订单 73,151 笔，352,459.75 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
       "name": "未归属金额已呈现",
       "passed": false
      }
@@ -2019,7 +2346,7 @@
       "expect_label": "已发货",
       "expected": 23434,
       "hit_rate": null,
-      "linked": 24439,
+      "linked": 24440,
       "metric": "freight_cost",
       "name": "发货运费",
       "occasional": false,
@@ -2048,8 +2375,8 @@
       "excluded": 0,
       "expect_label": "已付款且未退款",
       "expected": 22219,
-      "hit_rate": 0.5501171215340197,
-      "linked": 161576,
+      "hit_rate": 0.5506448493762598,
+      "linked": 161731,
       "metric": "trade_receipt",
       "name": "销售收入",
       "occasional": false,
@@ -2063,8 +2390,8 @@
       "excluded": 0,
       "expect_label": "",
       "expected": 27114,
-      "hit_rate": 0.5501171215340197,
-      "linked": 161576,
+      "hit_rate": 0.5506448493762598,
+      "linked": 161731,
       "metric": "trade_refund",
       "name": "销售退款",
       "occasional": true,
@@ -2078,8 +2405,8 @@
       "excluded": 0,
       "expect_label": "",
       "expected": 27114,
-      "hit_rate": 0.5501171215340197,
-      "linked": 161576,
+      "hit_rate": 0.5506448493762598,
+      "linked": 161731,
       "metric": "software_fee",
       "name": "平台服务费",
       "occasional": true,
@@ -2093,8 +2420,38 @@
       "excluded": 0,
       "expect_label": "",
       "expected": 27114,
-      "hit_rate": 0.5501171215340197,
-      "linked": 161576,
+      "hit_rate": 0.5506448493762598,
+      "linked": 161731,
+      "metric": "logistics_fee",
+      "name": "物流运费",
+      "occasional": true,
+      "rows": 293712,
+      "spine_total": 27114
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 23258,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 27114,
+      "hit_rate": 0.5506448493762598,
+      "linked": 161731,
+      "metric": "cross_border_fee",
+      "name": "跨境服务费",
+      "occasional": true,
+      "rows": 293712,
+      "spine_total": 27114
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 23258,
+      "excluded": 0,
+      "expect_label": "",
+      "expected": 27114,
+      "hit_rate": 0.5506448493762598,
+      "linked": 161731,
       "metric": "trade_compensation",
       "name": "交易赔付",
       "occasional": true,
@@ -2108,8 +2465,8 @@
       "excluded": 0,
       "expect_label": "",
       "expected": 27114,
-      "hit_rate": 0.5501171215340197,
-      "linked": 161576,
+      "hit_rate": 0.5506448493762598,
+      "linked": 161731,
       "metric": "marketing_fee",
       "name": "平台营销费用",
       "occasional": true,
@@ -2192,7 +2549,7 @@
       "spine_total": 27114
      }
     ],
-    "rows": 1510036,
+    "rows": 1979960,
     "sources": [
      {
       "arrived": true,
@@ -2262,7 +2619,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "平台费用",
-      "value": -99486.59
+      "value": -99121.14
      },
      {
       "available": true,
@@ -2273,7 +2630,29 @@
       "level": 2,
       "missing_sources": [],
       "name": "平台服务费",
-      "value": -67455.14
+      "value": -63088.59
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_logistics",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "物流运费",
+      "value": -1413.2
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_cross_border",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "跨境服务费",
+      "value": -3182.61
      },
      {
       "available": true,
@@ -2284,7 +2663,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "交易赔付",
-      "value": -526.9
+      "value": -243.4
      },
      {
       "available": true,
@@ -2295,7 +2674,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "平台营销费用",
-      "value": -31504.55
+      "value": -31193.34
      },
      {
       "available": true,
@@ -2350,7 +2729,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "履约成本",
-      "value": -52578.03
+      "value": -52587.63
      },
      {
       "available": true,
@@ -2361,7 +2740,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "发货运费",
-      "value": -52578.03
+      "value": -52587.63
      },
      {
       "available": true,
@@ -2427,7 +2806,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润",
-      "value": 322473.27
+      "value": 322829.12
      },
      {
       "available": true,
@@ -2438,7 +2817,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润率",
-      "value": 0.36683942007538317
+      "value": 0.36724422822470304
      }
     ],
     "store": "天猫皇莉诗旗舰店",
@@ -2446,8 +2825,8 @@
     "unclassified": [],
     "unlinked_buckets": [
      {
-      "amount": -3122.09,
-      "count": 396,
+      "amount": -3146.49,
+      "count": 395,
       "counted": true,
       "label": "取不出订单号，要查归属",
       "why": "连订单号都取不出来，也没有任何规则认领它。这一类要人去查"
@@ -2460,8 +2839,8 @@
       "why": "理财申购、银行间调拨、保证金进出、广告预充值——规则链认出来了并且决定不算"
      },
      {
-      "amount": -403409.24,
-      "count": 213440,
+      "amount": -403350.64,
+      "count": 213436,
       "counted": false,
       "label": "其他店的数据（公司级主表）",
       "why": "运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店"
@@ -2474,14 +2853,14 @@
       "why": ""
      },
      {
-      "amount": 352401.36,
-      "count": 73270,
+      "amount": 352459.75,
+      "count": 73151,
       "counted": false,
       "label": "其他账期的订单",
       "why": "订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"
      }
     ],
-    "unlinked_total": -127193.12
+    "unlinked_total": -127217.52
    }
   },
   "taobao_xibishun": {
@@ -2489,27 +2868,27 @@
     "can_close": true,
     "commission": {
      "base_node": "net_profit",
-     "base_total": 153709.76,
-     "fallback_base": 153709.76,
-     "negative_base": -29774.67,
-     "negative_orders": 4651,
+     "base_total": 153834.84,
+     "fallback_base": 153834.84,
+     "negative_base": -29758.91,
+     "negative_orders": 4648,
      "on_loss": "deduct",
      "people": [
       {
-       "amount": 5379.84,
-       "base": 153709.76,
+       "amount": 5384.22,
+       "base": 153834.84,
        "person": "汪学成",
        "products": 722
       },
       {
-       "amount": 2305.65,
-       "base": 153709.76,
+       "amount": 2307.52,
+       "base": 153834.84,
        "person": "李秋雨",
        "products": 722
       }
      ],
      "skipped_loss_base": 0.0,
-     "total": 7685.49,
+     "total": 7691.74,
      "unassigned_base": 0.0
     },
     "entity": "",
@@ -2552,6 +2931,15 @@
      },
      {
       "blocking": false,
+      "head": "归到的科目都有指标接着",
+      "id": "chk_major_has_metric",
+      "lines": [],
+      "message": "归到的科目都有指标接着",
+      "name": "科目有指标接着",
+      "passed": true
+     },
+     {
+      "blocking": false,
       "head": "该到的数据都到了（4/4）",
       "id": "chk_sources_ready",
       "lines": [],
@@ -2564,13 +2952,13 @@
       "head": "有 50 笔、150.50 元既取不出订单号、也没有规则认领。有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。",
       "id": "chk_unlinked_disclosed",
       "lines": [
-       "这个月共 318,999 笔钱没对上订单，分 4 类：",
+       "这个月共 318,995 笔钱没对上订单，分 4 类：",
        "取不出订单号，要查归属 50 笔，150.50 元 —— 要人查清归属",
-       "其他店的数据（公司级主表）285,839 笔，-541,914.28 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
+       "其他店的数据（公司级主表）285,836 笔，-541,901.68 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店",
        "非经营流水（规则已排除）64 笔，-477,800.64 元 —— 理财申购、银行间调拨、保证金进出、广告预充值——规则链认出来了并且决定不算",
-       "其他账期的订单 33,046 笔，191,809.02 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"
+       "其他账期的订单 33,045 笔，191,803.94 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"
       ],
-      "message": "有 50 笔、150.50 元既取不出订单号、也没有规则认领。有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。这个月共 318,999 笔钱没对上订单，分 4 类：· 取不出订单号，要查归属 50 笔，150.50 元 —— 要人查清归属 · 其他店的数据（公司级主表）285,839 笔，-541,914.28 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 非经营流水（规则已排除）64 笔，-477,800.64 元 —— 理财申购、银行间调拨、保证金进出、广告预充值——规则链认出来了并且决定不算 · 其他账期的订单 33,046 笔，191,809.02 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
+      "message": "有 50 笔、150.50 元既取不出订单号、也没有规则认领。有钱挂不上任何订单。这部分不能悄悄丢掉，也不能硬摊进利润，要在店铺利润之外单独列出来让人看见。这个月共 318,995 笔钱没对上订单，分 4 类：· 取不出订单号，要查归属 50 笔，150.50 元 —— 要人查清归属 · 其他店的数据（公司级主表）285,836 笔，-541,901.68 元 —— 运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店 · 非经营流水（规则已排除）64 笔，-477,800.64 元 —— 理财申购、银行间调拨、保证金进出、广告预充值——规则链认出来了并且决定不算 · 其他账期的订单 33,045 笔，191,803.94 元 —— 订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样",
       "name": "未归属金额已呈现",
       "passed": false
      }
@@ -2587,7 +2975,7 @@
       "expect_label": "已发货",
       "expected": 13444,
       "hit_rate": null,
-      "linked": 14096,
+      "linked": 14098,
       "metric": "freight_cost",
       "name": "发货运费",
       "occasional": false,
@@ -2616,8 +3004,8 @@
       "excluded": 194,
       "expect_label": "已付款且未退款",
       "expected": 12691,
-      "hit_rate": 0.36373671864219675,
-      "linked": 84352,
+      "hit_rate": 0.36374103077135367,
+      "linked": 84353,
       "metric": "trade_receipt",
       "name": "销售收入",
       "occasional": false,
@@ -2631,8 +3019,8 @@
       "excluded": 194,
       "expect_label": "",
       "expected": 15219,
-      "hit_rate": 0.36373671864219675,
-      "linked": 84352,
+      "hit_rate": 0.36374103077135367,
+      "linked": 84353,
       "metric": "trade_refund",
       "name": "销售退款",
       "occasional": true,
@@ -2646,8 +3034,8 @@
       "excluded": 194,
       "expect_label": "",
       "expected": 15219,
-      "hit_rate": 0.36373671864219675,
-      "linked": 84352,
+      "hit_rate": 0.36374103077135367,
+      "linked": 84353,
       "metric": "software_fee",
       "name": "平台服务费",
       "occasional": true,
@@ -2661,8 +3049,38 @@
       "excluded": 194,
       "expect_label": "",
       "expected": 15219,
-      "hit_rate": 0.36373671864219675,
-      "linked": 84352,
+      "hit_rate": 0.36374103077135367,
+      "linked": 84353,
+      "metric": "logistics_fee",
+      "name": "物流运费",
+      "occasional": true,
+      "rows": 231904,
+      "spine_total": 15219
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 13083,
+      "excluded": 194,
+      "expect_label": "",
+      "expected": 15219,
+      "hit_rate": 0.36374103077135367,
+      "linked": 84353,
+      "metric": "cross_border_fee",
+      "name": "跨境服务费",
+      "occasional": true,
+      "rows": 231904,
+      "spine_total": 15219
+     },
+     {
+      "company_wide": false,
+      "coverage": null,
+      "covered": 13083,
+      "excluded": 194,
+      "expect_label": "",
+      "expected": 15219,
+      "hit_rate": 0.36374103077135367,
+      "linked": 84353,
       "metric": "trade_compensation",
       "name": "交易赔付",
       "occasional": true,
@@ -2676,8 +3094,8 @@
       "excluded": 194,
       "expect_label": "",
       "expected": 15219,
-      "hit_rate": 0.36373671864219675,
-      "linked": 84352,
+      "hit_rate": 0.36374103077135367,
+      "linked": 84353,
       "metric": "marketing_fee",
       "name": "平台营销费用",
       "occasional": true,
@@ -2760,7 +3178,7 @@
       "spine_total": 15219
      }
     ],
-    "rows": 935483,
+    "rows": 1170314,
     "sources": [
      {
       "arrived": true,
@@ -2830,7 +3248,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "平台费用",
-      "value": -51096.34
+      "value": -50968.66
      },
      {
       "available": true,
@@ -2841,7 +3259,29 @@
       "level": 2,
       "missing_sources": [],
       "name": "平台服务费",
-      "value": -42236.94
+      "value": -32284.68
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_logistics",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "物流运费",
+      "value": -1586.67
+     },
+     {
+      "available": true,
+      "display": "amount",
+      "drillable": true,
+      "id": "n_cross_border",
+      "is_total": false,
+      "level": 2,
+      "missing_sources": [],
+      "name": "跨境服务费",
+      "value": -421.5
      },
      {
       "available": true,
@@ -2852,7 +3292,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "交易赔付",
-      "value": 157.7
+      "value": 285.38
      },
      {
       "available": true,
@@ -2863,7 +3303,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "平台营销费用",
-      "value": -9017.1
+      "value": -16961.19
      },
      {
       "available": true,
@@ -2918,7 +3358,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "履约成本",
-      "value": -20294.22
+      "value": -20296.82
      },
      {
       "available": true,
@@ -2929,7 +3369,7 @@
       "level": 2,
       "missing_sources": [],
       "name": "发货运费",
-      "value": -20294.22
+      "value": -20296.82
      },
      {
       "available": true,
@@ -2995,7 +3435,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润",
-      "value": 153709.77
+      "value": 153834.85
      },
      {
       "available": true,
@@ -3006,7 +3446,7 @@
       "level": 1,
       "missing_sources": [],
       "name": "利润率",
-      "value": 0.31206475494454666
+      "value": 0.3123186949481552
      }
     ],
     "store": "淘宝喜必顺",
@@ -3021,8 +3461,8 @@
       "why": "连订单号都取不出来，也没有任何规则认领它。这一类要人去查"
      },
      {
-      "amount": -541914.28,
-      "count": 285839,
+      "amount": -541901.68,
+      "count": 285836,
       "counted": false,
       "label": "其他店的数据（公司级主表）",
       "why": "运费、小额打款这类表交上来是全公司一份，别家店的行挂不到这家店"
@@ -3035,8 +3475,8 @@
       "why": "理财申购、银行间调拨、保证金进出、广告预充值——规则链认出来了并且决定不算"
      },
      {
-      "amount": 191809.02,
-      "count": 33046,
+      "amount": 191803.94,
+      "count": 33045,
       "counted": false,
       "label": "其他账期的订单",
       "why": "订单号取到了、格式也对，但不在本期的订单明细里。跨期结算和导出时日期选宽了都会这样"

@@ -39,6 +39,14 @@
   message: >
     有科目字典里没有的费用名目。平台新增费项是常事，认领一次以后就一直认得。
 
+- id: chk_major_has_metric
+  name: 科目有指标接着
+  kind: major_has_metric
+  blocking: true
+  message: >
+    有费项改判到了这个平台没有指标的科目，钱归上了类却进不了损益表。
+    改判那一栏是按平台各自一套指标算的，配之前先看这个平台有没有这一项。
+
 - id: chk_sources_ready
   name: 数据源到齐
   kind: completeness

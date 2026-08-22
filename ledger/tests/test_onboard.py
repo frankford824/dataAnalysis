@@ -390,6 +390,119 @@ class TestDryRunCatchesTotalRowTraps:
         assert "%" in out.errors[0], "得把丢掉的比例说出来，光说「有问题」没法查"
 
 
+class TestTimeSlotFollowsWhatThePersonFinallyPicked:
+    """人在界面上补映的时间列，也得拿到时间槽位。
+
+    草案的槽位是按草案自己猜到的角色填的。可列名模型没见过时草案根本猜不到那是
+    时间列，得人自己选——而这恰恰是接新表最常见的情形。只过滤草案那份不重算的话，
+    人补上的时间列拿不到槽位，整张表算不出属于哪个月。
+
+    实测 2026-08-21 接进来的京东新版对账表就是这样：结算时间这个列名模型没见过
+    （旧版那张叫「到账时间」），落库的模板一个槽位都没有。24,578 行里 13,045 行
+    结算时间在 2026-06，界面上却写着「传了，但里面没有 2026-06 的数据」。人以为
+    是文件不对，前后传了六次、手改了三轮列名，而真正的原因和列名一点关系都没有。
+
+    这条错没有任何一处报红：表认出来了，列也映上了，只是每一行都不属于任何月份。
+    """
+
+    def _draft(self, headers, row):
+        from conftest import MODELS
+        from ledger.model.loader import load_model
+
+        return propose(headers, [row], load_model(MODELS / "cn-ecommerce"),
+                       source_hint="settlement")
+
+    def test_a_time_column_the_draft_missed_still_gets_a_slot(self):
+        """草案没猜到、人后来选上的时间列，落库时要补上槽位。"""
+        draft = self._draft(
+            ["订单编号", "费用名称", "到账日", "应结金额"],
+            ["3705564456796020276", "佣金", "2026-06-30", "-5.33"],
+        )
+        settle = next(c for c in draft.columns if c.column == "到账日")
+        assert settle.role == "", "这条测的前提是草案猜不到它——猜到了就换个列名"
+        settle.role = "settle_time"  # 人在界面上选上
+
+        tpl = draft.template(
+            "tmp_id", source="settlement",
+            roles={c.index: c.role for c in draft.columns},
+        )
+        assert tpl.time_slots == {"settle_date": "settle_time"}, (
+            "没有槽位这张表算不出账期，界面上会说「传了但里面没有这个月的数据」"
+        )
+
+    def test_a_role_nobody_uses_as_time_gets_no_slot(self):
+        """没被人映上的角色不会凭空拿到槽位——惯例是候选表，不是默认值。"""
+        draft = self._draft(
+            ["订单编号", "费用名称", "应结金额"],
+            ["3705564456796020276", "佣金", "-5.33"],
+        )
+        tpl = draft.template("tmp_id", source="settlement")
+        assert tpl.time_slots == {}
+
+    def test_the_drafts_own_slot_is_kept(self):
+        """草案已经填好的槽位照旧生效，重对只补不改。"""
+        draft = self._draft(
+            ["订单编号", "费用名称", "结算时间", "应结金额"],
+            ["3705564456796020276", "佣金", "2026-06-30", "-5.33"],
+        )
+        tpl = draft.template("tmp_id", source="settlement")
+        assert tpl.time_slots.get("settle_date") == "settle_time"
+
+
+class TestSampledShapeDoesNotOverrideARolesOwnUse:
+    """采样看这一列长什么样，模型知道这个角色拿来做什么用，后者说了算。
+
+    绑定上那句类型声明的作用是覆盖引擎按角色名的猜测，所以写错一次就按死一列。
+    写 number 是把一列钱救回来，写 time 却可能把一列文本按死——按时间解不出来的
+    值全变成空。
+
+    实测 2026-08-21 接进来的那张表就把「资金动账备注」绑成了 time：那一列的值里
+    带着日期，采样于是判成日期。而淘宝取订单号的七条规则全是从备注里抠的，一列
+    备注静默变空，表现是这张表大半的钱挂不上订单，一处都不报错。
+    """
+
+    def _draft(self, headers, row):
+        from conftest import MODELS
+        from ledger.model.loader import load_model
+
+        return propose(headers, [row], load_model(MODELS / "cn-ecommerce"),
+                       source_hint="settlement")
+
+    def _kind_of(self, draft, role):
+        tpl = draft.template("tmp_id", source="settlement")
+        binding = next((b for b in tpl.bindings if b.role == role), None)
+        assert binding is not None, f"{role} 得映上，不然这条测的就不是类型声明了"
+        return binding.kind
+
+    def test_a_remark_full_of_dates_is_not_declared_a_date(self):
+        draft = self._draft(
+            ["订单编号", "资金动账备注", "金额"],
+            ["3705564456796020276", "2026-05-22 结算", "10.5"],
+        )
+        assert self._kind_of(draft, "remark") == "", (
+            "备注按时间解会解成空，取订单号和费项归类就全靠不上它了"
+        )
+
+    def test_a_real_time_column_still_gets_declared(self):
+        """真拿来当时间用的角色照旧写下去。这条约束不能顺手把它一起关掉——
+
+        没有时间声明，这张表算不出属于哪个账期。
+        """
+        draft = self._draft(
+            ["订单编号", "结算时间", "金额"],
+            ["3705564456796020276", "2026-05-22", "10.5"],
+        )
+        assert self._kind_of(draft, "settle_time") == "time"
+
+    def test_money_is_still_rescued(self):
+        """写 number 那一半的作用不变：角色名没命中引擎的词表时，它把钱救回来。"""
+        draft = self._draft(
+            ["订单编号", "结算时间", "应结金额"],
+            ["3705564456796020276", "2026-05-22", "10.5"],
+        )
+        assert self._kind_of(draft, "income") == "number"
+
+
 class TestPddLikePromotionOpensTheWizard:
     """拼多多推广表同时有「总花费」和「成交花费」，向导不能因此打不开。"""
 

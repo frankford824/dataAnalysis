@@ -342,4 +342,23 @@ class TestKeyChainAgrees:
         assert keys[0] == "123456"
         assert stats.hits == {1: 1}
 
+    def test_excel_at_prefix_on_tracking_no_looks_up_both_ways(self):
+        """聚水潭快递单号带 @ 前缀时，整列回查和逐行回查都要折掉再查。"""
+        compiled = compile_key_rules((
+            KeyRule(
+                when=FieldMatch(field="tracking_no", notnull=True),
+                via=Bridge(source="orders", match="tracking_no", take="order_id"),
+            ),
+        ))
+        frame = pl.DataFrame(
+            {"tracking_no": ["@SF001", "SF001"]},
+            schema={"tracking_no": pl.Utf8},
+        )
+        bridges = {"orders": {"SF001": "主订单-9"}}
+        fast = L._keys_vectorized(frame, compiled, bridges)
+        assert fast is not None
+        keys, _stats = fast
+        for i, row in enumerate(frame.to_dicts()):
+            assert keys[i] == resolve_key(row, compiled, bridges) == "主订单-9"
+
 

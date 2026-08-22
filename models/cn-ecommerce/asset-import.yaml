@@ -52,6 +52,8 @@ major_canonical:
   # 之前的归一映射漏了它，模型校验器在指标引用时把这个缺口顶了出来。
   物流运费: logistics_fee
   物流服务费: logistics_fee
+  跨境服务费: cross_border_fee
+  广告费用: ad_topup
 
   # 以下几项不进利润，但绝不静默丢弃——它们进"没进利润的钱"那一块。
   提现: withdrawal
@@ -78,9 +80,10 @@ major_labels:
   marketing_fee: 营销费用
   dropship_cost: 代购代发
   logistics_fee: 物流运费
+  cross_border_fee: 跨境服务费
   withdrawal: 提现
   deposit: 保证金
-  ad_topup: 广告充值
+  ad_topup: 广告费用
   misc_payment: 往来款
 
 # 运营归属：`运营链接.xlsx` 里按月宽表（2411姓名 到 2612姓名），

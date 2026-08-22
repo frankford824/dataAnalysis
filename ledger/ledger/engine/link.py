@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 import polars as pl
@@ -22,6 +21,7 @@ from .predicate import compile_where, missing_fields
 from .rules import (
     EXCLUDED,
     ChainStats,
+    _norm,
     compile_key_rules,
     norm_expr,
     resolve_key,
@@ -101,6 +101,22 @@ class Spine:
         self.build(role)
         return self.indexes[role]
 
+    def crosswalk(self, source: str, target: str) -> dict[str, str]:
+        """一个角色的键换算到另一个角色的键，例如子订单编号换算到主订单编号。
+
+        同一行上两个角色的值天然配对，所以换算表直接从脊柱读，不需要另建索引。
+        """
+        if self.frame.is_empty():
+            return {}
+        if source not in self.frame.columns or target not in self.frame.columns:
+            return {}
+        out: dict[str, str] = {}
+        for a, b in self.frame.select([source, target]).iter_rows():
+            ka, kb = normalize_key(a), normalize_key(b)
+            if ka and kb and ka not in out:
+                out[ka] = kb
+        return out
+
     def context(self, role: str, key: str) -> tuple[str, str, str] | None:
         return self.index(role).get(key)
 
@@ -120,17 +136,12 @@ def target_role(to: str | None) -> str:
     return to.split(".", 1)[1] if "." in to else to
 
 
-_KEY_NOISE = re.compile(r"[\s\u3000'\"]+")
-
-
 def normalize_key(value: object) -> str:
-    """关联键归一。去空白与引号，去掉 Excel 长数字被转成科学记数或末尾 .0 的痕迹。"""
-    if value is None:
-        return ""
-    s = _KEY_NOISE.sub("", str(value))
-    if s.endswith(".0") and s[:-2].isdigit():
-        s = s[:-2]
-    return s
+    """关联键归一。去空白与引号，去掉 Excel 把长数字标成文本时加的 @ 前缀，以及末尾 .0。
+
+    和 `_norm` 必须是同一个函数：回查索引建键、规则链取值、脊柱挂单，三处对上才挂得上。
+    """
+    return _norm(value)
 
 
 def link(
@@ -185,6 +196,7 @@ def link(
         return frame, report
 
     known = spine.keys(role)
+    frame, report.fallback_rows = _via_fallback(frame, rule, spine, role, known)
     frame = frame.with_columns(
         (pl.col(LINK_KEY).is_in(list(known)) & (pl.col(LINK_KEY) != EXCLUDED_KEY))
         .fill_null(False)
@@ -206,6 +218,42 @@ def link(
 
     frame = _inherit_context(frame, spine, role)
     return frame, report
+
+
+def _via_fallback(
+    frame: pl.DataFrame,
+    rule: LinkRule,
+    spine: Spine,
+    role: str,
+    known: set[str],
+) -> tuple[pl.DataFrame, int]:
+    """主角色挂不上的行，用备用角色再试，命中后把键换算成主角色的值。
+
+    换算表里要先剔掉那些本身就是主角色键的（单子订单主订单两个号相等，实测
+    天猫皇莉诗 41,889 个子订单里有 19,525 个是这种），否则会把已经挂上的行
+    再改写一遍——值一样，白算一趟。
+    """
+    if not rule.fallback_to:
+        return frame, 0
+    hit = 0
+    for alt in rule.fallback_to:
+        alt_role = target_role(alt)
+        if not alt_role or alt_role == role:
+            continue
+        remap = {
+            k: v for k, v in spine.crosswalk(alt_role, role).items() if k not in known
+        }
+        if not remap:
+            continue
+        pending = pl.col(LINK_KEY).is_in(list(remap))
+        hit += int(frame.select(pending.fill_null(False).sum()).item())
+        frame = frame.with_columns(
+            pl.when(pending)
+            .then(pl.col(LINK_KEY).replace_strict(remap, default=None, return_dtype=pl.Utf8))
+            .otherwise(pl.col(LINK_KEY))
+            .alias(LINK_KEY)
+        )
+    return frame, hit
 
 
 def _without_link(frame: pl.DataFrame) -> pl.DataFrame:

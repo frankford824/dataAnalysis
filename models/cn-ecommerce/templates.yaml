@@ -221,7 +221,12 @@
       note: 备注里用括号或花括号括起来的订单号
     - when: {field: remark, extract: '运单号[：:]\s*([A-Za-z0-9]{6,30})'}
       via: {source: order_cost, match: tracking_no, take: original_order_id}
-      note: 只给运单号不给交易单号的行，去聚水潭回查原始线上订单号
+      note: >
+        只给运单号不给交易单号的行，去聚水潭回查原始线上订单号。
+        货值赔付备注就是这种：没有交易单号，只有赔付单号 CH… 和运单号。
+        聚水潭快递单号偶发带 Excel 文本前缀 @（把长数字当文本时留下的），
+        回查索引建键时会折掉，和备注里抠出的纯运单号对齐。
+        天猫皇莉诗 2026-06 漏掉的那笔 24.40，聚水潭里写成 @435233529604913。
   # 归类规则链。第一条命中的生效。
   #
   # 对齐的是对账表里的「费项2」列，不是「费项」列。这两列是同一张表上的两套归类，
@@ -284,17 +289,77 @@
       note: >
         注意「服财务费」这个写法：支付宝导出的业务描述里「服务费」被污染成
         「服财务费」，微信同一科目拼写正常。两种写法都要认。
-    - when:
-        field: remark
-        contains: [品牌新享, 限时红包代商家垫付扣回]
+    # 品牌新享这一族按财务《费项分类对照表》的「业务小类」逐条落细项，末尾留一条
+    # 前缀兜底。细项名一律照对照表写，不用字典里的旧写法（旧写法有几条是把业务描述
+    # 整串抄下来当细项，同一个小类在界面上出现两个名字）。
+    # 对照表存档在 exports/财务口径原件/费项分类对照表-淘宝天猫.csv。
+    #
+    # 为什么非要逐条列：这批行业务描述整列是空的，字典按业务描述查，一条都碰不到，
+    # 只能靠备注。原先一条「品牌新享」盖住全部、不给细项，界面下钻退回显示指标名
+    # 「平台营销费用」——一万五千行、三万块钱堆成一个没有明细的黑盒，
+    # 对不了账。天猫皇莉诗 2026-06 的营销费用按小类拆开是这样：
+    #   新享首单拉新      10,517 行  -23,911.94
+    #   新享新品孵化       1,397 行   -4,350.40
+    #   新享天猫超级老客     793 行   -1,741.67
+    #   淘宝客佣金        2,669 行   -1,108.95
+    #   限时红包代商家垫付扣回  39 行      -71.00
+    #   天猫营销托管           2 行       -8.04
+    # 合计与人工筛出来的营销费用源行 -31,193.34 一分不差。
+    #
+    # 兜底那条必须留在最后：对照表是 2026-08 那一版，平台还在往外加新玩法，
+    # 列举漏掉的新变体有前缀接着，只是细项空着——空着能在自检里看见，
+    # 落进未归类才是真丢。
+    - when: {field: remark, contains: [品牌新享-首单拉新计划]}
+      major: marketing_fee
+      minor: 新享首单拉新
+    - when: {field: remark, contains: [品牌新享新品孵化软件服务费]}
+      major: marketing_fee
+      minor: 新享新品孵化
+    - when: {field: remark, contains: [品牌新享天猫超级老客加速软件服务费]}
+      major: marketing_fee
+      minor: 新享天猫超级老客
+    - when: {field: remark, contains: [品牌新享-超级流量加速软件服务费]}
+      major: marketing_fee
+      minor: 新享超级流量
+    - when: {field: remark, contains: [品牌新享淘宝老客礼金软件服务费]}
+      major: marketing_fee
+      minor: 新享淘宝老客
+    - when: {field: remark, contains: [品牌新享淘宝限时礼金软件服务费]}
+      major: marketing_fee
+      minor: 新享淘宝限时
+    - when: {field: remark, contains: [品牌新享天猫新客营销托管]}
+      major: marketing_fee
+      minor: 新享天猫新客
+    - when: {field: remark, contains: [品牌新享天猫新品营销托管]}
+      major: marketing_fee
+      minor: 新享天猫新品
+    # 淘宝侧的营销托管有两种叫法，对照表都收到「淘宝新客托管」这一个小类下。
+    - when: {field: remark, contains: [品牌新享淘宝新客营销托管,
+                                       品牌新享-淘宝营销托管软件服务费]}
+      major: marketing_fee
+      minor: 淘宝新客托管
+    # 「品牌新享-天猫营销托管软件服务费」要排在天猫新客/新品那两条后面：
+    # 它含「天猫营销托管」，而那两条是「天猫新客营销托管」「天猫新品营销托管」，
+    # 互不包含，但「品牌新享营销托管」这个短写法会被它盖住，对照表也是同一小类。
+    - when: {field: remark, contains: [品牌新享-天猫营销托管软件服务费, 品牌新享营销托管]}
+      major: marketing_fee
+      minor: 天猫营销托管
+    # 这两条对照表里没有，各自单开一个小类——问过业务，确认就这么记。
+    #
+    # 对照表指 exports/财务口径原件/费项分类对照表-淘宝天猫.csv，76 条
+    # 「业务描述 → 业务小类 → 业务大类」的映射。别和店铺发来的营销费用
+    # 明细表搞混：那是源行流水，备注里出现某个费项名不等于对照表收了它。
+    # 这两条在对照表那个工作簿的 18 张 sheet 里一次都没出现过。
+    - when: {field: remark, contains: [限时红包代商家垫付扣回]}
+      major: marketing_fee
+      minor: 限时红包代商家垫付扣回
+    - when: {field: remark, contains: [品牌新享-限时加速服务费]}
+      major: marketing_fee
+      minor: 品牌新享-限时加速服务费
+    - when: {field: remark, contains: [品牌新享]}
       major: marketing_fee
       note: >
-        费项2 归营销费用。费项那一列归服务费，见上面的口径分歧说明。
-
-        按「品牌新享」前缀一条盖住，不再逐个列举。字典里 12 条品牌新享开头的科目
-        全都是营销费用，逐个列举只是把同一件事写两遍，还漏掉了新出的那几种——
-        天猫皇莉诗这张表里「品牌新享-天猫营销托管软件服务费」有 2 行业务描述为空，
-        字典查不到、列举里也没有，就落在未归类里。
+        列举没盖住的品牌新享新变体。细项空着，会在自检的「细项为空」里报出来。
     - when: {field: remark, contains: [商家集运中转操作费, 商家集运物流服务费]}
       major: software_fee
       note: 费项2 归软件服务费。费项那一列归物流运费，业务上后者更合理。
@@ -343,6 +408,28 @@
       note: >
         淘宝联盟推广佣金返还是代扣的冲回。字典把它单独收成交易赔付，
         费项2 仍走营销费用，跟代扣同一个口径两个方向。
+    - when: {field: remark, contains: [退差价, 退货退款, 退货款, 退运费, 返差价]}
+      major: trade_refund
+      minor: 销售退款
+      note: >
+        业务描述为空，备注只写退款类短词。天猫皇莉诗 2026-06 这一块大约
+        八万七，一直卡在未归类里拦着结账。必须排在「退款」两个字那条前面：
+        那条是整格相等，写长了轮不到；contains「退款」又会把「退货退款」
+        「退货款」收进同一条，细项就只能统称销售退款。
+    - when: {field: remark, equals: [退款, 差价]}
+      major: trade_refund
+      minor: 销售退款
+      note: >
+        整格就是「退款」两个字。写成 contains 会误伤已经归过的
+        「售后退款追缴消费券返还金额」——那条在上面，已经收成营销费用。
+        这条只接谁都没接住、备注恰好等于退款的行。
+    - when: {field: remark, contains: [好评返现, 协商返款, 协商售后, KT运损补偿]}
+      major: trade_compensation
+      note: >
+        同样是空业务描述。好评返现、协商返款不是把货款退回去，
+        是额外给买家的钱。关键词不能写成「退回」：网商银行那条腿
+        备注只写「退回」，要靠商户订单号 MYBK 排除，contains 退回会把它
+        从排除里抢走、当成赔付进利润。
     - when: {field: remark, contains: [售后退款追缴消费券返还金额]}
       major: marketing_fee
       note: >
@@ -392,12 +479,70 @@
       major: software_fee
     - when: {field: remark, extract: '^订单.*打款$'}
       major: trade_receipt
-    - when:
-        field: remark
-        contains: [品牌新享-首单拉新计划, 品牌新享新品孵化软件服务费, 限时红包代商家垫付扣回]
+    # 品牌新享按对照表的业务小类逐条落细项，和另外两张淘宝结算模板一字不差。
+    # 三张表必须给同一个小类同一个名字，有一张漏了就在
+    # test_tmall_variants 的「三张模板口径一致」那条上红。
+    - when: {field: remark, contains: [品牌新享-首单拉新计划]}
       major: marketing_fee
+      minor: 新享首单拉新
+    - when: {field: remark, contains: [品牌新享新品孵化软件服务费]}
+      major: marketing_fee
+      minor: 新享新品孵化
+    - when: {field: remark, contains: [品牌新享天猫超级老客加速软件服务费]}
+      major: marketing_fee
+      minor: 新享天猫超级老客
+    - when: {field: remark, contains: [品牌新享-超级流量加速软件服务费]}
+      major: marketing_fee
+      minor: 新享超级流量
+    - when: {field: remark, contains: [品牌新享淘宝老客礼金软件服务费]}
+      major: marketing_fee
+      minor: 新享淘宝老客
+    - when: {field: remark, contains: [品牌新享淘宝限时礼金软件服务费]}
+      major: marketing_fee
+      minor: 新享淘宝限时
+    - when: {field: remark, contains: [品牌新享天猫新客营销托管]}
+      major: marketing_fee
+      minor: 新享天猫新客
+    - when: {field: remark, contains: [品牌新享天猫新品营销托管]}
+      major: marketing_fee
+      minor: 新享天猫新品
+    - when: {field: remark, contains: [品牌新享淘宝新客营销托管,
+                                       品牌新享-淘宝营销托管软件服务费]}
+      major: marketing_fee
+      minor: 淘宝新客托管
+    - when: {field: remark, contains: [品牌新享-天猫营销托管软件服务费, 品牌新享营销托管]}
+      major: marketing_fee
+      minor: 天猫营销托管
+    - when: {field: remark, contains: [限时红包代商家垫付扣回]}
+      major: marketing_fee
+      minor: 限时红包代商家垫付扣回
+    - when: {field: remark, contains: [品牌新享-限时加速服务费]}
+      major: marketing_fee
+      minor: 品牌新享-限时加速服务费
+    - when: {field: remark, contains: [品牌新享]}
+      major: marketing_fee
+      note: 列举没盖住的新变体，细项空着会在自检里报出来
     - when: {field: remark, extract: '^订单.*退款$'}
       major: trade_refund
+    - when: {field: remark, contains: [淘宝联盟佣金代扣]}
+      major: marketing_fee
+      minor: 淘宝客佣金
+      count_without_order: true
+    - when: {field: remark, contains: [淘宝联盟推广佣金返还]}
+      major: marketing_fee
+      note: >
+        代扣的冲回，跟上面那条同一个口径两个方向。这张表原先漏了这一条，
+        靠界面上一条把几个备注关键词捆在一起的规则替它接着；那条规则一撤，
+        淘宝喜必顺就有 2 行、6.00 元掉进「业务描述为空」的未归类里。
+        金额小，但未归类是拦结账的。
+    - when: {field: remark, contains: [退差价, 退货退款, 退货款, 退运费, 返差价]}
+      major: trade_refund
+      minor: 销售退款
+    - when: {field: remark, equals: [退款, 差价]}
+      major: trade_refund
+      minor: 销售退款
+    - when: {field: remark, contains: [好评返现, 协商返款, 协商售后, KT运损补偿]}
+      major: trade_compensation
     - when: {field: biz_type, equals: [交易收款]}
       major: trade_receipt
       note: 实测 3,642 行业务描述和备注都为空，只能靠入帐类型
@@ -451,12 +596,67 @@
       major: software_fee
     - when: {field: remark, extract: '^订单.*打款$'}
       major: trade_receipt
-    # 品牌新享底下有四种叫法（首单拉新 1,909、新品孵化 191、超级老客 77、
-    # 加上 18 行扣款退回），按前缀一条盖住，字典里这四条也都是营销费用。
-    - when: {field: remark, contains: [品牌新享, 限时红包代商家垫付扣回]}
+    # 品牌新享按对照表的业务小类逐条落细项，和支付宝那张表用同一套小类名，
+    # 末尾留前缀兜底。这张表实测四种叫法：首单拉新 1,909、新品孵化 191、
+    # 超级老客 77，加 18 行扣款退回。两张表必须给同一个小类同一个名字，
+    # 否则同一笔生意的钱在界面上会分裂成两个费项名。
+    - when: {field: remark, contains: [品牌新享-首单拉新计划]}
       major: marketing_fee
+      minor: 新享首单拉新
+    - when: {field: remark, contains: [品牌新享新品孵化软件服务费]}
+      major: marketing_fee
+      minor: 新享新品孵化
+    - when: {field: remark, contains: [品牌新享天猫超级老客加速软件服务费]}
+      major: marketing_fee
+      minor: 新享天猫超级老客
+    - when: {field: remark, contains: [品牌新享-超级流量加速软件服务费]}
+      major: marketing_fee
+      minor: 新享超级流量
+    - when: {field: remark, contains: [品牌新享淘宝老客礼金软件服务费]}
+      major: marketing_fee
+      minor: 新享淘宝老客
+    - when: {field: remark, contains: [品牌新享淘宝限时礼金软件服务费]}
+      major: marketing_fee
+      minor: 新享淘宝限时
+    - when: {field: remark, contains: [品牌新享天猫新客营销托管]}
+      major: marketing_fee
+      minor: 新享天猫新客
+    - when: {field: remark, contains: [品牌新享天猫新品营销托管]}
+      major: marketing_fee
+      minor: 新享天猫新品
+    - when: {field: remark, contains: [品牌新享淘宝新客营销托管,
+                                       品牌新享-淘宝营销托管软件服务费]}
+      major: marketing_fee
+      minor: 淘宝新客托管
+    - when: {field: remark, contains: [品牌新享-天猫营销托管软件服务费, 品牌新享营销托管]}
+      major: marketing_fee
+      minor: 天猫营销托管
+    - when: {field: remark, contains: [限时红包代商家垫付扣回]}
+      major: marketing_fee
+      minor: 限时红包代商家垫付扣回
+    - when: {field: remark, contains: [品牌新享-限时加速服务费]}
+      major: marketing_fee
+      minor: 品牌新享-限时加速服务费
+    - when: {field: remark, contains: [品牌新享]}
+      major: marketing_fee
+      note: 列举没盖住的新变体，细项空着会在自检里报出来
     - when: {field: remark, extract: '^订单.*退款$'}
       major: trade_refund
+    - when: {field: remark, contains: [淘宝联盟佣金代扣]}
+      major: marketing_fee
+      minor: 淘宝客佣金
+      count_without_order: true
+    - when: {field: remark, contains: [淘宝联盟推广佣金返还]}
+      major: marketing_fee
+      note: 代扣的冲回，和上面那条同一个口径两个方向。三张淘宝结算模板都要有。
+    - when: {field: remark, contains: [退差价, 退货退款, 退货款, 退运费, 返差价]}
+      major: trade_refund
+      minor: 销售退款
+    - when: {field: remark, equals: [退款, 差价]}
+      major: trade_refund
+      minor: 销售退款
+    - when: {field: remark, contains: [好评返现, 协商返款, 协商售后, KT运损补偿]}
+      major: trade_compensation
     - when: {field: biz_type, equals: [交易收款]}
       major: trade_receipt
     - when: {field: biz_type, equals: ["交易退款(售后)"]}
@@ -812,6 +1012,7 @@
     # 平台把「付出去多少」写成正数，不取反就会被当成收入。
     - {role: outgo, columns: ["已付金额(元)"], negate: true}
     - {role: subject, columns: [场景明细]}
+    - {role: scene_type, columns: [场景类型], required: false}
     - {role: biz_type, columns: [账单类型], required: false}
     - {role: settle_time, columns: [账单创建时间]}
   classify_rules:
@@ -833,6 +1034,7 @@
     - {role: base_order_id, columns: [订单编号], occurrence: 0}
     - {role: parent_order_id, columns: [父单号], required: false}
     - {role: subject, columns: [费用名称]}
+    - {role: fee_meaning, columns: [费用项含义], required: false}
     # 应结金额自带符号：支出为负。实测收入 5,281 行全正、支出 31,630 行全负。
     - {role: income, columns: [应结金额]}
     - {role: direction, columns: [收支方向]}
@@ -937,3 +1139,95 @@
     读到的主体名和配的核对是另一件事，不该走店名这条路。
 
     右边第 42、43 列是人工加的子订单号和求和项，不参与解析。
+
+# 抖音对账单还有一种表头：金额列叫「动账金额(元)」、订单号列叫「关联订单号」。
+# 接表向导曾经把它登记成保费表 insurance_v2——签名列比 douyin_settlement_v1 多，
+# 识别按「必需列更多的赢」，整张对账被当成权益保险，损益表上收入/服务费/运费/赔付
+# 全空，只有权益保险一行。真保费表是 insurance_douyin_v1（保险单号 + 金额(元)）。
+- id: douyin_settlement_v2
+  source: settlement
+  name: 抖音对账单（关联订单号版）
+  match_columns: [关联订单号, 动账金额(元), 动账流水号, 关联子订单号, 动账时间, 动账场景]
+  exclude_columns: [保险单号]
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: txn_id, columns: [动账流水号]}
+    - {role: base_order_id, columns: [关联订单号], required: false}
+    - {role: sub_order_id, columns: [关联子订单号], required: false}
+    - {role: settle_time, columns: [动账时间]}
+    - {role: income, columns: ["动账金额(元)"]}
+    - {role: subject, columns: [动账场景]}
+    - {role: direction, columns: [动账方向], required: false}
+    - {role: remark, columns: [备注], required: false}
+  note: >
+    列名和浅花涧那份不一样，钱的口径一样：动账金额自带符号，费项走字典和
+    界面配的规则。不要再标成权益保险源——那个指标会把所有动账金额加总，
+    对账表里的货款、退款、运费、赔付就全部堆进同一行。
+
+# 京东后台换了导出口，这是新版那张。2026-08-21 有人在界面上用接表向导接进来，
+# 落库时叫 settlement_v10，id 留着不动——界面上和历史记录里引的都是它。
+#
+# 向导那一版没接对，四处：账期、金额、收支方向、费项归类，全在下面按京东旧版
+# 那张（jd_settlement_v1）的口径补齐了。两张表是同一个平台同一笔账，只是京东
+# 换了导出口，列名跟着变：
+#
+#   旧版（财务-对账中心导出）      新版（后台-费用明细导出）
+#   到账时间                      结算时间
+#   收支方向                      费用分类（值一样，收入/支出）
+#   结算状态                      没有这一列
+#   费用项含义                    没有这一列
+#
+# 最要命的是账期：向导没给时间槽位，整张表算不出属于哪个月，24,578 行里 13,045 行
+# 结算时间在 2026-06，界面上却写着「传了，但里面没有 2026-06 的数据」。人以为是
+# 文件不对，前后传了六次、手改了三轮列名（下单时间→订单下单时间、金额→应结金额），
+# 而真正的原因和列名一点关系都没有。向导那边的根因已经修了，见
+# propose.Draft.template 里按人最终确认的映射重对槽位。
+#
+# 金额列两种写法都收：京东原始导出叫「金额」，手改过的那份叫「应结金额」
+# （和旧版同名）。两版都在人手上，认一种就会有一版突然不出数。
+- id: settlement_v10
+  source: settlement
+  name: 京东对账（后台-费用明细导出）
+  # 签名只用两版共有的列。「订单下单时间」是手改出来的名字，原始导出叫「下单时间」，
+  # 拿它当签名的话原始导出那版认不出来。
+  match_columns: [订单编号, 父单号, 订单状态, 商品名称, 结算时间, 资金动账备注]
+  time_slots: {settle_date: settle_time}
+  bindings:
+    - {role: base_order_id, columns: [订单编号], required: false}
+    - {role: parent_order_id, columns: [父单号], required: false}
+    - {role: order_state, columns: [订单状态], required: false}
+    - {role: order_time, columns: [订单下单时间, 下单时间], kind: time, required: false}
+    - {role: product_name, columns: [商品名称], required: false}
+    - {role: quantity, columns: [商品数量], kind: number, required: false}
+    - {role: settle_time, columns: [结算时间], kind: time, required: false}
+    - {role: remark, columns: [资金动账备注], required: false}
+    - {role: subject, columns: [费用名称], required: false}
+    # 应结金额自带符号，支出为负——和旧版那张一样，所以同样绑 income。
+    # 原先绑的是 total_cost，那是聚水潭成本那边的角色，京东三条指标取的都是
+    # income，绑错了这张表一分钱都出不来。
+    - {role: income, columns: [应结金额, 金额], kind: number, required: false}
+    # 费用分类就是旧版的收支方向，值同样是收入/支出。下面的改判要用它。
+    - {role: direction, columns: [费用分类], required: false}
+    # 2026-08-21 这一版导出里没有这一列，绑定先摆在这儿：财务重新导出时会带上它，
+    # 带上了直接就能算，不用再回来改配置。京东那三条指标筛「只算已结算」，
+    # 缺这一列它们一条都出不来，见下面的 note。
+    - {role: bill_status, columns: [结算状态], required: false}
+  classify_rules:
+    - dictionary: true
+      note: 查科目字典。费用名称和旧版那张是同一套叫法。
+  reclassify:
+    - when_major: trade_receipt
+      and_when: {field: direction, equals: [支出]}
+      major: trade_refund
+      note: >
+        照京东规则表第二步：费项为交易收款、收支方向为支出的改判交易退款。
+        和 jd_settlement_v1 那条逐字一样，只是这张表把这一列叫费用分类。
+  total_row_marker: base_order_id
+  note: >
+    2026-08-21 那一版导出没有「结算状态」列，而京东六条指标都筛「只算已结算」
+    （见 metrics.yaml 的 trade_receipt_jd 那几条）。筛选引用的字段表上没有，
+    指标一条都出不来，这张表就一分钱进不了账。
+
+    没有按「反正结算时间全非空，当成都已结算」蒙过去：那是拿推断当口径，
+    真混进未结算的行没人看得出来。财务 2026-08-21 定的是重新导出时带上这一列，
+    所以上面把 bill_status 的绑定先摆好了，导出带上就直接能算。
